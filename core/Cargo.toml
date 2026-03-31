@@ -1,0 +1,99 @@
+[package]
+name = "sibna-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+name = "sibna_core"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["std"]
+std = []
+ffi = ["libc"]
+wasm = ["wasm-bindgen", "js-sys", "web-sys"]
+argon2 = ["dep:argon2"]
+persistent = ["dep:sled"]
+p2p = [
+    "tokio",
+    "tokio-util",
+    "futures",
+    "mdns-sd",
+    "if-addrs",
+    "igd",
+    "stun"
+]
+pqc = ["fips203"]
+
+[dependencies]
+# Cryptographic dependencies
+x25519-dalek = { workspace = true }
+ed25519-dalek = { workspace = true }
+chacha20poly1305 = { workspace = true }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+sha3 = { workspace = true }
+blake3 = { workspace = true }
+rand_core = { workspace = true }
+rand = { workspace = true }
+getrandom = { workspace = true }
+fips203 = { workspace = true, optional = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+bincode = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging and tracing
+tracing = { workspace = true }
+
+# Security
+zeroize = { workspace = true }
+secrecy = { workspace = true }
+constant_time_eq = { workspace = true }
+
+# Utilities
+bytes = { workspace = true }
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
+once_cell = { workspace = true }
+libc = { workspace = true, optional = true }
+
+# WASM
+wasm-bindgen = { workspace = true, optional = true }
+js-sys = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true }
+
+# Optional dependencies
+argon2 = { version = "0.5.3", optional = true }
+sled = { version = "0.34", optional = true }
+mdns-sd = { workspace = true, optional = true }
+if-addrs = { workspace = true, optional = true }
+igd = { workspace = true, optional = true }
+stun = { workspace = true, optional = true }
+hex = "0.4.3"
+lz4_flex = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+
+# P2P async runtime (optional)
+tokio     = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+futures   = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4.4"
+criterion = { version = "0.5.1", features = ["html_reports"] }
+proptest = "1.5.0"
+

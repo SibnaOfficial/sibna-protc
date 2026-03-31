@@ -1,0 +1,16 @@
+# Strict clippy configuration for production crypto code
+
+# Maximum cyclomatic complexity — keep functions simple
+cognitive-complexity-threshold = 20
+
+# Prevent large stack allocations
+large-stack-arrays-limit = 512
+
+# Panic on too many arguments (split your functions)
+too-many-arguments-threshold = 7
+
+# Warn on functions longer than this
+too-many-lines-threshold = 100
+
+# Disallow single-character names except standard loops
+single-char-binding-names-threshold = 1

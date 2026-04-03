@@ -1,5 +1,5 @@
 #![allow(missing_docs)]
-//! Chain Key Implementation - Hardened Production v9
+//! Chain Key Implementation
 //! FIX: derive_key now returns CryptoResult to propagate HMAC errors properly.
 
 use hmac::{Hmac, Mac};

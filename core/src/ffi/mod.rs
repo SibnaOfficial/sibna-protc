@@ -1,4 +1,4 @@
-//! FFI Bindings for Cross-Platform Integration - Hardened Edition
+//! FFI Bindings for Cross-Platform Integration
 //!
 //! Provides C-compatible FFI bindings for integrating with other languages.
 //! All functions are designed to be safe and prevent memory corruption.

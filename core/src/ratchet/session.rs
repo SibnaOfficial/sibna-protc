@@ -1,4 +1,4 @@
-//! Double Ratchet Session - Production Hardened v9
+//! Double Ratchet Session
 //!
 //! FIXES:
 //! - HKDF: Two expand() on same PRK replaced with single 64-byte expand + split

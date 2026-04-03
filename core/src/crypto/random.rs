@@ -1,5 +1,5 @@
 #![allow(missing_docs)]
-//! Secure Random Number Generation - Production Hardened Edition v9
+//! Secure Random Number Generation
 //!
 //! Provides cryptographically secure random number generation
 //! with entropy mixing. All panics replaced with proper error propagation.

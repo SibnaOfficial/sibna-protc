@@ -69,7 +69,7 @@ js-sys          = { version = "0.3.69" }
 web-sys         = { version = "0.3.69" }
 
 [workspace.package]
-version     = "1.0.1"
+version     = "1.0.3"
 edition     = "2021"
 rust-version = "1.75"
 license     = "Apache-2.0 OR MIT"

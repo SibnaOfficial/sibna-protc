@@ -1,5 +1,5 @@
 #![allow(missing_docs)]
-//! Handshake Builder - Hardened Edition
+//! Handshake Builder
 //!
 //! Builder pattern for constructing X3DH handshakes.
 

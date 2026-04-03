@@ -1,4 +1,4 @@
-//! Double Ratchet Implementation - Hardened Edition
+//! Double Ratchet Implementation
 //!
 //! This module implements the Double Ratchet algorithm as specified in:
 //! https://signal.org/docs/specifications/doubleratchet/

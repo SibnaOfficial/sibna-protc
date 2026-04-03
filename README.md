@@ -47,11 +47,11 @@ Sibna focuses on technical transparency. The table below states exactly what thi
 
 | Property | Status | Notes |
 |---|---|---|
-| Message Confidentiality | ✅ | ChaCha20-Poly1305 AEAD |
-| Forward Secrecy | ✅ | Symmetric ratchet re-keys every message |
-| Post-Compromise Security | ✅ | DH ratchet re-keys after round-trips |
-| **Quantum Resistance** | ✅ **Default ON** | Hybrid X25519 + ML-KEM-768 (FIPS 203) |
-| Memory Key Zeroization | ✅ | via `zeroize` |
+| Message Confidentiality | Supported | ChaCha20-Poly1305 AEAD |
+| Forward Secrecy | Supported | Symmetric ratchet re-keys every message |
+| Post-Compromise Security | Supported | DH ratchet re-keys after round-trips |
+| **Quantum Resistance** | **Default ON** | Hybrid X25519 + ML-KEM-768 (FIPS 203) |
+| Memory Key Zeroization | Supported | via `zeroize` |
 
 ### What This Library Does NOT Provide
 
@@ -64,27 +64,22 @@ Sibna focuses on technical transparency. The table below states exactly what thi
 | **Metadata (Anonymity)** | IP is visible by default on direct socket connection | Set `proxy` to Tor SOCKS5 and enforce `require_anonymity: true` |
 | **Trust-On-First-Use (TOFU) limits** | The library securely pins Peer Identity Keys, automatically breaking connections if a MITM swapped the key later. However, **Safety Numbers must still be verified out-of-band** to prove the very first initially-pinned key. |
 
-### Quantum Resistance Details
+### Technical Details
 
-- **High-Rigor Cryptography**: Constant-time comparison via the `subtle` crate across all security-sensitive paths.
-- **Quantum Resistance**: Post-Quantum Hybrid (ML-KEM-768 + X25519) established at every handshake.
-- **Metadata Protection**: Constant 1KB block padding + Jittered **Cover Traffic** background heartbeats.
-- **Relay & P2P Routing**: Seamless automatic Failover between SOCKS5/Tor Tor-friendly relays and direct P2P connections.
-
-### Quantum Resistance Details
-
-- **Default**: Both X25519 and ML-KEM-768 contribute to the session key. A quantum computer must break *both* to compromise a session.
+- **Constant-Time Cryptography**: Constant-time comparison via the `subtle` crate across all security-sensitive paths.
+- **Metadata Protection**: Constant 1KB block padding + Cover Traffic background heartbeats.
+- **Relay & P2P Routing**: Seamless failover between SOCKS5/Tor friendly relays and direct P2P connections.
+- **Hybrid PQC Default**: Both X25519 and ML-KEM-768 contribute to the session key. A quantum computer must break *both* to compromise a session.
 - **Without `pqc` feature**: X25519 only — vulnerable to a sufficiently capable quantum computer.
-- To disable: `sibna-core = { default-features = false, features = ["std"] }`
+- To disable PQC: `sibna-core = { default-features = false, features = ["std"] }`
 
-## Project Status: Hardened Prototype (v1.0.2+)
+## Project Status: Version 1.0.3
 
-**Critical**: This library is an **experimental/hardened prototype**. It is NOT verified for high-risk production environments.
+**Critical**: This library is a protocol implementation and is NOT verified for high-risk production environments.
 
-- **Terminology**: We use an automated **Validation Suite** (12-vector test suite) to ensure protocol correctness, but this is NOT a substitute for an external cryptographic audit.
-- **No External Audit**: NO independent external security audit has been performed yet.
+- **Automated Validation**: We use a 12-vector test suite to verify protocol invariants and resilience against basic protocol-level attacks.
+- **No External Audit**: NO independent external security audit has been performed.
 - **Known Limitations**: Does not protect against global passive adversaries or advanced traffic correlation. See [SECURITY.md](SECURITY.md).
-- **Roadmap**: Seeking community review and formal audit partners for 2026.
 
 See [SECURITY.md](SECURITY.md) and [PROTOCOL_SPECIFICATION.md](PROTOCOL_SPECIFICATION.md) for full threat model details.
 

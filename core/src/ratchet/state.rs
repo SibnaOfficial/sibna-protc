@@ -1,5 +1,5 @@
 #![allow(missing_docs)]
-//! Double Ratchet State - Hardened Edition
+//! Double Ratchet State
 //!
 //! Manages the state for the Double Ratchet algorithm with secure serialization.
 

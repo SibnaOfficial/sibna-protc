@@ -6,7 +6,7 @@
 use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// Protocol Error Type - Security Hardened
+/// Protocol Error Type
 ///
 /// Comprehensive error enumeration for all protocol operations.
 /// Errors are designed to prevent timing attacks and information leakage.

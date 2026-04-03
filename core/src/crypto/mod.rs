@@ -1,4 +1,4 @@
-//! Secure Crypto Module - Hardened Edition
+//! Secure Crypto Module
 //!
 //! Safe implementation of cryptographic algorithms using well-audited libraries.
 //! This module provides:
@@ -28,7 +28,7 @@ use chacha20poly1305::{
 };
 use thiserror::Error;
 
-/// Crypto Errors - Security Hardened
+/// Crypto Errors
 #[derive(Error, Debug, Clone)]
 #[non_exhaustive]
 pub enum CryptoError {
@@ -118,7 +118,7 @@ pub const SALT_LENGTH: usize = 32;
 /// Info string max length
 pub const MAX_INFO_LENGTH: usize = 256;
 
-/// General Encryption Handler - Hardened
+/// General Encryption Handler
 ///
 /// Provides authenticated encryption using ChaCha20-Poly1305.
 /// All operations are constant-time where possible.

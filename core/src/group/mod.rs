@@ -1,4 +1,4 @@
-//! Group Messaging - Sender Keys Implementation - Hardened Edition
+//! Group Messaging - Sender Keys Implementation
 //!
 //! Implements the Sender Keys protocol for efficient group encryption.
 //! Based on Signal's group messaging design with security enhancements.

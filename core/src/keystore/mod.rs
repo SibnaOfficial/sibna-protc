@@ -1,4 +1,4 @@
-//! Secure Key Storage - Hardened Edition
+//! Secure Key Storage
 //!
 //! Provides secure storage and management of cryptographic keys.
 //! All keys are encrypted at rest and zeroized when dropped.

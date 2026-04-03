@@ -1,4 +1,4 @@
-//! Safety Numbers and Identity Verification - Hardened Edition
+//! Safety Numbers and Identity Verification
 //!
 //! Implements safety number calculation for identity verification.
 //! Safety numbers allow users to verify each other's identity keys

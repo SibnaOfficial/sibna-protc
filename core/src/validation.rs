@@ -1,5 +1,5 @@
 #![allow(missing_docs)]
-//! Input Validation and Sanitization - Hardened Edition
+//! Input Validation and Sanitization
 //!
 //! Comprehensive input validation for all external-facing APIs.
 //! Prevents injection attacks, buffer overflows, and malformed data.

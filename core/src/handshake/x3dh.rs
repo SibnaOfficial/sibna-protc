@@ -1,4 +1,4 @@
-//! X3DH Core Implementation - Hardened Edition
+//! X3DH Core Implementation
 //!
 //! Low-level X3DH operations with constant-time guarantees.
 

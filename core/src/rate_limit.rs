@@ -1,5 +1,5 @@
 #![allow(missing_docs)]
-//! Rate Limiting and DoS Protection - Hardened Edition
+//! Rate Limiting and DoS Protection
 //!
 //! Implements rate limiting for cryptographic operations to prevent
 //! brute force attacks and resource exhaustion.

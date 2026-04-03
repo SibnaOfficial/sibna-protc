@@ -1,4 +1,4 @@
-//! Key Derivation Functions - Production Hardened Edition v9
+//! Key Derivation Functions
 //!
 //! Provides secure key derivation using HKDF and Argon2.
 

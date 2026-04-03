@@ -1,4 +1,4 @@
-//! X3DH Handshake Implementation - Hardened Edition
+//! X3DH Handshake Implementation
 //!
 //! Implements the Extended Triple Diffie-Hellman (X3DH) key agreement protocol
 //! as specified in the Signal Protocol.

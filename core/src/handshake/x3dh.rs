@@ -458,13 +458,7 @@ mod tests {
     #[cfg(feature = "pqc")]
     fn test_pq_x3dh_hybrid() {
         use fips203::ml_kem_768;
-        use fips203::traits::{KeyGen, Encaps, SerDes};
-
-        #[cfg(feature = "pqc")]
-        let (pq_public, pq_secret) = {
-            let (pk, sk): (ml_kem_768::EncapsKey, ml_kem_768::DecapsKey) = ml_kem_768::KG::try_keygen().unwrap();
-            (Some(pk.to_bytes().to_vec()), Some(sk.to_bytes().to_vec()))
-        };
+        use fips203::traits::{KeyGen, SerDes};
 
         // Generate keys for party A
         let a_identity = StaticSecret::random_from_rng(&mut OsRng);
@@ -478,9 +472,9 @@ mod tests {
         let b_signed_prekey = StaticSecret::random_from_rng(&mut OsRng);
         let b_signed_prekey_public = PublicKey::from(&b_signed_prekey);
         
-        let (pq_pk, pq_sk) = ml_kem_768::KG::keygen().unwrap();
-        let pq_pk_bytes: [u8; 1184] = pq_pk.into();
-        let pq_sk_bytes: [u8; 2400] = pq_sk.into();
+        let (pq_pk, pq_sk) = ml_kem_768::KG::try_keygen().unwrap();
+        let pq_pk_bytes = SerDes::into_bytes(pq_pk).to_vec();
+        let pq_sk_bytes = SerDes::into_bytes(pq_sk).to_vec();
 
         // A performs initiator handshake with PQC
         let result_a = x3dh_initiator(
@@ -493,7 +487,7 @@ mod tests {
         ).unwrap();
 
         assert!(result_a.pq_ciphertext.is_some());
-        let ct = result_a.pq_ciphertext.unwrap();
+        let ct = result_a.pq_ciphertext.clone().unwrap();
 
         // B performs responder handshake with PQC
         let result_b = x3dh_responder(

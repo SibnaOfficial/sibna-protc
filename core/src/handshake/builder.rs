@@ -436,7 +436,6 @@ impl Drop for X3dhHandshake {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keystore::IdentityKeyPair;
 
     #[test]
     fn test_builder_creation() {

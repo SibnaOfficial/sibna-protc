@@ -1,5 +1,6 @@
 # Sibna Protocol v1.0 - Production Hardened Edition
-# Security-audited implementation of the Signal Protocol
+# Implementation of the Signal Protocol. No independent external security audit has been performed.
+# See SECURITY.md for current threat model, limitations, and audit roadmap.
 
 [workspace]
 members = ["core", "tests", "server"]

@@ -342,6 +342,66 @@ impl Zeroize for OneTimePreKey {
 
 impl ZeroizeOnDrop for OneTimePreKey {}
 
+/// A pinned peer identity key (Trust-On-First-Use)
+///
+/// Stored permanently in the `KeyStore`. On first contact with a peer,
+/// their identity key is pinned. On subsequent contacts, the presented key
+/// is compared against the pin. A mismatch triggers `ProtocolError::KeyMismatch`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PinnedKey {
+    /// The peer's pinned identity key (Ed25519 or X25519 public key, 32 bytes)
+    pub identity_key: [u8; 32],
+    /// Unix timestamp when this key was first pinned
+    pub pinned_at: u64,
+    /// Whether the user has verified this key via Safety Number comparison
+    pub verified: bool,
+    /// Cached Safety Number fingerprint (SHA-512 truncated to 32 bytes)
+    pub safety_number: [u8; 32],
+}
+
+impl PinnedKey {
+    fn new(identity_key: [u8; 32], our_identity: &[u8; 32]) -> Self {
+        use sha2::{Sha512, Digest};
+        // Sort keys for consistent Safety Number regardless of who calls it
+        let (first, second) = if our_identity < &identity_key {
+            (our_identity, &identity_key)
+        } else {
+            (&identity_key, our_identity)
+        };
+        let mut hasher = Sha512::new();
+        hasher.update(b"SIBNA_SAFETY_NUMBER_V1");
+        hasher.update(first);
+        hasher.update(second);
+        let digest = hasher.finalize();
+        let mut safety_number = [0u8; 32];
+        safety_number.copy_from_slice(&digest[..32]);
+
+        let pinned_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        Self { identity_key, pinned_at, verified: false, safety_number }
+    }
+}
+
+/// Result of a `pin_peer_key` call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PinResult {
+    /// First time seeing this peer — key was pinned (TOFU).
+    NewPin,
+    /// Key matches the existing pin — peer identity is consistent.
+    Consistent,
+    /// Key CHANGED from the pinned value — possible MITM attack.
+    /// The session must be aborted and the user must re-verify.
+    KeyChanged {
+        /// The previously pinned (trusted) key.
+        pinned_key: [u8; 32],
+        /// The new (suspicious) key presented now.
+        new_key: [u8; 32],
+    },
+}
+
 /// Secure key store
 #[derive(Clone, Serialize, Deserialize)]
 pub struct KeyStore {
@@ -359,6 +419,8 @@ pub struct KeyStore {
     root_identity_key: Option<[u8; 32]>,
     /// Device signature from root key (Vec<u8> to bypass serde 32-byte array limit)
     device_signature: Option<Vec<u8>>,
+    /// Pinned peer identity keys (TOFU key pinning for MITM detection)
+    peer_pins: HashMap<Vec<u8>, PinnedKey>,
     /// Encryption handler for storage
     #[serde(skip)]
     crypto: Option<CryptoHandler>,
@@ -375,6 +437,7 @@ impl KeyStore {
             device_id: 0,
             root_identity_key: None,
             device_signature: None,
+            peer_pins: HashMap::new(),
             crypto: None,
         })
     }
@@ -745,6 +808,78 @@ impl KeyStore {
             Err(_) => Ok(false),
         }
     }
+
+    // ----------------------------------------------------------------
+    // Key Pinning — MITM Detection
+    // ----------------------------------------------------------------
+
+    /// Pin a peer's identity key on first contact (Trust-On-First-Use).
+    ///
+    /// # Returns
+    /// - `PinResult::NewPin` — first contact; key was pinned
+    /// - `PinResult::Consistent` — key matches the stored pin; peer is the same
+    /// - `PinResult::KeyChanged` — **key changed**; abort session and alert user
+    pub fn pin_peer_key(&mut self, peer_id: &[u8], new_key: &[u8; 32]) -> PinResult {
+        let our_identity = self
+            .identity
+            .as_ref()
+            .map(|id| id.ed25519_public)
+            .unwrap_or([0u8; 32]);
+
+        match self.peer_pins.get(peer_id) {
+            None => {
+                let pin = PinnedKey::new(*new_key, &our_identity);
+                self.peer_pins.insert(peer_id.to_vec(), pin);
+                PinResult::NewPin
+            }
+            Some(existing) => {
+                if constant_time_eq(&existing.identity_key, new_key) {
+                    PinResult::Consistent
+                } else {
+                    PinResult::KeyChanged {
+                        pinned_key: existing.identity_key,
+                        new_key: *new_key,
+                    }
+                }
+            }
+        }
+    }
+
+    /// Pin or verify a peer key; return `Err(KeyMismatch)` if the key changed.
+    ///
+    /// Used by `SecureContext::perform_handshake` to abort automatically on MITM.
+    pub fn verify_or_pin_peer_key(
+        &mut self,
+        peer_id: &[u8],
+        new_key: &[u8; 32],
+    ) -> ProtocolResult<PinResult> {
+        match self.pin_peer_key(peer_id, new_key) {
+            PinResult::KeyChanged { .. } => Err(ProtocolError::KeyMismatch),
+            other => Ok(other),
+        }
+    }
+
+    /// Get the pinned key record for a peer, if any.
+    pub fn get_peer_pin(&self, peer_id: &[u8]) -> Option<&PinnedKey> {
+        self.peer_pins.get(peer_id)
+    }
+
+    /// Mark a peer's pinned key as verified after Safety Number comparison.
+    pub fn mark_peer_verified(&mut self, peer_id: &[u8]) {
+        if let Some(pin) = self.peer_pins.get_mut(peer_id) {
+            pin.verified = true;
+        }
+    }
+
+    /// Remove a peer pin (e.g. when peer re-registers and user confirms new key).
+    pub fn remove_peer_pin(&mut self, peer_id: &[u8]) {
+        self.peer_pins.remove(peer_id);
+    }
+
+    /// Return all pinned peer IDs.
+    pub fn pinned_peers(&self) -> Vec<Vec<u8>> {
+        self.peer_pins.keys().cloned().collect()
+    }
 }
 
 impl Zeroize for KeyStore {
@@ -753,6 +888,7 @@ impl Zeroize for KeyStore {
         self.signed_prekey = None;
         self.onetime_prekeys.clear();
         self.next_onetime_id = 0;
+        self.peer_pins.clear();
     }
 }
 

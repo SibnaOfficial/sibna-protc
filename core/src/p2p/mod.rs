@@ -71,6 +71,15 @@ pub struct P2pConfig {
     pub enable_mdns: bool,
     /// Optional human-readable name for mDNS broadcasts
     pub node_name: Option<String>,
+    /// Optional SOCKS5 proxy address for anonymous connections.
+    ///
+    /// Set to `Some("127.0.0.1:9050")` to route all outgoing connections
+    /// through a local Tor daemon.
+    ///
+    /// **Requires Tor to be running on the specified address.**
+    /// When set, DNS resolution is also performed by the proxy,
+    /// preventing DNS leaks.
+    pub proxy: Option<String>,
 }
 
 impl Default for P2pConfig {
@@ -82,6 +91,7 @@ impl Default for P2pConfig {
             max_message_size: 10 * 1024 * 1024, // 10 MB
             enable_mdns: false,
             node_name: None,
+            proxy: None, // direct connection by default; set to Some("127.0.0.1:9050") for Tor
         }
     }
 }

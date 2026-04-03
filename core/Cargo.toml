@@ -15,7 +15,12 @@ name = "sibna_core"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["std"]
+# pqc is enabled by default: every handshake uses a hybrid X25519 + ML-KEM-768 layer.
+# This means the session key is secure against quantum adversaries as long as
+# either X25519 OR ML-KEM-768 remains unbroken.
+# To build without PQC (constrained / WASM targets), use:
+#   sibna-core = { default-features = false, features = ["std"] }
+default = ["std", "pqc"]
 std = []
 ffi = ["libc"]
 wasm = ["wasm-bindgen", "js-sys", "web-sys"]

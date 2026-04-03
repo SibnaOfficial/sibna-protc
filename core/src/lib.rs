@@ -1,20 +1,41 @@
-//! Sibna Protocol v9 - Production Hardened Edition
+//! Sibna Protocol v1.0
 //!
-//! A professionally audited, hardened implementation of the Signal Protocol
-//! for secure end-to-end encrypted communication.
+//! An independent Rust implementation of the Signal Protocol (X3DH + Double Ratchet)
+//! designed for integration into commercial and open-source applications.
 //!
-//! # Security Features
-//! - X3DH Key Agreement Protocol with constant-time operations
-//! - Double Ratchet Algorithm with secure key management
-//! - Group Messaging (Sender Keys) with forward secrecy
-//! - Multi-device Synchronization
-//! - Forward Secrecy & Post-Compromise Security
-//! - Replay Protection & Anti-tampering
-//! - Memory Zeroization for all sensitive data
-//! - Timing Attack Resistance
+//! **IMPORTANT — NO EXTERNAL SECURITY AUDIT HAS BEEN PERFORMED.**
+//! This library has undergone internal hardening (see SECURITY.md) but has NOT been
+//! reviewed by an independent security firm. Do not deploy in high-risk environments
+//! until an external audit is completed (roadmap: Q3 2026).
+//!
+//! # What This Library Provides
+//! - **Confidentiality**: ChaCha20-Poly1305 AEAD encryption.
+//! - **Forward Secrecy**: Double Ratchet re-keys on every message.
+//! - **Post-Compromise Security**: DH ratchet re-keys after round-trips.
+//! - **Quantum Resistance (Hybrid, Default ON)**: X3DH uses a hybrid
+//!   X25519 + ML-KEM-768 handshake (FIPS 203). The session key is secure as
+//!   long as _either_ primitive is unbroken. Disable with `default-features = false`.
+//! - **Memory Safety**: Automatic key zeroization via `zeroize`.
+//!
+//! # What This Library Does NOT Provide
+//!
+//! > **MITM Protection**: Requires manual out-of-band Safety Number verification
+//! > by the integrating application. At first contact, Trust-On-First-Use (TOFU)
+//! > applies — the library cannot detect a MITM without user confirmation.
+//!
+//! > **Metadata Protection**: IP addresses, packet sizes, message timing, and
+//! > session participant identities are NOT hidden or obfuscated. A network observer
+//! > can see who is communicating with whom and when.
+//!
+//! > **Anonymity**: This library does NOT provide onion routing, traffic obfuscation,
+//! > or any other anonymity mechanism. Network identities are fully visible.
+//!
+//! > **Quantum Resistance Without PQC Feature**: X25519 on its own is broken by
+//! > a sufficiently powerful quantum computer. With the default `pqc` feature,
+//! > the hybrid handshake protects against this, but the feature must remain enabled.
 //!
 //! # Version
-//! 1.0.0 - Production Hardened
+//! 1.0.0
 
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
@@ -137,6 +158,14 @@ pub struct Config {
     pub auto_prune_keys: bool,
     /// Maximum key age in seconds
     pub max_key_age_secs: u64,
+    /// Message padding mode.
+    ///
+    /// Pads all messages to fixed block sizes before encryption to prevent
+    /// size-based traffic analysis. Default: `PaddingMode::Standard` (1 KB blocks).
+    ///
+    /// Set to `PaddingMode::None` only for constrained environments where
+    /// bandwidth is extremely limited and metadata protection is not required.
+    pub message_padding: PaddingMode,
 }
 
 impl Default for Config {
@@ -156,6 +185,7 @@ impl Default for Config {
             session_timeout_secs: 3600, // 1 hour
             auto_prune_keys: true,
             max_key_age_secs: 30 * 86400, // 30 days
+            message_padding: PaddingMode::Standard, // 1 KB blocks by default
         }
     }
 }
@@ -362,6 +392,22 @@ impl SecureContext {
         let mut handshake = builder.build()?;
         let output = handshake.perform()?;
 
+        // KEY PINNING: Verify or pin the peer's identity key.
+        // If the key has changed since last contact, abort immediately.
+        if let Some(pk_bytes) = peer_identity_key {
+            if pk_bytes.len() == 32 {
+                let pk_arr: [u8; 32] = pk_bytes.try_into().map_err(|_| ProtocolError::InvalidKeyLength)?;
+                drop(keystore); // release read lock before acquiring write
+                let mut keystore_w = self.keystore.write();
+                keystore_w.verify_or_pin_peer_key(peer_id, &pk_arr)?;
+                drop(keystore_w);
+            } else {
+                drop(keystore);
+            }
+        } else {
+            drop(keystore);
+        }
+
         let mut sessions = self.sessions.write();
 
         let (remote_dh, local_dh) = if initiator {
@@ -413,6 +459,9 @@ impl SecureContext {
             return Err(ProtocolError::InvalidArgument);
         }
 
+        // Apply padding to hide message size from network observers
+        let padded = pad_message(plaintext, self.config.message_padding)?;
+
         let sessions = self.sessions.read();
         let session = sessions.get_session(session_id)?;
         drop(sessions); // release outer lock before acquiring inner state write lock
@@ -421,7 +470,7 @@ impl SecureContext {
         let session_guard = session.read();
         let ad = associated_data.unwrap_or_default();
 
-        session_guard.encrypt(plaintext, ad)
+        session_guard.encrypt(&padded, ad)
     }
 
     /// Decrypt a message from a session
@@ -446,7 +495,10 @@ impl SecureContext {
         let session_guard = session.read();
         let ad = associated_data.unwrap_or_default();
 
-        session_guard.decrypt(ciphertext, ad)
+        let padded_plaintext = session_guard.decrypt(ciphertext, ad)?;
+
+        // Strip padding to recover the original message
+        unpad_message(&padded_plaintext)
     }
 
     /// Create a new group

@@ -3,12 +3,10 @@
 //! The `HybridRouter` coordinates between P2P direct transport and
 //! Server-based relay transport. It implements a "P2P-first" policy.
 
-use std::sync::Arc;
-use crate::{SecureContext, ProtocolResult, ProtocolError};
+use crate::{SecureContext, ProtocolResult};
 #[cfg(feature = "p2p")]
 use crate::p2p::{P2pNode, Peer};
-use dashmap::DashMap;
-use tracing::{info, warn, debug};
+use tracing::{info, warn};
 
 /// Manages hybrid communication (P2P + Relay)
 #[derive(Clone)]

@@ -270,6 +270,14 @@ pub enum ProtocolError {
     /// Key or bundle has expired
     #[error("Key or bundle has expired")]
     Expired,
+
+    /// Peer identity key changed — possible MITM
+    ///
+    /// The presented identity key does not match the pinned key for this peer.
+    /// The application **must** halt the session and require the user to re-verify
+    /// the Safety Number out-of-band before trusting this peer again.
+    #[error("Peer identity key changed — possible man-in-the-middle attack")]
+    KeyMismatch,
 }
 
 /// Result type for protocol operations

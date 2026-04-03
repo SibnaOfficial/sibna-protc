@@ -21,22 +21,20 @@ pub const MAX_JITTER_MS: u64 = 500;
 
 /// Pad a message payload to the nearest multiple of PADDING_BLOCK_SIZE
 ///
-/// Format: [1 byte: padding_len_indicator] [original payload] [N bytes random padding]
+/// Format: [2 bytes LE: padding_len] [original payload] [N bytes random padding]
 ///
 /// An attacker watching encrypted traffic sees only multiples of 1024 bytes,
 /// making size-based correlation attacks statistically much harder.
 pub fn pad_payload(payload: &[u8]) -> Vec<u8> {
-    let unpadded_len = payload.len() + 1; // +1 for the indicator byte
+    let unpadded_len = payload.len() + 2; // +2 for the length indicator
     let padded_len = round_up_to_block(unpadded_len);
     let padding_needed = padded_len - unpadded_len;
 
     let mut rng = rand::thread_rng();
     let mut out = Vec::with_capacity(padded_len);
 
-    // Indicator: how many padding bytes were added (mod 256)
-    // For blocks > 255 bytes of padding, we store padding_needed % 256
-    // Receiver reconstructs correct padding_needed from block arithmetic
-    out.push((padding_needed % 256) as u8);
+    // Indicator: 2-byte LE length of padding
+    out.extend_from_slice(&(padding_needed as u16).to_le_bytes());
     out.extend_from_slice(payload);
 
     // Fill padding with random bytes (not zeros — zeros are distinguishable)
@@ -48,35 +46,18 @@ pub fn pad_payload(payload: &[u8]) -> Vec<u8> {
 
 /// Remove padding from a received payload
 pub fn unpad_payload(padded: &[u8]) -> Result<Vec<u8>, PaddingError> {
-    if padded.is_empty() {
+    if padded.len() < 2 {
         return Err(PaddingError::TooShort);
     }
 
-    let indicator = padded[0] as usize;
-    let padded_len = padded.len();
-
-    if padded_len < PADDING_BLOCK_SIZE {
-        // Not block-aligned — try to recover assuming indicator is exact
-        if padded_len <= indicator + 1 {
-            return Err(PaddingError::InvalidPadding);
-        }
-        return Ok(padded[1..padded_len - indicator].to_vec());
-    }
-
-    // Calculate padding from block alignment
-    let padding_needed = padded_len % PADDING_BLOCK_SIZE;
-    let actual_padding = if padding_needed == 0 {
-        // Full block of padding
-        indicator
-    } else {
-        padding_needed
-    };
-
-    if padded_len <= actual_padding + 1 {
+    let padding_needed = u16::from_le_bytes([padded[0], padded[1]]) as usize;
+    
+    if padded.len() < 2 + padding_needed {
         return Err(PaddingError::InvalidPadding);
     }
 
-    Ok(padded[1..padded_len - actual_padding].to_vec())
+    let payload_len = padded.len() - 2 - padding_needed;
+    Ok(padded[2..2 + payload_len].to_vec())
 }
 
 fn round_up_to_block(len: usize) -> usize {

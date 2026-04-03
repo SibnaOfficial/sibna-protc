@@ -11,11 +11,13 @@ pub mod encryptor;
 pub mod random;
 pub mod kdf;
 pub mod secure_compare;
+pub mod padding;
 
 pub use encryptor::*;
 pub use random::*;
 pub use kdf::*;
 pub use secure_compare::*;
+pub use padding::{PaddingMode, pad_message, unpad_message};
 
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 use chacha20poly1305::{

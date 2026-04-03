@@ -53,6 +53,7 @@ pub mod group;
 pub mod safety;
 pub mod rate_limit;
 pub mod validation;
+pub mod media;
 pub mod iot;
 pub mod metadata;
 pub mod manager;

@@ -83,6 +83,21 @@ impl HybridRouter {
         self.send_via_relay(recipient_id, plaintext).await
     }
 
+    /// Send a WebRTC signaling message natively routing through the best transport.
+    pub async fn send_webrtc_signal(&self, recipient_id: &[u8], signal: crate::media::WebRtcSignal) -> ProtocolResult<()> {
+        let payload = crate::media::ProtocolPayload::WebRtc(signal);
+        let bytes = payload.to_bytes()?;
+        self.send_message(recipient_id, &bytes).await
+    }
+
+    /// Send structured application data (wrapped in a protocol payload).
+    /// This allows distinguishing normal text/files from WebRTC negotiation packets dynamically.
+    pub async fn send_app_data(&self, recipient_id: &[u8], data: Vec<u8>) -> ProtocolResult<()> {
+        let payload = crate::media::ProtocolPayload::Data(data);
+        let bytes = payload.to_bytes()?;
+        self.send_message(recipient_id, &bytes).await
+    }
+
     #[cfg(feature = "p2p")]
     /// Start the mDNS discovery loop to find peers on the local network.
     pub async fn start_discovery_loop(&self) -> ProtocolResult<()> {

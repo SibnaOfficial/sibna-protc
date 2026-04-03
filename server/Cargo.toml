@@ -9,7 +9,7 @@ description = "Universal Sibna Protocol Server v11.0 — Zero-Trust, Multi-Trans
 repository.workspace = true
 
 [dependencies]
-sibna-core = { path = "../core", features = ["std"] }
+sibna-core = { path = "../core", features = ["std", "pqc"] }
 tokio = { version = "1.37", features = ["full"] }
 axum = { version = "0.7.5", features = ["ws", "macros"] }
 tower = "0.4"

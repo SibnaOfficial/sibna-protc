@@ -1,120 +1,42 @@
-# Security & Assessment
+# Sibna Protocol Security Model
 
-This document outlines the security model and implementation status of the Sibna Protocol.
+This document outlines the current security model, trust assumptions, and known limitations of the Sibna Protocol (v1.0.2+).
 
-## 1. Audit Status
+## Project Status: Hardened Prototype (Experimental)
+Sibna is a **hardened prototype**. While it incorporates modern cryptographic standards (hybrid X25519 + ML-KEM-768), it has **not** undergone a formal external security audit. It is designed for researchers and advanced users, not for mission-critical production use.
 
-**NOT production-ready for high-risk environments without external audit.**
+## Threat Model
 
-Version 1.0.1 represents a state of "internal hardening." While previous internal logic errors have been addressed, the implementation has **NOT** been reviewed by an independent security firm.
+### Adversary Capabilities
+We consider an adversary who can:
+- **Passively observe**: Monitor network traffic between peers or between a peer and the relay.
+- **Actively intercept**: MITM connections, drop, or inject packets.
+- **Compromise temporary state**: Access ephemeral secrets in memory (protected by `Zeroize`).
+- **Global Passive Adversary (GPA)**: [NEW] An opponent that can monitor large portions of the global internet backbone.
 
-**Roadmap**:
-- Targeting independent external audit: Q3 2026.
+### Protections Provided
+| Feature | Mitigation | Status |
+| :--- | :--- | :--- |
+| **Data Confidentiality** | ChaCha20-Poly1305 (256-bit) AEAD | ✅ |
+| **Quantum Resistance** | Hybrid ML-KEM-768 + X25519 Handshake | ✅ |
+| **Integrity Checks** | Subtle-grade Constant-Time comparisons | ✅ |
+| **Replay Protection** | Atomic Message Counters + Timestamping | ✅ |
+| **Traffic Masking** | Jittered Cover Traffic (Optional) | ✅ |
+| **Metadata Protection** | Constant-size (1KB) blocks + Padding | ✅ |
 
-## 2. Vulnerability Reporting
+### Critical Limitations
 
-Send reports to [security@sibna.dev](mailto:security@sibna.dev). Please do not open public GitHub issues for security vulnerabilities.
+#### 1. Global Passive Adversaries (GPA)
+While Sibna provides padding and optional cover traffic, it **cannot** fully protect against an adversary who sees the entire global network graph. Such an opponent can still perform sophisticated **traffic correlation** and **statistical analysis** to link sender/receiver pairs.
 
-- Acknowledgment: 48 hours.
-- Assessment: 7 days.
+#### 2. Anonymity vs Transport Proxy
+The built-in SOCKS5/Tor support is a **transport option**, not a built-in anonymity guarantee. Routing traffic through Tor hides your IP from the recipient, but does not prevent the provider from seeing that you are using the Sibna protocol unless additional obfuscation (Bridges/Pluggable Transports) is used.
 
-## 3. Threat Model
+#### 3. Trust-On-First-Use (TOFU)
+The initial exchange remains vulnerable to a MITM attack. Users **must** verify "Safety Numbers" (fingerprints) out-of-band for absolute assurance of identity.
 
-### 3.1 Provided Protections
+#### 4. Side-Channel Resistance
+We use the `subtle` crate to prevent timing attacks in code, but we cannot guarantee resistance against lower-level micro-architectural side channels (e.g., Spectre, Meltdown) or hardware-level probes.
 
-| Property | Status | Mechanism |
-|---|---|---|
-| **Message Confidentiality** | ✅ Provided | ChaCha20-Poly1305 AEAD |
-| **Forward Secrecy** | ✅ Provided | Symmetric ratchet re-keys every message |
-| **Post-Compromise Security** | ✅ Provided | DH ratchet re-keys after round-trips |
-| **Quantum Resistance** | ✅ Default ON | Hybrid X25519 + ML-KEM-768 (FIPS 203) |
-| **Memory Safety** | ✅ Provided | Auto-zeroization of keys via `zeroize` |
-
-#### Quantum Resistance — Hybrid Handshake (Default)
-
-The `pqc` feature is **enabled by default**. Every X3DH handshake fuses two independent shared secrets:
-- **Classical**: X25519 Diffie-Hellman
-- **Post-Quantum**: ML-KEM-768 (FIPS 203, CRYSTALS-KYBER)
-
-Both secrets are concatenated before HKDF, so the session key is secure as long as **either** primitive remains unbroken. This is the NIST-recommended hybrid approach.
-
-> **To disable PQC** (e.g., for constrained environments):
-> ```toml
-> sibna-core = { default-features = false, features = ["std"] }
-> ```
-> **Warning**: Without the `pqc` feature, X25519 alone is vulnerable to a sufficiently capable quantum computer.
-
----
-
-### 3.2 Known Limitations (Out of Scope)
-
-These are **fundamental design constraints**, not bugs. Integrators must account for them.
-
-#### ⚠️ Partial Metadata Protection
-
-**What is mitigated:**
-- **Packet sizes**: The library now utilizes `PaddingMode::Standard` (1KB blocks) by default. This makes size-based traffic analysis (guessing message contents by packet size) computationally unviable.
-
-**What is exposed (Out of Scope):**
-- Network identities and timing (when messages are sent and received).
-- Who is communicating with whom (participant graph).
-- **Cover Traffic API (`generate_cover_message`)**: While padding hides message sizes, metadata like message *frequency* is still visible to ISPs. Sibna Core exposes a Cover Traffic API. Applications can generate completely empty dummy messages that are encrypted and padded to look 100% identical to real messages across the wire, defeating traffic analysis when triggered on a localized timer.
-
----
-
-#### ⚠️ Anonymity via SOCKS5 Only
-
-By default, IP addresses and network topologies are exposed. 
-To achieve anonymity, **you must configure the built-in SOCKS5 integration**:
-```rust
-let mut config = P2pConfig::default();
-config.proxy = Some("127.0.0.1:9050".parse().unwrap());
-```
-This forces the entire protocol layer, peer-discovery, and handshaking to wrap inside the Tor network natively. **Without this flag enabled, no anonymity is provided.**
-
----
-
-#### ⚠️ TOFU MITM Protection & Pinning
-
-This library features built-in Trust-On-First-Use (TOFU) peer pinning. 
-
-1. On first contact, the **Peer Identity Key is cryptographically pinned** to local storage.
-2. If a Man-In-The-Middle attempts to intercept a later connection by rotating the identity key, the Handshake will actively abort (`ProtocolError::KeyMismatch`).
-3. **Manual Verification Requirement:** While the pin prevents active interception *after* first-contact, the very first key pinned could be a MITM. **Safety Numbers** (`SafetyNumber::calculate()`) must still be verified out-of-band to establish ultimate trust.
-
----
-
-#### ⚠️ Endpoint Security Assumed
-
-- The host OS and hardware are assumed to be uncompromised.
-- The OS-provided CSPRNG (`getrandom`) is assumed to produce sufficient entropy.
-
----
-
-### 3.3 Constraints Summary
-
-| Limitation | Impact | Mitigation |
-|---|---|---|
-| TOFU Initial MITM vulnerability | Active MITM possible only during first contact before Safety Number check | Implement Safety Number UI in your app |
-| Remaining Metadata | Communication frequency is visible despite size-padding | Implement `generate_cover_message()` for Dummy Traffic |
-| Anonymity Leaks | SOCKS5 proxy misconfiguration might fall back to direct TCP | Set `require_anonymity: true` in `P2pConfig` |
-
-## 4. Hardening (v1.0.1)
-
-Key fixes applied during internal review:
-
-- **HKDF Domain Separation**: Enforced unique constants to prevent key reuse across session versions.
-- **Panic Removal**: Replaced all production `.unwrap()`/`.expect()` with proper error propagation.
-- **Rate Limiting**: Enforced bounds (e.g., 500 skipped messages) to prevent memory exhaustion DoS.
-- **QR MAC Key**: Removed secret MAC key from serialized QR payload (was a critical key-exposure bug).
-- **Shared Secret Exposure**: `perform_handshake()` no longer returns raw shared secret to caller.
-
-## 5. Integration Checklist
-
-1. **Safety Number UI**: Implement a UI for manual Safety Number comparison after every new session.
-2. **Key Storage**: Store private keys in Secure Enclave or encrypted storage.
-3. **PQC Feature**: Ensure the `pqc` feature remains enabled (it is the default).
-4. **Metadata**: If metadata privacy is required, integrate a transport-layer anonymity network.
-5. **Persistence**: Ensure session state is saved/loaded securely.
-
-Last Updated: April 2026
+## Security Reporting
+Please report vulnerabilities privately via [security@sibna.dev].

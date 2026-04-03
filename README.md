@@ -66,18 +66,25 @@ Sibna focuses on technical transparency. The table below states exactly what thi
 
 ### Quantum Resistance Details
 
+- **High-Rigor Cryptography**: Constant-time comparison via the `subtle` crate across all security-sensitive paths.
+- **Quantum Resistance**: Post-Quantum Hybrid (ML-KEM-768 + X25519) established at every handshake.
+- **Metadata Protection**: Constant 1KB block padding + Jittered **Cover Traffic** background heartbeats.
+- **Relay & P2P Routing**: Seamless automatic Failover between SOCKS5/Tor Tor-friendly relays and direct P2P connections.
+
+### Quantum Resistance Details
+
 - **Default**: Both X25519 and ML-KEM-768 contribute to the session key. A quantum computer must break *both* to compromise a session.
 - **Without `pqc` feature**: X25519 only — vulnerable to a sufficiently capable quantum computer.
 - To disable: `sibna-core = { default-features = false, features = ["std"] }`
 
-## Production Status
+## Project Status: Hardened Prototype (v1.0.2+)
 
-**Critical**: This library is NOT production-ready for high-risk environments.
+**Critical**: This library is an **experimental/hardened prototype**. It is NOT verified for high-risk production environments.
 
+- **Terminology**: We use an automated **Validation Suite** (12-vector test suite) to ensure protocol correctness, but this is NOT a substitute for an external cryptographic audit.
 - **No External Audit**: NO independent external security audit has been performed yet.
-- **Metadata Protection**: Configurable padding modes (up to 16KB blocks) to hide message size footprints, plus a **Cover Traffic (Dummy Traffic)** API to defeat frequency analysis.
-- **Forced Anonymity**: Native SOCKS5 (Tor) support with a strict `require_anonymity` kill-switch to prevent IP leaks via direct TCP fallback.
-- **Roadmap**: Targeting external cryptography audit for Q3 2026.
+- **Known Limitations**: Does not protect against global passive adversaries or advanced traffic correlation. See [SECURITY.md](SECURITY.md).
+- **Roadmap**: Seeking community review and formal audit partners for 2026.
 
 See [SECURITY.md](SECURITY.md) and [PROTOCOL_SPECIFICATION.md](PROTOCOL_SPECIFICATION.md) for full threat model details.
 

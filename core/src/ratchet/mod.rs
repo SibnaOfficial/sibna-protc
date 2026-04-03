@@ -102,10 +102,7 @@ impl RatchetHeader {
         }
 
         // Check timestamp is reasonable
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| ProtocolError::InternalError)?
-            .as_secs();
+        let now = crate::crypto::current_timestamp()?;
 
         // Allow 5 minutes clock skew
         if self.timestamp > now + 300 {
@@ -135,10 +132,7 @@ pub struct SkippedMessageKey {
 impl SkippedMessageKey {
     /// Create a new skipped message key
     pub fn new(key: [u8; 32], message_number: u64) -> Self {
-        let created_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let created_at = crate::crypto::current_timestamp().unwrap_or(0);
 
         Self {
             key,
@@ -149,10 +143,7 @@ impl SkippedMessageKey {
 
     /// Check if the key has expired
     pub fn is_expired(&self) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = crate::crypto::current_timestamp().unwrap_or(self.created_at);
 
         now > self.created_at + MAX_MESSAGE_KEY_AGE_SECS
     }

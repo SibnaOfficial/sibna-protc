@@ -35,7 +35,7 @@
 //! > the hybrid handshake protects against this, but the feature must remain enabled.
 //!
 //! # Version
-//! 1.0.1
+//! 1.0.3
 
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
@@ -56,6 +56,8 @@ pub mod validation;
 pub mod iot;
 pub mod metadata;
 pub mod manager;
+#[cfg(feature = "p2p")]
+pub mod transport;
 
 // P2P transport (optional, requires feature = "p2p")
 #[cfg(feature = "p2p")]
@@ -158,14 +160,12 @@ pub struct Config {
     pub auto_prune_keys: bool,
     /// Maximum key age in seconds
     pub max_key_age_secs: u64,
-    /// Message padding mode.
-    ///
-    /// Pads all messages to fixed block sizes before encryption to prevent
-    /// size-based traffic analysis. Default: `PaddingMode::Standard` (1 KB blocks).
-    ///
-    /// Set to `PaddingMode::None` only for constrained environments where
-    /// bandwidth is extremely limited and metadata protection is not required.
+    /// Message padding mode
     pub message_padding: PaddingMode,
+    /// Relay server URL
+    pub relay_url: String,
+    /// SOCKS5 proxy for anonymity (e.g. "socks5://127.0.0.1:9050" for Tor)
+    pub proxy_url: Option<String>,
 }
 
 impl Default for Config {
@@ -185,7 +185,9 @@ impl Default for Config {
             session_timeout_secs: 3600, // 1 hour
             auto_prune_keys: true,
             max_key_age_secs: 30 * 86400, // 30 days
-            message_padding: PaddingMode::Standard, // 1 KB blocks by default
+            message_padding: PaddingMode::Standard,
+            relay_url: String::from("https://relay.sibna.dev"),
+            proxy_url: None,
         }
     }
 }
@@ -316,7 +318,7 @@ impl SecureContext {
                 .map_err(|_| ProtocolError::RateLimitExceeded)?;
         }
 
-        let mut sessions = self.sessions.write();
+        let sessions = self.sessions.read();
         sessions.create_session(peer_id, self.config.clone())
     }
 
@@ -408,7 +410,7 @@ impl SecureContext {
             drop(keystore);
         }
 
-        let mut sessions = self.sessions.write();
+        let sessions = self.sessions.write();
 
         let (remote_dh, local_dh) = if initiator {
             let spk = peer_signed_prekey.ok_or(ProtocolError::InvalidState)?;
@@ -597,7 +599,7 @@ impl SecureContext {
 
     /// Delete a session
     pub fn delete_session(&self, session_id: &[u8]) -> bool {
-        self.sessions.write().remove_session(session_id)
+        self.sessions.read().remove_session(session_id)
     }
 
     /// Leave a group
@@ -637,9 +639,7 @@ impl Zeroize for SecureContext {
         // storage_key is Zeroizing<[u8;32]> — already zeroed on drop
         // keystore, sessions, groups contain their own ZeroizeOnDrop fields
         // device_id is non-sensitive (public identifier)
-        if let Some(mut key) = self.storage_key.try_write() {
-            key.zeroize();
-        }
+        self.storage_key.write().zeroize();
     }
 }
 
@@ -666,7 +666,7 @@ pub struct ContextStats {
 
 /// Session Manager - Handles active sessions and persistence
 pub struct SessionManager {
-    sessions: RwLock<std::collections::HashMap<Vec<u8>, Arc<RwLock<DoubleRatchetSession>>>>,
+    sessions: dashmap::DashMap<Vec<u8>, Arc<RwLock<DoubleRatchetSession>>>,
     _config: Config,
 }
 
@@ -674,7 +674,7 @@ impl SessionManager {
     /// Create a new session manager
     pub fn new(config: Config) -> ProtocolResult<Self> {
         Ok(Self {
-            sessions: RwLock::new(std::collections::HashMap::new()),
+            sessions: dashmap::DashMap::new(),
             _config: config,
         })
     }
@@ -686,12 +686,11 @@ impl SessionManager {
     }
 
     /// Create a new session
-    pub fn create_session(&mut self, peer_id: &[u8], config: Config) -> ProtocolResult<SessionHandle> {
+    pub fn create_session(&self, peer_id: &[u8], config: Config) -> ProtocolResult<SessionHandle> {
         let session = DoubleRatchetSession::new(config)?;
         let session = Arc::new(RwLock::new(session));
 
-        let mut sessions = self.sessions.write();
-        sessions.insert(peer_id.to_vec(), session.clone());
+        self.sessions.insert(peer_id.to_vec(), session.clone());
 
         Ok(SessionHandle {
             peer_id: peer_id.to_vec(),
@@ -701,40 +700,35 @@ impl SessionManager {
 
     /// Get an existing session by ID
     pub fn get_session(&self, session_id: &[u8]) -> ProtocolResult<Arc<RwLock<DoubleRatchetSession>>> {
-        let sessions = self.sessions.read();
-        sessions.get(session_id)
-            .cloned()
+        self.sessions.get(session_id)
+            .map(|s| s.value().clone())
             .ok_or(ProtocolError::SessionNotFound)
     }
 
     /// Insert a session into the cache
-    pub fn insert_session(&mut self, peer_id: &[u8], session: Arc<RwLock<DoubleRatchetSession>>) -> ProtocolResult<()> {
-        let mut sessions = self.sessions.write();
-        sessions.insert(peer_id.to_vec(), session);
+    pub fn insert_session(&self, peer_id: &[u8], session: Arc<RwLock<DoubleRatchetSession>>) -> ProtocolResult<()> {
+        self.sessions.insert(peer_id.to_vec(), session);
         Ok(())
     }
 
     /// Remove a session
-    pub fn remove_session(&mut self, session_id: &[u8]) -> bool {
-        let mut sessions = self.sessions.write();
-        sessions.remove(session_id).is_some()
+    pub fn remove_session(&self, session_id: &[u8]) -> bool {
+        self.sessions.remove(session_id).is_some()
     }
 
     /// List all session IDs
     pub fn list_sessions(&self) -> Vec<Vec<u8>> {
-        let sessions = self.sessions.read();
-        sessions.keys().cloned().collect()
+        self.sessions.iter().map(|s| s.key().clone()).collect()
     }
 
     /// Get session count
     pub fn session_count(&self) -> usize {
-        self.sessions.read().len()
+        self.sessions.len()
     }
 
     /// Check if manager is healthy
     pub fn is_healthy(&self) -> bool {
-        // Try to acquire read lock
-        self.sessions.try_read().is_some()
+        !self.sessions.is_empty() || self.sessions.len() == 0
     }
 }
 

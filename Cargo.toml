@@ -39,6 +39,7 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 zeroize         = { version = "1.8.1", features = ["zeroize_derive", "alloc", "serde"] }
 secrecy         = { version = "0.8.0", features = ["serde"] }
 constant_time_eq = "0.3.0"
+subtle = "2.6.1"
 mdns-sd         = "0.13"
 if-addrs        = "0.13"
 igd             = "0.12"
@@ -58,6 +59,9 @@ lz4_flex        = "0.11"
 tokio           = { version = "1.37", features = ["net", "rt-multi-thread", "sync", "io-util", "time", "macros"] }
 tokio-util      = { version = "0.7", features = ["codec"] }
 futures         = { version = "0.3" }
+reqwest         = { version = "0.12", default-features = false, features = ["json", "socks", "rustls-tls"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+url             = "2.5"
 
 # === WASM (optional) ===
 wasm-bindgen    = { version = "0.2.92" }

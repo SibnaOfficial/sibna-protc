@@ -33,6 +33,7 @@ pub struct RegisterRequest {
     /// Hex-encoded Ed25519 public key (32 bytes)
     pub identity_key_hex: String,
     /// Optional device label
+    #[allow(dead_code)]
     pub device_label: Option<String>,
 }
 
@@ -82,8 +83,10 @@ pub async fn challenge_handler(
     rand::thread_rng().fill_bytes(&mut challenge);
     let challenge_hex = hex::encode(challenge);
 
-    // Store with 60-second TTL (key: "challenge:{identity_key}")
-    let tree = state.db.open_tree("auth_challenges").expect("db tree");
+    let tree = match state.db.open_tree("auth_challenges") {
+        Ok(t) => t,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response(),
+    };
     let db_key = format!("challenge:{}", req.identity_key_hex);
     let expires_at = Utc::now().timestamp() + 60;
     let value = format!("{}:{}", challenge_hex, expires_at);
@@ -107,7 +110,10 @@ pub async fn prove_handler(
     }
 
     // 1. Look up the challenge
-    let tree = state.db.open_tree("auth_challenges").expect("db tree");
+    let tree = match state.db.open_tree("auth_challenges") {
+        Ok(t) => t,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response(),
+    };
     let db_key = format!("challenge:{}", req.identity_key_hex);
     let stored = match tree.get(db_key.as_bytes()) {
         Ok(Some(v)) => String::from_utf8_lossy(&v).to_string(),

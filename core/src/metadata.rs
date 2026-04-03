@@ -101,10 +101,12 @@ pub struct SignedEnvelope {
     pub timestamp: i64,
     /// Unique message ID
     pub message_id: String,
-    /// Ed25519 signature over SHA-512(recipient_id || payload_hex || timestamp || message_id)
+    /// Ed25519 signature over SHA-512(recipient_id || payload_hex || timestamp || message_id || is_dummy)
     pub signature_hex: String,
     /// LZ4 compressed?
     pub compressed: bool,
+    /// Is this a dummy packet (Cover Traffic)?
+    pub is_dummy: bool,
 }
 
 impl SignedEnvelope {
@@ -116,6 +118,7 @@ impl SignedEnvelope {
         hasher.update(self.payload_hex.as_bytes());
         hasher.update(self.timestamp.to_le_bytes());
         hasher.update(self.message_id.as_bytes());
+        hasher.update(&[self.is_dummy as u8]);
         hasher.finalize().to_vec()
     }
 
@@ -130,10 +133,15 @@ impl SignedEnvelope {
             return Err(EnvelopeError::MalformedSignature);
         }
 
+        let key_array: [u8; 32] = key_bytes.try_into()
+            .map_err(|_| EnvelopeError::MalformedSenderKey)?;
+        let sig_array: [u8; 64] = sig_bytes.try_into()
+            .map_err(|_| EnvelopeError::MalformedSignature)?;
+
         use ed25519_dalek::{VerifyingKey, Signature, Verifier};
-        let vk = VerifyingKey::from_bytes(key_bytes.as_slice().try_into().unwrap())
+        let vk = VerifyingKey::from_bytes(&key_array)
             .map_err(|_| EnvelopeError::InvalidSenderKey)?;
-        let sig = Signature::from_bytes(sig_bytes.as_slice().try_into().unwrap());
+        let sig = Signature::from_bytes(&sig_array);
         let payload = self.signing_payload();
 
         vk.verify(&payload, &sig)

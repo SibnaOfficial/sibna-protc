@@ -33,7 +33,10 @@ p2p = [
     "mdns-sd",
     "if-addrs",
     "igd",
-    "stun"
+    "stun",
+    "reqwest",
+    "tokio-tungstenite",
+    "url"
 ]
 pqc = ["fips203"]
 
@@ -68,6 +71,7 @@ tracing = { workspace = true }
 zeroize = { workspace = true }
 secrecy = { workspace = true }
 constant_time_eq = { workspace = true }
+subtle = { workspace = true }
 
 # Utilities
 bytes = { workspace = true }
@@ -96,6 +100,9 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio     = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 futures   = { workspace = true, optional = true }
+reqwest   = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+url       = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4.4"

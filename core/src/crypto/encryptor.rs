@@ -2,6 +2,7 @@
 //!
 //! Provides high-level encryption with message numbers and replay protection.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use super::{CryptoError, CryptoResult, SecureRandom, KEY_LENGTH, NONCE_LENGTH};
 use super::super::validation::{validate_message, validate_associated_data};
 use chacha20poly1305::{
@@ -26,7 +27,7 @@ pub struct Encryptor {
     /// The cipher instance
     cipher: ChaCha20Poly1305,
     /// Current message number
-    message_number: u64,
+    message_number: AtomicU64,
     /// Key (zeroized on drop)
     _key: Zeroizing<[u8; KEY_LENGTH]>,
     /// Maximum message number seen (for replay detection)
@@ -55,7 +56,7 @@ impl Encryptor {
 
         Ok(Self {
             cipher,
-            message_number: initial_message_number,
+            message_number: AtomicU64::new(initial_message_number),
             _key: Zeroizing::new(key_array),
             max_message_number: initial_message_number,
             seen_numbers: std::collections::HashSet::new(),
@@ -90,7 +91,8 @@ impl Encryptor {
             .map_err(|_| CryptoError::EncryptionFailed)?
             .as_secs();
 
-        let header = self.build_header(self.message_number, timestamp);
+        let current_nr = self.message_number.load(Ordering::SeqCst);
+        let header = self.build_header(current_nr, timestamp);
 
         // Build associated data
         let mut full_ad = Vec::with_capacity(associated_data.len() + header.len());
@@ -112,7 +114,7 @@ impl Encryptor {
         result.extend_from_slice(&ciphertext);
 
         // Increment message number
-        self.message_number = self.message_number.wrapping_add(1);
+        self.message_number.fetch_add(1, Ordering::SeqCst);
 
         // Zeroize sensitive data
         nonce.zeroize();
@@ -222,7 +224,7 @@ impl Encryptor {
 
     /// Get current message number
     pub fn message_number(&self) -> u64 {
-        self.message_number
+        self.message_number.load(Ordering::SeqCst)
     }
 
     /// Set maximum seen numbers to track

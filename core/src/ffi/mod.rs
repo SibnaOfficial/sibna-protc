@@ -93,7 +93,10 @@ impl ByteBuffer {
         }
     }
 
-    /// Convert to Vec<u8> (unsafe - caller must ensure buffer is valid)
+    /// Convert to Vec<u8>
+    ///
+    /// # Safety
+    /// Caller must ensure the buffer was created with `ByteBuffer::new` and has not been freed.
     pub unsafe fn to_vec(&self) -> Vec<u8> {
         if self.data.is_null() {
             return Vec::new();
@@ -118,15 +121,10 @@ impl ByteBuffer {
 
 /// Create a new secure context
 ///
-/// # Arguments
-/// * `password` - Master password (can be null for random key)
-/// * `password_len` - Length of password
-/// * `context` - Output pointer to context handle
-///
-/// # Returns
-/// `SibnaResult::Ok` on success
+/// # Safety
+/// Caller must ensure that `context` is a valid pointer to a `*mut SibnaContext`.
 #[no_mangle]
-pub extern "C" fn sibna_context_create(
+pub unsafe extern "C" fn sibna_context_create(
     password: *const u8,
     password_len: usize,
     context: *mut *mut SibnaContext,
@@ -155,10 +153,10 @@ pub extern "C" fn sibna_context_create(
 
 /// Destroy a secure context
 ///
-/// # Arguments
-/// * `context` - Context handle to destroy
+/// # Safety
+/// Caller must ensure `context` is a valid pointer created by `sibna_context_create`.
 #[no_mangle]
-pub extern "C" fn sibna_context_destroy(context: *mut SibnaContext) {
+pub unsafe extern "C" fn sibna_context_destroy(context: *mut SibnaContext) {
     if !context.is_null() {
         unsafe {
             let _ = Box::from_raw(context as *mut crate::SecureContext);
@@ -168,13 +166,10 @@ pub extern "C" fn sibna_context_destroy(context: *mut SibnaContext) {
 
 /// Set the device link credentials for a child device
 ///
-/// # Arguments
-/// * `context` - Valid context handle
-/// * `device_id` - ID of this device
-/// * `root_key` - 32-byte Ed25519 root identity key
-/// * `signature` - 64-byte Ed25519 signature of (device_identity_key || device_id)
+/// # Safety
+/// Caller must ensure `context`, `root_key`, and `signature` are valid pointers.
 #[no_mangle]
-pub extern "C" fn sibna_context_set_device_link(
+pub unsafe extern "C" fn sibna_context_set_device_link(
     context: *mut SibnaContext,
     device_id: u32,
     root_key: *const u8,

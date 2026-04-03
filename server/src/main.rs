@@ -1,11 +1,10 @@
-//! Sibna Universal Server v11.0
-//! Zero-Trust, Multi-Transport Messaging Infrastructure
+//! Sibna Universal Server
 //!
 //! Transports:
 //!   - REST (HTTP) — prekey operations + auth
 //!   - WebSocket — real-time sealed-envelope relay
 //!
-//! Security Layers:
+//! Security:
 //!   - Ed25519 identity binding
 //!   - JWT challenge-response auth
 //!   - Hybrid rate limiting (IP + Identity)
@@ -20,7 +19,6 @@ mod ws;
 use axum::{
     extract::{Path, State, ConnectInfo},
     http::StatusCode,
-    middleware,
     response::IntoResponse,
     routing::{delete, get, post},
     Json, Router,
@@ -40,7 +38,7 @@ use tower_http::{
 };
 use tracing::{info, warn};
 
-// ─── Shared Application State ────────────────────────────────────────────────
+// Shared application state
 
 #[derive(Clone)]
 pub struct AppState {
@@ -52,7 +50,7 @@ pub struct AppState {
     pub jwt_secret: Arc<String>,
 }
 
-// ─── Entry Point ─────────────────────────────────────────────────────────────
+// Entry point
 
 #[tokio::main]
 async fn main() {
@@ -61,14 +59,20 @@ async fn main() {
     // Database
     let db_path = std::env::var("SIBNA_DB_PATH")
         .unwrap_or_else(|_| "sibna_server_db".to_string());
-    let db = sled::open(&db_path).expect("Failed to open sled database");
+    let db = match sled::open(&db_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("CRITICAL: Failed to open sled database at {}: {}", db_path, e);
+            std::process::exit(1);
+        }
+    };
     info!("Database opened at '{}'", db_path);
 
     // JWT secret (set SIBNA_JWT_SECRET in env for production)
     let jwt_secret = Arc::new(
         std::env::var("SIBNA_JWT_SECRET")
             .unwrap_or_else(|_| {
-                warn!("⚠  SIBNA_JWT_SECRET not set — generating ephemeral secret (restarts invalidate tokens!)");
+                warn!("SIBNA_JWT_SECRET not set — generating ephemeral secret (restarts invalidate tokens!)");
                 hex::encode(random_bytes_32())
             })
     );
@@ -117,23 +121,14 @@ async fn main() {
 
     // Router
     let app = Router::new()
-        // ── Health ───────────────────────────────────────────────────────────
         .route("/health", get(health_handler))
-
-        // ── Auth ─────────────────────────────────────────────────────────────
         .route("/v1/auth/challenge", post(auth::challenge_handler))
         .route("/v1/auth/prove", post(auth::prove_handler))
-
-        // ── PreKey ───────────────────────────────────────────────────────────
         .route("/v1/prekeys/upload", post(upload_prekey_handler))
         .route("/v1/prekeys/:user_id", get(fetch_prekey_handler))
         .route("/v1/prekeys/:user_id", delete(delete_prekey_handler))
-
-        // ── Sealed Messages (REST fallback for HTTP-only devices) ─────────────
         .route("/v1/messages/send", post(send_message_handler))
         .route("/v1/messages/inbox", get(inbox_handler))
-
-        // ── WebSocket real-time relay ─────────────────────────────────────────
         .route("/ws", get(ws::ws_handler))
 
         .layer(TraceLayer::new_for_http())
@@ -146,21 +141,30 @@ async fn main() {
         )
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
-    info!("🚀 Sibna Universal Server v11.0 listening on {}", addr);
-    info!("   Transports: REST + WebSocket");
-    info!("   Auth: Ed25519 Challenge-Response / JWT");
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string()).parse().unwrap_or(8080);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    info!("Sibna Server listening on {}", addr);
+    info!("Transports: REST + WebSocket");
+    info!("Auth: Ed25519 Challenge-Response / JWT");
 
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    axum::serve(
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("CRITICAL: Failed to bind to {}: {}", addr, e);
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await
-    .unwrap();
+    .await {
+        eprintln!("CRITICAL: Server error: {}", e);
+        std::process::exit(1);
+    }
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// Helpers
 
 fn generate_rate_key(ip: &SocketAddr, identity: &str) -> String {
     let mut hasher = DefaultHasher::new();
@@ -190,18 +194,18 @@ fn random_bytes_32() -> [u8; 32] {
     b
 }
 
-// ─── Handlers ────────────────────────────────────────────────────────────────
+// Handlers
 
 async fn health_handler() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({
         "status": "ok",
-        "version": "1.0.1",
+        "version": "1.0.3",
         "transports": ["http", "websocket"],
         "auth": "ed25519-jwt"
     })))
 }
 
-// ── PreKey Upload ────────────────────────────────────────────────────────────
+// PreKey Upload
 
 #[derive(Deserialize)]
 struct UploadPrekeyRequest {
@@ -237,8 +241,10 @@ async fn upload_prekey_handler(
     if let Err(r) = enforce_rate_limit(&state.limiter, "prekey_upload", &addr, &root_id) {
         return r;
     }
-
-    let tree = state.db.open_tree("prekeys").unwrap();
+    let tree = match state.db.open_tree("prekeys") {
+        Ok(t) => t,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
     if let Ok(Some(existing)) = tree.get(&db_key) {
         if let Ok(existing_bundle) = sibna_core::handshake::PreKeyBundle::from_bytes(&existing) {
             if bundle.bundle_id == existing_bundle.bundle_id {
@@ -247,12 +253,14 @@ async fn upload_prekey_handler(
         }
     }
 
-    tree.insert(db_key.as_bytes(), bundle_bytes).unwrap();
+    if tree.insert(db_key.as_bytes(), bundle_bytes).is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
     info!("PreKey uploaded for Root {} Device {}", &root_id[..16], bundle.device_id);
     StatusCode::OK.into_response()
 }
 
-// ── PreKey Fetch ────────────────────────────────────────────────────────────
+// PreKey Fetch
 
 #[derive(Serialize)]
 struct FetchPrekeyResponse {
@@ -268,7 +276,10 @@ async fn fetch_prekey_handler(
         return r;
     }
 
-    let tree = state.db.open_tree("prekeys").unwrap();
+    let tree = match state.db.open_tree("prekeys") {
+        Ok(t) => t,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
     let prefix = format!("{}:", root_id);
     let mut fetched_bundles_hex = Vec::new();
     let mut keys_to_delete = Vec::new();
@@ -303,7 +314,10 @@ async fn delete_prekey_handler(
     Path(root_id): Path<String>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let tree = state.db.open_tree("prekeys").unwrap();
+    let tree = match state.db.open_tree("prekeys") {
+        Ok(t) => t,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
     let prefix = format!("{}:", root_id);
     let mut deleted = false;
     for item in tree.scan_prefix(prefix.as_bytes()) {
@@ -320,7 +334,7 @@ async fn delete_prekey_handler(
     }
 }
 
-// ── Sealed Message REST Endpoint (HTTP fallback for IoT/no-WS) ─────────────
+// Sealed Message REST Endpoint (HTTP fallback for IoT/no-WS)
 
 #[derive(Deserialize)]
 struct SendMessageRequest {
@@ -361,7 +375,10 @@ async fn send_message_handler(
     }
 
     // Recipient offline — queue it
-    let tree = state.db.open_tree("msg_queue").expect("db");
+    let tree = match state.db.open_tree("msg_queue") {
+        Ok(t) => t,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
     let db_key = format!("queue:{}:{}", envelope.recipient_id, envelope.message_id);
     let ttl = chrono::Utc::now().timestamp() + 7 * 86400;
     let value = serde_json::json!({ "envelope": envelope, "expires": ttl });
@@ -373,7 +390,7 @@ async fn send_message_handler(
     StatusCode::ACCEPTED.into_response()
 }
 
-// ── Inbox Fetch (for HTTP-only devices that cannot use WS) ─────────────────
+// Inbox Fetch (for HTTP-only devices)
 
 #[derive(Deserialize)]
 struct InboxQuery {

@@ -10,8 +10,6 @@ use axum::{
 };
 use axum::extract::ws::{Message, WebSocket};
 use serde::{Deserialize, Serialize};
-use dashmap::DashMap;
-use std::sync::Arc;
 use tokio::sync::mpsc;
 use futures_util::{SinkExt, StreamExt};
 use tracing::{info, warn};
@@ -19,9 +17,6 @@ use crate::{AppState, auth::validate_jwt};
 
 /// A sender channel for pushing messages to a connected client
 pub type ClientTx = mpsc::UnboundedSender<Vec<u8>>;
-
-/// Globally connected clients: identity_key_hex -> channel
-pub type ConnectedClients = Arc<DashMap<String, ClientTx>>;
 
 /// Query parameters for WebSocket upgrade
 #[derive(Deserialize)]
@@ -115,9 +110,12 @@ async fn handle_ws(socket: WebSocket, identity_id: String, state: AppState) {
 }
 
 /// Route a sealed envelope to recipient or queue it
-async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEnvelope) {
+async fn route_message(state: &AppState, _sender_id: &str, mut envelope: SealedEnvelope) {
     // Validate message_id (dedup)
-    let dedup_tree = state.db.open_tree("msg_dedup").expect("db");
+    let dedup_tree = match state.db.open_tree("msg_dedup") {
+        Ok(t) => t,
+        Err(_) => return,
+    };
     let dedup_key = format!("dedup:{}", envelope.message_id);
     if dedup_tree.get(dedup_key.as_bytes()).ok().flatten().is_some() {
         warn!("Duplicate message_id dropped: {}", envelope.message_id);
@@ -142,7 +140,10 @@ async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEn
 
 /// Store message in offline queue (sled tree: "msg_queue:{recipient_id}:{msg_id}")
 async fn queue_message(state: &AppState, envelope: &SealedEnvelope) {
-    let tree = state.db.open_tree("msg_queue").expect("db");
+    let tree = match state.db.open_tree("msg_queue") {
+        Ok(t) => t,
+        Err(_) => return,
+    };
     let db_key = format!("queue:{}:{}", envelope.recipient_id, envelope.message_id);
     let ttl_cutoff = chrono::Utc::now().timestamp() + 7 * 86400;
     let value = serde_json::json!({

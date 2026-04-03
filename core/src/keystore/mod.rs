@@ -209,7 +209,8 @@ impl SignedPreKey {
         let (pq_public, pq_secret) = {
             use fips203::ml_kem_768;
             use fips203::traits::{KeyGen, SerDes};
-            let (pk, sk): (ml_kem_768::EncapsKey, ml_kem_768::DecapsKey) = ml_kem_768::KG::try_keygen().unwrap();
+            let (pk, sk): (ml_kem_768::EncapsKey, ml_kem_768::DecapsKey) = ml_kem_768::KG::try_keygen()
+                .map_err(|_| ProtocolError::InternalErrorDetailed { details: "PQC Keygen failed".to_string() })?;
             (Some(SerDes::into_bytes(pk).to_vec()), Some(SerDes::into_bytes(sk).to_vec()))
         };
 
@@ -240,11 +241,7 @@ impl SignedPreKey {
 
     /// Check if key has expired (older than 7 days)
     pub fn is_expired(&self) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
+        let now = crate::crypto::current_timestamp().unwrap_or(self.created_at);
         now > self.created_at + 7 * 86400
     }
 }

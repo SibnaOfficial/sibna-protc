@@ -297,7 +297,7 @@ impl PreKeyBundle {
     /// Validate the prekey bundle
     pub fn validate(&self) -> ProtocolResult<()> {
         use ed25519_dalek::{VerifyingKey, Signature, Verifier};
-
+        
         // Check keys are not all zeros
         if self.identity_key.iter().all(|&b| b == 0) {
             return Err(ProtocolError::InvalidKey);
@@ -369,9 +369,18 @@ impl PreKeyBundle {
 
     /// Deserialize from bytes
     pub fn from_bytes(data: &[u8]) -> ProtocolResult<Self> {
-        if data.len() < 32 + 32 + 64 + 1 + 16 + 8 + 8 + 64 {
+        // Minimum non-PQC size: ik(32)+spk(32)+sig(64)+has_opk(1)+bundle_id(16)+ts(8)+exp(8)+dev_id(4)+root(32)+dev_sig(64)+bundle_sig(64) = 325 bytes
+        if data.len() < 325 {
             return Err(ProtocolError::InvalidMessage);
         }
+
+        // The bundle signature is always the last 64 bytes
+        let sig_start = data.len() - 64;
+        let mut bundle_signature = [0u8; 64];
+        bundle_signature.copy_from_slice(&data[sig_start..]);
+
+        // The remaining bytes are the signing payload
+        let data = &data[..sig_start];
 
         let mut offset = 0;
         let mut identity_key = [0u8; 32];
@@ -399,14 +408,14 @@ impl PreKeyBundle {
         let mut bundle_id = [0u8; 16];
         bundle_id.copy_from_slice(&data[offset..offset+16]); offset += 16;
 
-        let timestamp = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap()); offset += 8;
-        let expiration = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap()); offset += 8;
+        let timestamp = u64::from_le_bytes(data[offset..offset+8].try_into().map_err(|_| ProtocolError::InvalidMessage)?); offset += 8;
+        let expiration = u64::from_le_bytes(data[offset..offset+8].try_into().map_err(|_| ProtocolError::InvalidMessage)?); offset += 8;
 
         if data.len() < offset + 4 + 32 + 64 {
             return Err(ProtocolError::InvalidMessage);
         }
 
-        let device_id = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()); offset += 4;
+        let device_id = u32::from_le_bytes(data[offset..offset+4].try_into().map_err(|_| ProtocolError::InvalidMessage)?); offset += 4;
         
         let mut root_identity_key = [0u8; 32];
         root_identity_key.copy_from_slice(&data[offset..offset+32]); offset += 32;
@@ -423,18 +432,20 @@ impl PreKeyBundle {
                 offset += 1184;
                 let mut pq_sig = [0u8; 64];
                 pq_sig.copy_from_slice(&data[offset..offset + 64]);
+                // offset += 64; // Implicitly at the end
                 (Some(pq_pk), Some(pq_sig))
             } else {
-                (None, None)
+                // BUG FIX: Downgrade Protection
+                // If the PQC feature is enabled, we REQUIRE the peer to provide a PQC bundle 
+                // if they are on a compatible version.
+                return Err(ProtocolError::InvalidMessage);
             }
         } else {
-            (None, None)
+            // No PQC data present. If we enforce PQC, this is a failure.
+            return Err(ProtocolError::InvalidMessage);
         };
-
-        let mut bundle_signature = [0u8; 64];
-        if offset + 64 <= data.len() {
-            bundle_signature.copy_from_slice(&data[offset..offset+64]);
-        }
+#[cfg(not(feature = "pqc"))]
+        let (pq_signed_prekey, pq_signed_prekey_signature) = (None, None);
 
         Ok(Self {
             identity_key,
@@ -595,7 +606,7 @@ mod tests {
         dev_payload.extend_from_slice(&0u32.to_le_bytes());
         let device_signature = signing_key.sign(&dev_payload).to_bytes();
 
-        let bundle = PreKeyBundle::new(
+        let mut bundle = PreKeyBundle::new(
             identity_key,
             signed_prekey,
             signature,
@@ -604,6 +615,13 @@ mod tests {
             identity_key,
             device_signature,
         );
+
+        #[cfg(feature = "pqc")]
+        {
+            let pq_pk = vec![0u8; 1184];
+            let pq_sig = [0u8; 64];
+            bundle = bundle.with_pq_prekey(pq_pk, pq_sig);
+        }
 
         let bytes = bundle.to_bytes();
         let parsed = PreKeyBundle::from_bytes(&bytes).unwrap();

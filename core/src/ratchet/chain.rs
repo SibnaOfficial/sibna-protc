@@ -26,10 +26,7 @@ impl ChainKey {
     pub const DEFAULT_MAX_MESSAGES: u64 = 1000;
 
     pub fn new(key: [u8; 32]) -> Self {
-        let created_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let created_at = crate::crypto::current_timestamp().unwrap_or(0);
         Self { key, index: 0, created_at, max_messages: Self::DEFAULT_MAX_MESSAGES }
     }
 
@@ -68,10 +65,7 @@ impl ChainKey {
     pub fn index(&self) -> u64 { self.index }
 
     pub fn age_secs(&self) -> u64 {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = crate::crypto::current_timestamp().unwrap_or(self.created_at);
         now.saturating_sub(self.created_at)
     }
 

@@ -1,6 +1,6 @@
-//! Advanced Security Audit Suite v11.0
+//! Security Audit Suite — 12 Attack Vectors
 //!
-//! Closes all known attack vectors against the Sibna Protocol:
+//! Tests all known attack vectors against the Sibna Protocol:
 //!
 //! 1. Standard PreKey Upload (baseline smoke test)
 //! 2. Bundle Replay Attack
@@ -20,10 +20,6 @@ use reqwest::Client;
 use sibna_core::{Config, SecureContext};
 use serde_json::json;
 
-const SERVER_URL: &str = "http://127.0.0.1:8080";
-
-// ─── Setup Helpers ────────────────────────────────────────────────────────────
-
 async fn setup_context(name: &str) -> SecureContext {
     let config = Config::default();
     let ctx = SecureContext::new(config, Some(format!("{}Pass1!", name).as_bytes())).unwrap();
@@ -37,9 +33,9 @@ async fn setup_context(name: &str) -> SecureContext {
     ctx
 }
 
-async fn wait_for_server(client: &reqwest::Client) -> bool {
-    for _ in 0..60 {
-        if let Ok(r) = client.get(format!("{}/health", SERVER_URL)).send().await {
+async fn wait_for_server(client: &reqwest::Client, server_url: &str) -> bool {
+    for _i in 0..180 {
+        if let Ok(r) = client.get(format!("{}/health", server_url)).send().await {
             if r.status().is_success() {
                 return true;
             }
@@ -49,73 +45,92 @@ async fn wait_for_server(client: &reqwest::Client) -> bool {
     false
 }
 
-// ─── Main Audit Entry Point ───────────────────────────────────────────────────
-
 #[tokio::test]
 async fn run_all_security_audits() {
     let test_db_path = format!("test_db_v11_{}", rand::random::<u32>());
-    
-    // Spawn server
-    let mut server = std::process::Command::new("cargo")
-        .args(["run", "-p", "sibna-server"])
+    let port = 8000 + (rand::random::<u16>() % 10000);
+    let server_url = format!("http://127.0.0.1:{}", port);
+
+    let mut root = std::env::current_dir().unwrap();
+    if root.ends_with("tests") {
+        root.pop();
+    }
+
+    let server_bin = root.join("target").join("debug").join("sibna-server.exe");
+    let test_bin = root.join("target").join("debug").join("test_server_audit.exe");
+
+    if !server_bin.exists() {
+        panic!("Server binary NOT FOUND at: {:?}", server_bin);
+    }
+
+    if let Err(e) = std::fs::copy(&server_bin, &test_bin) {
+        println!("Warning: Could not copy server binary: {}", e);
+    }
+
+    let mut server = std::process::Command::new(&test_bin)
+        .env("PORT", port.to_string())
         .env("SIBNA_DB_PATH", &test_db_path)
         .env("SIBNA_JWT_SECRET", "test_secret_for_audit_only")
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
         .spawn()
         .expect("Failed to start sibna-server");
 
     let client = Client::new();
-    if !wait_for_server(&client).await {
+    if !wait_for_server(&client, &server_url).await {
         let _ = server.kill();
         panic!("Server failed to start!");
     }
 
-    println!("🚀 Sibna Server v11.0 is UP. Starting 12-vector audit...\n");
+    println!("Sibna Server is UP. Starting 12-vector audit...\n");
 
-    // ── Audit 1: Standard Bundle Upload ──────────────────────────────────────
-    println!("▶ Audit 1: Standard Bundle Upload (smoke test)");
+    // Audit 1: Standard Bundle Upload
+    println!("[1] Standard Bundle Upload (smoke test)");
     let ctx_alice = setup_context("Alice").await;
     let alice_bundle = ctx_alice.keystore().read().generate_prekey_bundle_bytes().unwrap();
-    let res = client.post(format!("{}/v1/prekeys/upload", SERVER_URL))
+    let res = client.post(format!("{}/v1/prekeys/upload", server_url))
         .json(&json!({ "bundle_hex": hex::encode(&alice_bundle) }))
         .send().await.unwrap();
-    assert_eq!(res.status().as_u16(), 200, "Audit 1 FAILED: Standard upload rejected");
-    println!("  ✅ Passed\n");
+    let status = res.status();
+    let body = res.text().await.unwrap_or_else(|_| "Could not read body".to_string());
+    assert_eq!(status.as_u16(), 200, "Audit 1 FAILED: Standard upload rejected. Status: {}. Body: {}", status, body);
+    println!("  PASS\n");
 
-    // ── Audit 2: Bundle Replay Attack ─────────────────────────────────────────
-    println!("▶ Audit 2: Bundle Replay Attack");
-    let res2 = client.post(format!("{}/v1/prekeys/upload", SERVER_URL))
+    // Audit 2: Bundle Replay Attack
+    println!("[2] Bundle Replay Attack");
+    let res2 = client.post(format!("{}/v1/prekeys/upload", server_url))
         .json(&json!({ "bundle_hex": hex::encode(&alice_bundle) }))
         .send().await.unwrap();
     assert_eq!(res2.status().as_u16(), 409, "Audit 2 FAILED: Replay not detected!");
-    println!("  ✅ Passed (Server returned 409 Conflict)\n");
+    println!("  PASS (Server returned 409 Conflict)\n");
 
-    // ── Audit 3: Zero-Reuse / Prekey Exhaustion ───────────────────────────────
-    println!("▶ Audit 3: PreKey Zero-Reuse Compaction");
+    // Audit 3: Zero-Reuse / Prekey Exhaustion
+    println!("[3] PreKey Zero-Reuse Compaction");
     let alice_id = hex::encode(&alice_bundle[..32]);
-    let res_ok = client.get(format!("{}/v1/prekeys/{}", SERVER_URL, alice_id)).send().await.unwrap();
+    let res_ok = client.get(format!("{}/v1/prekeys/{}", server_url, alice_id)).send().await.unwrap();
     assert_eq!(res_ok.status().as_u16(), 200, "Audit 3 FAILED: Fetch failed");
-    let res_reuse = client.get(format!("{}/v1/prekeys/{}", SERVER_URL, alice_id)).send().await.unwrap();
+    let res_reuse = client.get(format!("{}/v1/prekeys/{}", server_url, alice_id)).send().await.unwrap();
     assert_eq!(res_reuse.status().as_u16(), 404, "Audit 3 FAILED: Zero-reuse not enforced!");
-    println!("  ✅ Passed (Bundle deleted after fetch)\n");
+    println!("  PASS (Bundle deleted after fetch)\n");
 
-    // ── Audit 4: Signature Forgery ────────────────────────────────────────────
-    println!("▶ Audit 4: Bundle Signature Forgery");
+    // Audit 4: Signature Forgery
+    println!("[4] Bundle Signature Forgery");
     let mut forged = alice_bundle.clone();
     let last = forged.len() - 1;
     forged[last] ^= 0xFF;
-    let res_forge = client.post(format!("{}/v1/prekeys/upload", SERVER_URL))
+    let res_forge = client.post(format!("{}/v1/prekeys/upload", server_url))
         .json(&json!({ "bundle_hex": hex::encode(&forged) }))
         .send().await.unwrap();
     assert_eq!(res_forge.status().as_u16(), 400, "Audit 4 FAILED: Forged signature accepted!");
-    println!("  ✅ Passed (Server rejected forged signature)\n");
+    println!("  PASS (Server rejected forged signature)\n");
 
-    // ── Audit 5: Flood / DoS Rate Limiting ───────────────────────────────────
-    println!("▶ Audit 5: Flood DoS Rate Limiting");
+    // Audit 5: Flood / DoS Rate Limiting
+    println!("[5] Flood DoS Rate Limiting");
     let ctx_flood = setup_context("Flooder").await;
     let mut rate_limited = false;
     for i in 0..1000 {
         let bundle = ctx_flood.keystore().read().generate_prekey_bundle_bytes().unwrap();
-        let r = client.post(format!("{}/v1/prekeys/upload", SERVER_URL))
+        let r = client.post(format!("{}/v1/prekeys/upload", server_url))
             .json(&json!({ "bundle_hex": hex::encode(&bundle) }))
             .send().await.unwrap();
         if r.status().as_u16() == 429 {
@@ -125,32 +140,30 @@ async fn run_all_security_audits() {
         }
     }
     assert!(rate_limited, "Audit 5 FAILED: Rate limiter never triggered!");
-    println!("  ✅ Passed (DoS attack blocked by rate limiter)\n");
+    println!("  PASS (DoS attack blocked by rate limiter)\n");
 
-    // ── Audit 6: JWT Abuse ────────────────────────────────────────────────────
-    println!("▶ Audit 6: JWT Abuse (tampered + expired tokens)");
-    
-    // 6a: No token
-    let no_token_res = client.get(format!("{}/v1/messages/inbox", SERVER_URL))
+    // Audit 6: JWT Abuse
+    println!("[6] JWT Abuse (tampered + expired tokens)");
+
+    let no_token_res = client.get(format!("{}/v1/messages/inbox", server_url))
         .query(&[("identity_key_hex", "0".repeat(64)), ("token", "".to_string())])
         .send().await.unwrap();
     assert!(no_token_res.status().as_u16() >= 400, "Audit 6a FAILED: Empty token accepted!");
-    
-    // 6b: Tampered token (flip a char)
+
     let tampered_jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJBdHRhY2tlciIsImV4cCI6OTk5OTk5OTk5OX0.AAAA_TAMPERED_AAAA";
-    let tampered_res = client.get(format!("{}/v1/messages/inbox", SERVER_URL))
+    let tampered_res = client.get(format!("{}/v1/messages/inbox", server_url))
         .query(&[("identity_key_hex", "a".repeat(64)), ("token", tampered_jwt.to_string())])
         .send().await.unwrap();
     assert!(tampered_res.status().as_u16() >= 400, "Audit 6b FAILED: Tampered JWT accepted!");
-    
-    println!("  ✅ Passed (All JWT abuse vectors blocked)\n");
 
-    // ── Audit 7: Auth Challenge Brute Force ───────────────────────────────────
-    println!("▶ Audit 7: Auth Challenge Brute Force");
+    println!("  PASS (All JWT abuse vectors blocked)\n");
+
+    // Audit 7: Auth Challenge Brute Force
+    println!("[7] Auth Challenge Brute Force");
     let fake_key = hex::encode([0xDEu8; 32]);
     let mut brute_forced = false;
     for i in 0..50 {
-        let r = client.post(format!("{}/v1/auth/challenge", SERVER_URL))
+        let r = client.post(format!("{}/v1/auth/challenge", server_url))
             .json(&json!({ "identity_key_hex": fake_key }))
             .send().await.unwrap();
         if r.status().as_u16() == 429 {
@@ -160,42 +173,36 @@ async fn run_all_security_audits() {
         }
     }
     assert!(brute_forced, "Audit 7 FAILED: Auth brute force not rate-limited!");
-    println!("  ✅ Passed (Auth endpoint is brute-force protected)\n");
+    println!("  PASS (Auth endpoint is brute-force protected)\n");
 
-    // ── Audit 8: Envelope Content Integrity ───────────────────────────────────
-    println!("▶ Audit 8: Sealed Envelope Integrity via REST");
+    // Audit 8: Envelope Content Integrity
+    println!("[8] Sealed Envelope Integrity via REST");
     let ctx_bob = setup_context("Bob").await;
     let bob_bundle = ctx_bob.keystore().read().generate_prekey_bundle_bytes().unwrap();
     let bob_id = hex::encode(&bob_bundle[..32]);
 
-    // Send a tampered payload — server should accept (it's blind to content)
-    // but receiver-side validation must catch signature mismatch
     let tampered_envelope = json!({
         "recipient_id": bob_id,
         "payload_hex": "deadbeef",
         "sender_id": "a".repeat(64),
         "timestamp": 1700000000u64,
         "message_id": "00000000-0000-0000-0000-000000000000",
-        "signature_hex": "ff".repeat(64),  // Invalid signature
+        "signature_hex": "ff".repeat(64),
         "compressed": false,
     });
-    let env_res = client.post(format!("{}/v1/messages/send", SERVER_URL))
+    let env_res = client.post(format!("{}/v1/messages/send", server_url))
         .json(&tampered_envelope)
         .send().await.unwrap();
-    // Server accepts it (blind relay) — but the SDK verifies on receipt
-    // This test confirms the server doesn't crash or leak data
     assert!(env_res.status().as_u16() < 500, "Audit 8 FAILED: Server crashed on tampered envelope!");
-    println!("  ✅ Passed (Server is blind relay, SDK verifies signatures on receipt)\n");
+    println!("  PASS (Server is blind relay, SDK verifies signatures on receipt)\n");
 
-    // ── Audit 9: Rate Limit Bypass Attempt (Different IPs = same key) ─────────
-    println!("▶ Audit 9: Rate Limit Bypass (Identity-based secondary limit)");
-    // Already covered by Audit 5 which uses Identity + IP combined
-    // Additional check: same identity key from "different" requests still gets limited
+    // Audit 9: Rate Limit Bypass Attempt
+    println!("[9] Rate Limit Bypass (Identity-based secondary limit)");
     let ctx_bypass = setup_context("Bypass").await;
     let mut bypass_limited = false;
     for i in 0..200 {
         let fresh = ctx_bypass.keystore().read().generate_prekey_bundle_bytes().unwrap();
-        let r = client.post(format!("{}/v1/prekeys/upload", SERVER_URL))
+        let r = client.post(format!("{}/v1/prekeys/upload", server_url))
             .json(&json!({ "bundle_hex": hex::encode(&fresh) }))
             .send().await.unwrap();
         if r.status().as_u16() == 429 {
@@ -205,41 +212,39 @@ async fn run_all_security_audits() {
         }
     }
     assert!(bypass_limited, "Audit 9 FAILED: Rate limit bypass succeeded!");
-    println!("  ✅ Passed (Rate limiter cannot be bypassed)\n");
+    println!("  PASS (Rate limiter cannot be bypassed)\n");
 
-    // ── Audit 10: Identity Leakage ────────────────────────────────────────────
-    println!("▶ Audit 10: Identity Leakage (Server response analysis)");
-    // Upload a bundle and verify server response NEVER contains identity_key or any
-    // private field in the response body
+    // Audit 10: Identity Leakage
+    println!("[10] Identity Leakage (Server response analysis)");
     let ctx_carol = setup_context("Carol").await;
     let carol_bundle = ctx_carol.keystore().read().generate_prekey_bundle_bytes().unwrap();
-    let upload_res = client.post(format!("{}/v1/prekeys/upload", SERVER_URL))
+    let upload_res = client.post(format!("{}/v1/prekeys/upload", server_url))
         .json(&json!({ "bundle_hex": hex::encode(&carol_bundle) }))
         .send().await.unwrap();
     let response_body = upload_res.text().await.unwrap();
-    assert!(!response_body.contains("identity_key"), 
+    assert!(!response_body.contains("identity_key"),
         "Audit 10 FAILED: identity_key leaked in upload response!");
-    assert!(!response_body.contains("signature"), 
+    assert!(!response_body.contains("signature"),
         "Audit 10 FAILED: signature data leaked in upload response!");
-    println!("  ✅ Passed (No identity leakage in server responses)\n");
+    println!("  PASS (No identity leakage in server responses)\n");
 
-    // ── Audit 11: Timing Attack on Authentication ─────────────────────────────
-    println!("▶ Audit 11: Timing Attack on Auth Endpoints");
-    let valid_key = hex::encode([0x42u8; 32]);
-    let invalid_key = hex::encode([0x00u8; 32]);
+    // Audit 11: Timing Attack on Authentication
+    println!("[11] Timing Attack on Auth Endpoints");
+    let valid_key = hex::encode([0x5A; 32]);
+    let invalid_key = hex::encode([0x5B; 32]);
 
     let mut valid_times: Vec<u128> = Vec::new();
     let mut invalid_times: Vec<u128> = Vec::new();
 
     for _ in 0..10 {
         let start = Instant::now();
-        let _ = client.post(format!("{}/v1/auth/challenge", SERVER_URL))
+        let _ = client.post(format!("{}/v1/auth/challenge", server_url))
             .json(&json!({ "identity_key_hex": valid_key }))
             .send().await;
         valid_times.push(start.elapsed().as_micros());
 
         let start = Instant::now();
-        let _ = client.post(format!("{}/v1/auth/challenge", SERVER_URL))
+        let _ = client.post(format!("{}/v1/auth/challenge", server_url))
             .json(&json!({ "identity_key_hex": invalid_key }))
             .send().await;
         invalid_times.push(start.elapsed().as_micros());
@@ -251,17 +256,13 @@ async fn run_all_security_audits() {
         ((valid_avg as i128 - invalid_avg as i128).abs() * 100) / valid_avg as i128
     } else { 0 };
 
-    println!("  Valid key avg: {}μs | Invalid key avg: {}μs | Δ: {}%", valid_avg, invalid_avg, diff_pct);
-    // A timing oracle would show >50% difference — anything <50% is acceptable
+    println!("  Valid key avg: {}us | Invalid key avg: {}us | delta: {}%", valid_avg, invalid_avg, diff_pct);
     assert!(diff_pct < 50, "Audit 11 WARNING: Potential timing oracle ({}% difference)", diff_pct);
-    println!("  ✅ Passed (No significant timing oracle detected)\n");
+    println!("  PASS (No significant timing oracle detected)\n");
 
-    // ── Audit 12: WebSocket Unauthorized Access ───────────────────────────────
-    println!("▶ Audit 12: WebSocket Unauthorized Access");
-    // Try to connect to WebSocket without a valid JWT
-    let _ws_url_no_token = format!("{}/ws?token=INVALID_JWT_TOKEN", SERVER_URL.replace("http", "ws"));
-    // We test via HTTP upgrade check — server should reject with 401
-    let ws_upgrade_res = client.get(format!("{}/ws?token=INVALID_JWT_TOKEN", SERVER_URL))
+    // Audit 12: WebSocket Unauthorized Access
+    println!("[12] WebSocket Unauthorized Access");
+    let ws_upgrade_res = client.get(format!("{}/ws?token=INVALID_JWT_TOKEN", server_url))
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
         .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
@@ -270,27 +271,25 @@ async fn run_all_security_audits() {
     let ws_status = ws_upgrade_res.status().as_u16();
     assert!(ws_status == 401 || ws_status == 400,
         "Audit 12 FAILED: WebSocket accepted invalid JWT! Got status {}", ws_status);
-    println!("  ✅ Passed (WebSocket rejects unauthorized connections — status {})\n", ws_status);
+    println!("  PASS (WebSocket rejects unauthorized connections — status {})\n", ws_status);
 
-    // ── Cleanup & Summary ─────────────────────────────────────────────────────
+    // Cleanup
     let _ = server.kill();
     let _ = std::fs::remove_dir_all(&test_db_path);
 
-    println!("═══════════════════════════════════════════════════════");
-    println!("🔐 SIBNA PROTOCOL v11.0 — FULL SECURITY AUDIT COMPLETE");
-    println!("═══════════════════════════════════════════════════════");
-    println!("✅  1. Standard Bundle Upload       — PASS");
-    println!("✅  2. Bundle Replay Attack         — BLOCKED (409)");
-    println!("✅  3. PreKey Zero-Reuse Policy     — ENFORCED (404)");
-    println!("✅  4. Signature Forgery            — REJECTED (400)");
-    println!("✅  5. Flood DoS Attack             — BLOCKED (429)");
-    println!("✅  6. JWT Abuse                    — REJECTED (401)");
-    println!("✅  7. Auth Brute Force             — RATE LIMITED (429)");
-    println!("✅  8. Envelope Integrity           — VERIFIED (SDK-level)");
-    println!("✅  9. Rate Limit Bypass            — IMPOSSIBLE");
-    println!("✅ 10. Identity Leakage             — NONE DETECTED");
-    println!("✅ 11. Timing Attack                — <50% delta (safe)");
-    println!("✅ 12. WebSocket Unauthorized       — REJECTED (401)");
-    println!("═══════════════════════════════════════════════════════");
-    println!("🏆 Zero Attack Vectors Succeeded. Protocol is HARDENED.");
+    println!("--- SIBNA PROTOCOL SECURITY AUDIT COMPLETE ---");
+    println!(" 1. Standard Bundle Upload       PASS");
+    println!(" 2. Bundle Replay Attack         BLOCKED (409)");
+    println!(" 3. PreKey Zero-Reuse Policy     ENFORCED (404)");
+    println!(" 4. Signature Forgery            REJECTED (400)");
+    println!(" 5. Flood DoS Attack             BLOCKED (429)");
+    println!(" 6. JWT Abuse                    REJECTED (401)");
+    println!(" 7. Auth Brute Force             RATE LIMITED (429)");
+    println!(" 8. Envelope Integrity           VERIFIED (SDK-level)");
+    println!(" 9. Rate Limit Bypass            IMPOSSIBLE");
+    println!("10. Identity Leakage             NONE DETECTED");
+    println!("11. Timing Attack                <50% delta (safe)");
+    println!("12. WebSocket Unauthorized       REJECTED (401)");
+    println!("----------------------------------------------");
+    println!("All 12 vectors defended. Protocol is HARDENED.");
 }

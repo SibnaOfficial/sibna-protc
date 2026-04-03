@@ -72,10 +72,7 @@ impl DoubleRatchetState {
 
     /// Create a new empty state
     pub fn new() -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = crate::crypto::current_timestamp().unwrap_or(0);
 
         Self {
             root_key: [0u8; 32],
@@ -96,28 +93,19 @@ impl DoubleRatchetState {
 
     /// Update last activity timestamp
     pub fn touch(&mut self) {
-        self.last_activity = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        self.last_activity = crate::crypto::current_timestamp().unwrap_or(self.last_activity);
     }
 
     /// Get state age in seconds
     pub fn age_secs(&self) -> u64 {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = crate::crypto::current_timestamp().unwrap_or(0);
 
         now.saturating_sub(self.created_at)
     }
 
     /// Get time since last activity
     pub fn idle_secs(&self) -> u64 {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = crate::crypto::current_timestamp().unwrap_or(0);
 
         now.saturating_sub(self.last_activity)
     }

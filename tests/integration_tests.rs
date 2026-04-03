@@ -543,7 +543,7 @@ async fn test_p2p_pq_handshake_hybrid() {
     let ctx_b = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
     ctx_b.generate_identity().unwrap();
 
-    let alice_id = ctx_a.get_identity().unwrap().ed25519_public;
+    let _alice_id = ctx_a.get_identity().unwrap().ed25519_public;
     let bob_id = ctx_b.get_identity().unwrap().ed25519_public;
 
     let node_a = P2pNode::new(P2pConfig::default(), ctx_a).await.unwrap();

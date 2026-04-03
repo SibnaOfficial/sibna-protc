@@ -18,7 +18,9 @@ pub use random::*;
 pub use kdf::*;
 pub use secure_compare::*;
 pub use padding::{PaddingMode, pad_message, unpad_message};
+pub use subtle::{Choice, ConstantTimeEq};
 
+use crate::error::{ProtocolError, ProtocolResult};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 use chacha20poly1305::{
     ChaCha20Poly1305, KeyInit,
@@ -80,6 +82,14 @@ pub enum CryptoError {
 
 /// Result type for crypto operations
 pub type CryptoResult<T> = Result<T, CryptoError>;
+
+/// Get current Unix timestamp safely
+pub fn current_timestamp() -> ProtocolResult<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| ProtocolError::InvalidState)
+        .map(|d| d.as_secs())
+}
 
 /// Key length in bytes (256 bits)
 pub const KEY_LENGTH: usize = 32;
@@ -336,7 +346,6 @@ impl Drop for CryptoHandler {
 impl ZeroizeOnDrop for CryptoHandler {}
 
 /// Secure key generation utilities
-/// Secure key generation utilities
 pub struct KeyGenerator;
 
 impl KeyGenerator {
@@ -390,7 +399,8 @@ pub fn validate_key_security(key: &[u8]) -> CryptoResult<()> {
 
     // Check for repeating patterns (simple check)
     let half = key.len() / 2;
-    if constant_time_eq(&key[..half], &key[half..]) {
+    use subtle::ConstantTimeEq;
+    if key[..half].ct_eq(&key[half..]).into() {
         return Err(CryptoError::WeakKey);
     }
 

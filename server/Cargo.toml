@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Universal Sibna Protocol Server v11.0 — Zero-Trust, Multi-Transport"
+description = "Sibna Protocol Server"
 repository.workspace = true
 
 [dependencies]

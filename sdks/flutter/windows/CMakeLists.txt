@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.14)
 # The plugin uses dart:ffi so no MethodChannel plumbing is needed.
 # This file configures how sibna.dll is bundled with the Flutter app.
 
-project(sibna_flutter_plugin VERSION 1.0.0 LANGUAGES CXX)
+project(sibna_flutter_plugin VERSION 1.0.1 LANGUAGES CXX)
 
 set(PLUGIN_NAME sibna_flutter_plugin)
 

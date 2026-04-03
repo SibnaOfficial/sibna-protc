@@ -17,7 +17,7 @@ Flutter plugin for the **Sibna Protocol** — a production-grade Signal Protocol
 
 ```yaml
 dependencies:
-  sibna_flutter: ^1.0.0
+  sibna_flutter: ^1.0.1
 ```
 
 ## Setup

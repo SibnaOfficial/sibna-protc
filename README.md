@@ -75,7 +75,7 @@ Sibna focuses on technical transparency. The table below states exactly what thi
 **Critical**: This library is NOT production-ready for high-risk environments.
 
 - **No External Audit**: NO independent external security audit has been performed yet.
-- **Internal Hardening**: v1.0.0 includes fixes for logic errors identified in internal review.
+- **Internal Hardening**: v1.0.1 includes fixes for logic errors identified in internal review.
 - **Roadmap**: Targeting external cryptography audit for Q3 2026.
 
 See [SECURITY.md](SECURITY.md) and [PROTOCOL_SPECIFICATION.md](PROTOCOL_SPECIFICATION.md) for full threat model details.

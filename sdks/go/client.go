@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	Version      = "11.0.0"
+	Version      = "1.0.1"
 	PaddingBlock = 1024
 )
 

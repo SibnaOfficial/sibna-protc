@@ -6,7 +6,7 @@ This document outlines the security model and implementation status of the Sibna
 
 **NOT production-ready for high-risk environments without external audit.**
 
-Version 1.0.0 represents a state of "internal hardening." While previous internal logic errors have been addressed, the implementation has **NOT** been reviewed by an independent security firm.
+Version 1.0.1 represents a state of "internal hardening." While previous internal logic errors have been addressed, the implementation has **NOT** been reviewed by an independent security firm.
 
 **Roadmap**:
 - Targeting independent external audit: Q3 2026.
@@ -100,7 +100,7 @@ This library features built-in Trust-On-First-Use (TOFU) peer pinning.
 | Remaining Metadata | Communication graph is visible despite size-padding | Enable the internal `proxy` field for SOCKS5 |
 | PQC disabled → X25519 only | Vulnerable to quantum adversary | Keep default `pqc` feature enabled |
 
-## 4. Hardening (v1.0.0)
+## 4. Hardening (v1.0.1)
 
 Key fixes applied during internal review:
 

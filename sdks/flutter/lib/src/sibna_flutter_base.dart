@@ -1,6 +1,6 @@
 part of '../sibna_flutter.dart';
 
-const String sibnaVersion = '1.0.0';
+const String sibnaVersion = '1.0.1';
 const int protocolVersion = 9;
 const int keyLength       = 32;
 const int nonceLength     = 12;

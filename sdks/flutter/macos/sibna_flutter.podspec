@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'sibna_flutter'
-  s.version          = '1.0.0'
+  s.version          = '1.0.1'
   s.summary          = 'Flutter plugin for Sibna Protocol — Signal Protocol E2EE'
   s.description      = 'Production-grade E2EE using Signal Protocol, implemented in Rust.'
   s.homepage         = 'https://github.com/SibnaOfficial/sibna-protc'

@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.0] - 2026-03-28
+## [1.0.1] - 2026-04-03
 ### Added
 - **Full FFI Session Lifecycle**: Added `sibna_generate_identity`, `sibna_generate_prekey_bundle`, `sibna_perform_handshake`, `sibna_session_encrypt`, and `sibna_session_decrypt` allowing full X3DH and Double Ratchet usage from C/C++/Flutter/Python via FFI.
 - **Persistent Keystore**: Added `save_to_disk` and `load_from_disk` to `KeyStore` allowing persistence of Identity and Prekeys to disk, encrypted with ChaCha20-Poly1305. Opt-in via `persistent` feature (using `sled`).
@@ -214,13 +214,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Security Advisories
 
-### Internal hardening (Fixed in 1.0.0)
+### Internal hardening (Fixed in 1.0.1)
 **Severity**: Critical
 **Description**: Memory leak in key storage could expose private keys
 **Impact**: Private key exposure
 **Fix**: All keys now properly zeroized on drop
 
-### Internal hardening (Fixed in 1.0.0)
+### Internal hardening (Fixed in 1.0.1)
 **Severity**: High
 **Description**: Insecure serialization could leak session state
 **Impact**: Session state exposure

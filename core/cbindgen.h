@@ -277,7 +277,7 @@ void sibna_secure_wipe(uint8_t* buf, size_t len);
 /**
  * sibna_version — Get the protocol version string
  *
- * @return  Null-terminated UTF-8 version string (e.g., "11.0.0")
+ * @return  Null-terminated UTF-8 version string (e.g., "1.0.1")
  */
 const char* sibna_version(void);
 

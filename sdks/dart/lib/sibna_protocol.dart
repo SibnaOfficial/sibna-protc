@@ -57,7 +57,7 @@ part 'src/group.dart';
 part 'src/safety_number.dart';
 
 /// SDK Version
-const String sibnaVersion = '1.0.0';
+const String sibnaVersion = '1.0.1';
 
 /// Protocol version number
 const int protocolVersion = 9;

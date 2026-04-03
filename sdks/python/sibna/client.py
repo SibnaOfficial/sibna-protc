@@ -41,7 +41,7 @@ Example (async WebSocket):
     asyncio.run(main())
 """
 
-__version__ = "11.0.0"
+__version__ = "1.0.1"
 __author__ = "Sibna Security Team"
 __license__ = "Apache-2.0 OR MIT"
 

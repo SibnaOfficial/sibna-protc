@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 
-project(sibna_flutter_plugin VERSION 1.0.0 LANGUAGES CXX)
+project(sibna_flutter_plugin VERSION 1.0.1 LANGUAGES CXX)
 
 set(PLUGIN_NAME sibna_flutter_plugin)
 add_library(${PLUGIN_NAME} INTERFACE)

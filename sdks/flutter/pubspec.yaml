@@ -2,7 +2,7 @@ name: sibna_flutter
 description: >
   Flutter plugin for Sibna Protocol — Signal Protocol E2EE for Flutter apps.
   Supports Android, iOS, Linux, macOS, and Windows via FFI to the Rust core.
-version: 1.0.0
+version: 1.0.1
 homepage: https://github.com/SibnaOfficial/sibna-protc
 repository: https://github.com/SibnaOfficial/sibna-protc
 

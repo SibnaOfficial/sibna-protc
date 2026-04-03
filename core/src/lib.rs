@@ -35,7 +35,7 @@
 //! > the hybrid handshake protects against this, but the feature must remain enabled.
 //!
 //! # Version
-//! 1.0.0
+//! 1.0.1
 
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
@@ -91,7 +91,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use x25519_dalek::PublicKey;
 
 /// Protocol version
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "1.0.1";
 
 /// Protocol version number for compatibility
 pub const VERSION_NUMBER: u32 = 1;

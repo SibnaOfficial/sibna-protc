@@ -195,7 +195,7 @@ fn random_bytes_32() -> [u8; 32] {
 async fn health_handler() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({
         "status": "ok",
-        "version": "11.0.0",
+        "version": "1.0.1",
         "transports": ["http", "websocket"],
         "auth": "ed25519-jwt"
     })))

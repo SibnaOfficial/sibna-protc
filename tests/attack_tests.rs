@@ -286,10 +286,10 @@ async fn run_all_security_audits() {
     println!(" 6. JWT Abuse                    REJECTED (401)");
     println!(" 7. Auth Brute Force             RATE LIMITED (429)");
     println!(" 8. Envelope Integrity           VERIFIED (SDK-level)");
-    println!(" 9. Rate Limit Bypass            IMPOSSIBLE");
-    println!("10. Identity Leakage             NONE DETECTED");
+    println!(" 9. Rate Limit Bypass            mitigated");
+    println!("10. Identity Leakage             reduced");
     println!("11. Timing Attack                <50% delta (safe)");
     println!("12. WebSocket Unauthorized       REJECTED (401)");
     println!("----------------------------------------------");
-    println!("All 12 vectors defended. Protocol is HARDENED.");
+    println!("All 12 vectors checked. Protocol is verified.");
 }

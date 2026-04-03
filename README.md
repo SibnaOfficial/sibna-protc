@@ -60,8 +60,8 @@ Sibna focuses on technical transparency. The table below states exactly what thi
 
 | Limitation | Description |
 |---|---|
-| **Partial Metadata Exposure** | Traffic sizes are mitigated by our **built-in PaddingMode** (defaults to 1KB blocks), but timing and who-talks-to-whom logic remain visible unless network-anonymity is leveraged. |
-| **Anonymity requires Tor** | Anonymity is **only** achieved if you configure the library's `P2pConfig::proxy` field with a SOCKS5 proxy (e.g. `127.0.0.1:9050` for Tor). Without it, local IP and addresses are exposed. |
+| **Metadata (Traffic Size)** | Partial — Padding hides size, but not frequency without Cover Traffic | Enable `PaddingMode::Maximum` and implement `generate_cover_message()` on a timer |
+| **Metadata (Anonymity)** | IP is visible by default on direct socket connection | Set `proxy` to Tor SOCKS5 and enforce `require_anonymity: true` |
 | **Trust-On-First-Use (TOFU) limits** | The library securely pins Peer Identity Keys, automatically breaking connections if a MITM swapped the key later. However, **Safety Numbers must still be verified out-of-band** to prove the very first initially-pinned key. |
 
 ### Quantum Resistance Details
@@ -75,7 +75,8 @@ Sibna focuses on technical transparency. The table below states exactly what thi
 **Critical**: This library is NOT production-ready for high-risk environments.
 
 - **No External Audit**: NO independent external security audit has been performed yet.
-- **Internal Hardening**: v1.0.1 includes fixes for logic errors identified in internal review.
+- **Metadata Protection**: Configurable padding modes (up to 16KB blocks) to hide message size footprints, plus a **Cover Traffic (Dummy Traffic)** API to defeat frequency analysis.
+- **Forced Anonymity**: Native SOCKS5 (Tor) support with a strict `require_anonymity` kill-switch to prevent IP leaks via direct TCP fallback.
 - **Roadmap**: Targeting external cryptography audit for Q3 2026.
 
 See [SECURITY.md](SECURITY.md) and [PROTOCOL_SPECIFICATION.md](PROTOCOL_SPECIFICATION.md) for full threat model details.

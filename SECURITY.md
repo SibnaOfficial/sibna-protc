@@ -58,8 +58,7 @@ These are **fundamental design constraints**, not bugs. Integrators must account
 **What is exposed (Out of Scope):**
 - Network identities and timing (when messages are sent and received).
 - Who is communicating with whom (participant graph).
-
-**Mitigation:** Route traffic through a VPN or mix network using the built-in SOCKS5 functionality if full metadata protection is required.
+- **Cover Traffic API (`generate_cover_message`)**: While padding hides message sizes, metadata like message *frequency* is still visible to ISPs. Sibna Core exposes a Cover Traffic API. Applications can generate completely empty dummy messages that are encrypted and padded to look 100% identical to real messages across the wire, defeating traffic analysis when triggered on a localized timer.
 
 ---
 
@@ -97,8 +96,8 @@ This library features built-in Trust-On-First-Use (TOFU) peer pinning.
 | Limitation | Impact | Mitigation |
 |---|---|---|
 | TOFU Initial MITM vulnerability | Active MITM possible only during first contact before Safety Number check | Implement Safety Number UI in your app |
-| Remaining Metadata | Communication graph is visible despite size-padding | Enable the internal `proxy` field for SOCKS5 |
-| PQC disabled → X25519 only | Vulnerable to quantum adversary | Keep default `pqc` feature enabled |
+| Remaining Metadata | Communication frequency is visible despite size-padding | Implement `generate_cover_message()` for Dummy Traffic |
+| Anonymity Leaks | SOCKS5 proxy misconfiguration might fall back to direct TCP | Set `require_anonymity: true` in `P2pConfig` |
 
 ## 4. Hardening (v1.0.1)
 

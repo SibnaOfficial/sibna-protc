@@ -440,6 +440,16 @@ impl SecureContext {
         Ok(peer_id.to_vec()) // Return peer_id as session identifier
     }
 
+    /// Generate a Cover Traffic message (Dummy Traffic).
+    ///
+    /// Generates an encrypted, fully padded message that carries no actual payload.
+    /// When the peer receives it, it decrypts to an empty payload map (`Vec::new()`).
+    /// To a network observer, this looks mathematically identical to a real message
+    /// in size and entropy, defeating traffic analysis (metadata frequency analysis).
+    pub fn generate_cover_message(&self, session_id: &[u8]) -> ProtocolResult<Vec<u8>> {
+        self.encrypt_message(session_id, &[], None)
+    }
+
     /// Encrypt a message for a session
     pub fn encrypt_message(
         &self,
@@ -473,7 +483,12 @@ impl SecureContext {
         session_guard.encrypt(&padded, ad)
     }
 
-    /// Decrypt a message from a session
+    /// Decrypt a message from a session.
+    ///
+    /// # Note on Cover Traffic
+    /// If the returned plaintext `Vec<u8>` is empty (`len() == 0`), it means this was
+    /// a Cover Traffic (Dummy) message sent to confuse traffic analyzers.
+    /// Applications should silently ignore empty decrypted messages.
     pub fn decrypt_message(
         &self,
         session_id: &[u8],

@@ -186,12 +186,14 @@ fn socks5_error_message(code: u8) -> &'static str {
 /// Connect to `addr` using the optional SOCKS5 proxy.
 ///
 /// - If `proxy` is `Some(proxy_addr)`, routes through SOCKS5.
+/// - If `require_anonymity` is true and `proxy` is `None`, this will cleanly return an Error.
 /// - If `proxy` is `None`, connects directly.
 ///
 /// `addr` must be in `"host:port"` format.
 pub async fn connect_with_optional_proxy(
     addr: &str,
     proxy: Option<&str>,
+    require_anonymity: bool,
     max_message_size: usize,
 ) -> crate::p2p::P2pResult<FramedStream> {
     if let Some(proxy_addr) = proxy {
@@ -199,6 +201,12 @@ pub async fn connect_with_optional_proxy(
         let (host, port) = parse_host_port(addr)?;
         connect_via_socks5(proxy_addr, &host, port, max_message_size).await
     } else {
+        if require_anonymity {
+            return Err(crate::p2p::P2pError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "Anonymity is required but no SOCKS5 proxy was provided. Direct TCP connection blocked to prevent IP leak.",
+            )));
+        }
         connect(addr, max_message_size).await
     }
 }

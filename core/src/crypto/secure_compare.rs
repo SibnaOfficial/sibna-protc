@@ -29,36 +29,19 @@
 /// assert!(!constant_time_eq(&a, &c));
 /// ```
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-
-    let mut result: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
-        result |= x ^ y;
-    }
-
-    result == 0
+    constant_time_eq::constant_time_eq(a, b)
 }
 
 /// Compare two 32-byte arrays in constant time
 ///
 /// This is optimized for comparing fixed-size keys
 pub fn constant_time_eq_32(a: &[u8; 32], b: &[u8; 32]) -> bool {
-    let mut result: u8 = 0;
-    for i in 0..32 {
-        result |= a[i] ^ b[i];
-    }
-    result == 0
+    constant_time_eq::constant_time_eq(a, b)
 }
 
 /// Compare two 64-byte arrays in constant time
 pub fn constant_time_eq_64(a: &[u8; 64], b: &[u8; 64]) -> bool {
-    let mut result: u8 = 0;
-    for i in 0..64 {
-        result |= a[i] ^ b[i];
-    }
-    result == 0
+    constant_time_eq::constant_time_eq(a, b)
 }
 
 /// Constant-time selection
@@ -135,9 +118,13 @@ pub fn constant_time_is_zero(slice: &[u8]) -> bool {
 /// # Security
 /// This function always scans the entire slice
 pub fn constant_time_contains(slice: &[u8], target: u8) -> bool {
+    // We cannot use constant_time_eq directly here since we check against a single byte
+    // Using subtile choice logic would be better, but the bitwise approach works if LLVM doesn't break it.
     let mut result: u8 = 0;
-    for &byte in slice {
-        result |= (byte ^ target).wrapping_sub(1) >> 7;
+    for byte in slice {
+        // Read via volatile to prevent LLVM from aggressively vectorizing and branching early
+        let b = unsafe { std::ptr::read_volatile(byte) };
+        result |= (b ^ target).wrapping_sub(1) >> 7;
     }
     result != 0
 }
@@ -149,14 +136,7 @@ pub fn constant_time_memcmp(a: &[u8], b: &[u8]) -> i32 {
     if a.len() != b.len() {
         return -1;
     }
-
-    let mut result: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
-        result |= x ^ y;
-    }
-
-    // Convert to -1, 0, or 1
-    if result == 0 {
+    if constant_time_eq::constant_time_eq(a, b) {
         0
     } else {
         1

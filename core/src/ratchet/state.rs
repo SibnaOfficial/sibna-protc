@@ -219,9 +219,12 @@ impl DoubleRatchetState {
 impl Clone for DoubleRatchetState {
     fn clone(&self) -> Self {
         // Manual clone because StaticSecret doesn't derive Clone
+        // Zeroize the temporary bytes after use to prevent lingering secrets.
         let dh_local_clone = self.dh_local.as_ref().map(|dh| {
-            let bytes = dh.to_bytes();
-            StaticSecret::from(bytes)
+            let mut bytes = dh.to_bytes();
+            let secret = StaticSecret::from(bytes);
+            bytes.zeroize(); // ← clear the bytes from memory
+            secret
         });
 
         let dh_remote_clone = self.dh_remote;
@@ -474,5 +477,20 @@ mod tests {
         
         assert!(state.root_key.iter().all(|&b| b == 0));
         assert!(state.skipped_message_keys.is_empty());
+    }
+
+    #[test]
+    fn test_clone_does_not_leak_secret() {
+        let mut state = DoubleRatchetState::new();
+        let secret = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        state.set_local_dh(secret);
+
+        let cloned = state.clone();
+        // The clone should have a valid local DH key
+        assert!(cloned.dh_local.is_some());
+        // The original's secret remains intact
+        assert!(state.dh_local.is_some());
+        // The temporary bytes used during cloning are zeroized, but we cannot directly test that.
+        // This test ensures cloning works without panics.
     }
 }

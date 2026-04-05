@@ -148,14 +148,23 @@ pub async fn prove_handler(
         _ => return (StatusCode::BAD_REQUEST, "Invalid signature hex").into_response(),
     };
 
-    let verifying_key = match VerifyingKey::from_bytes(key_bytes.as_slice().try_into().unwrap_or(&[0u8; 32])) {
+    // FIX: Use proper try_into() error handling instead of unwrap_or with a
+    // zero-array fallback — a zero key would silently pass format checks but
+    // would never match, leaking timing information and causing confusing errors.
+    let key_arr: [u8; 32] = match key_bytes.as_slice().try_into() {
+        Ok(a) => a,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid identity key length").into_response(),
+    };
+    let verifying_key = match VerifyingKey::from_bytes(&key_arr) {
         Ok(k) => k,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid Ed25519 public key").into_response(),
     };
 
-    let signature = match Signature::from_bytes(sig_bytes.as_slice().try_into().unwrap_or(&[0u8; 64])) {
-        sig => sig,
+    let sig_arr: [u8; 64] = match sig_bytes.as_slice().try_into() {
+        Ok(a) => a,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid signature length").into_response(),
     };
+    let signature = Signature::from_bytes(&sig_arr);
 
     let challenge_bytes = match hex::decode(&req.challenge_hex) {
         Ok(b) => b,

@@ -110,7 +110,19 @@ async fn handle_ws(socket: WebSocket, identity_id: String, state: AppState) {
 }
 
 /// Route a sealed envelope to recipient or queue it
-async fn route_message(state: &AppState, _sender_id: &str, mut envelope: SealedEnvelope) {
+async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEnvelope) {
+    // FIX: Validate message_id length to prevent key-bloat DoS on the dedup tree.
+    if envelope.message_id.is_empty() || envelope.message_id.len() > 128 {
+        warn!("Dropping message with invalid message_id from {}", &sender_id[..sender_id.len().min(16)]);
+        return;
+    }
+
+    // FIX: Validate recipient_id format (must be 64 hex chars = 32-byte key)
+    if envelope.recipient_id.len() != 64 || !envelope.recipient_id.chars().all(|c| c.is_ascii_hexdigit()) {
+        warn!("Dropping message with invalid recipient_id from {}", &sender_id[..sender_id.len().min(16)]);
+        return;
+    }
+
     // Validate message_id (dedup)
     let dedup_tree = match state.db.open_tree("msg_dedup") {
         Ok(t) => t,
@@ -118,12 +130,12 @@ async fn route_message(state: &AppState, _sender_id: &str, mut envelope: SealedE
     };
     let dedup_key = format!("dedup:{}", envelope.message_id);
     if dedup_tree.get(dedup_key.as_bytes()).ok().flatten().is_some() {
-        warn!("Duplicate message_id dropped: {}", envelope.message_id);
+        warn!("Duplicate message_id dropped from {}: {}", &sender_id[..sender_id.len().min(16)], envelope.message_id);
         return;
     }
     dedup_tree.insert(dedup_key.as_bytes(), b"1").ok();
 
-    // Stamp the timestamp
+    // Stamp the timestamp (server-side; ignore client-supplied value)
     envelope.timestamp = chrono::Utc::now().timestamp();
 
     // Try to deliver immediately if recipient is online

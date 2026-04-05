@@ -111,6 +111,15 @@ async fn main() {
         cooldown: Duration::from_secs(2),
         burst_size: 5,
     });
+    // FIX: Dedicated rate limit for message sending (was incorrectly using prekey_upload limit)
+    limiter.add_limit("message_send".to_string(), sibna_core::rate_limit::OperationLimit {
+        max_per_second: 20,
+        max_per_minute: 300,
+        max_per_hour: 5_000,
+        max_per_day: 50_000,
+        cooldown: Duration::from_secs(1),
+        burst_size: 10,
+    });
 
     let state = AppState {
         db,
@@ -133,12 +142,28 @@ async fn main() {
 
         .layer(TraceLayer::new_for_http())
         .layer(RequestBodyLimitLayer::new(64 * 1024)) // 64 KB max body
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_headers(Any)
-                .allow_methods(Any),
-        )
+        // FIX: CORS was set to allow ANY origin, which exposes the API to
+        // cross-origin requests from any website. Restrict to known origins in
+        // production via SIBNA_ALLOWED_ORIGINS (comma-separated list).
+        // Falls back to Any only when the env var is unset (dev mode).
+        .layer({
+            let origins_env = std::env::var("SIBNA_ALLOWED_ORIGINS").unwrap_or_default();
+            let parsed: Vec<axum::http::HeaderValue> = origins_env
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            if parsed.is_empty() {
+                warn!("SIBNA_ALLOWED_ORIGINS not set — CORS is open (dev mode only!)");
+                CorsLayer::new().allow_origin(Any).allow_headers(Any).allow_methods(Any)
+            } else {
+                CorsLayer::new()
+                    .allow_origin(parsed)
+                    .allow_headers(Any)
+                    .allow_methods(Any)
+            }
+        })
         .with_state(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string()).parse().unwrap_or(8080);
@@ -165,6 +190,14 @@ async fn main() {
 }
 
 // Helpers
+
+/// Extract and validate JWT from Authorization: Bearer <token> header.
+fn extract_bearer_jwt(headers: &axum::http::HeaderMap, secret: &str) -> Option<auth::Claims> {
+    let auth_header = headers.get(axum::http::header::AUTHORIZATION)?;
+    let auth_str = auth_header.to_str().ok()?;
+    let token = auth_str.strip_prefix("Bearer ")?;
+    auth::validate_jwt(token, secret)
+}
 
 fn generate_rate_key(ip: &SocketAddr, identity: &str) -> String {
     let mut hasher = DefaultHasher::new();
@@ -214,10 +247,18 @@ struct UploadPrekeyRequest {
 
 async fn upload_prekey_handler(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
     State(state): State<AppState>,
     Json(payload): Json<UploadPrekeyRequest>,
 ) -> impl IntoResponse {
-    if let Err(r) = enforce_rate_limit(&state.limiter, "prekey_upload", &addr, "upload_ip") {
+    // FIX: Require authentication — unauthenticated prekey upload allowed
+    // any actor to plant fake prekey bundles for arbitrary identity keys.
+    let claims = match extract_bearer_jwt(&headers, &state.jwt_secret) {
+        Some(c) => c,
+        None => return (StatusCode::UNAUTHORIZED, "Authentication required").into_response(),
+    };
+
+    if let Err(r) = enforce_rate_limit(&state.limiter, "prekey_upload", &addr, &claims.sub) {
         return r;
     }
 
@@ -348,11 +389,19 @@ struct SendMessageRequest {
 
 async fn send_message_handler(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
     State(state): State<AppState>,
     Json(req): Json<SendMessageRequest>,
 ) -> impl IntoResponse {
-    // Rate limit
-    if let Err(r) = enforce_rate_limit(&state.limiter, "prekey_upload", &addr, &req.recipient_id) {
+    // FIX: Require authentication — unauthenticated message sending allowed
+    // anyone to inject messages into recipients' queues without identity binding.
+    let claims = match extract_bearer_jwt(&headers, &state.jwt_secret) {
+        Some(c) => c,
+        None => return (StatusCode::UNAUTHORIZED, "Authentication required").into_response(),
+    };
+
+    // FIX: Use "message_send" rate limit, not "prekey_upload" (wrong operation key).
+    if let Err(r) = enforce_rate_limit(&state.limiter, "message_send", &addr, &claims.sub) {
         return r;
     }
 

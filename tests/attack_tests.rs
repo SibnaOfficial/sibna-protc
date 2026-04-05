@@ -84,11 +84,38 @@ async fn run_all_security_audits() {
 
     println!("Sibna Server is UP. Starting 12-vector audit...\n");
 
-    // Audit 1: Standard Bundle Upload
+    // Audit 1: Standard Bundle Upload (with JWT auth)
     println!("[1] Standard Bundle Upload (smoke test)");
     let ctx_alice = setup_context("Alice").await;
     let alice_bundle = ctx_alice.keystore().read().generate_prekey_bundle_bytes().unwrap();
+
+    // Step 1a: Obtain JWT via challenge-response
+    let alice_id_hex = hex::encode(&alice_bundle[..32]);
+    let challenge_res = client.post(format!("{}/v1/auth/challenge", server_url))
+        .json(&json!({ "identity_key_hex": alice_id_hex }))
+        .send().await.unwrap();
+    assert_eq!(challenge_res.status().as_u16(), 200, "Audit 1a FAILED: Could not get challenge");
+    let challenge_json: serde_json::Value = challenge_res.json().await.unwrap();
+    let challenge_hex = challenge_json["challenge_hex"].as_str().unwrap().to_string();
+    let challenge_bytes = hex::decode(&challenge_hex).unwrap();
+
+    // Step 1b: Sign the challenge with Alice's identity key
+    let alice_identity = ctx_alice.get_identity().unwrap();
+    let sig = alice_identity.sign(&challenge_bytes).unwrap();
+    let prove_res = client.post(format!("{}/v1/auth/prove", server_url))
+        .json(&json!({
+            "identity_key_hex": alice_id_hex,
+            "challenge_hex": challenge_hex,
+            "signature_hex": hex::encode(sig),
+        }))
+        .send().await.unwrap();
+    assert_eq!(prove_res.status().as_u16(), 200, "Audit 1b FAILED: Auth prove rejected");
+    let token_json: serde_json::Value = prove_res.json().await.unwrap();
+    let alice_jwt = token_json["token"].as_str().unwrap().to_string();
+
+    // Step 1c: Upload bundle with JWT
     let res = client.post(format!("{}/v1/prekeys/upload", server_url))
+        .bearer_auth(&alice_jwt)
         .json(&json!({ "bundle_hex": hex::encode(&alice_bundle) }))
         .send().await.unwrap();
     let status = res.status();
@@ -96,9 +123,21 @@ async fn run_all_security_audits() {
     assert_eq!(status.as_u16(), 200, "Audit 1 FAILED: Standard upload rejected. Status: {}. Body: {}", status, body);
     println!("  PASS\n");
 
-    // Audit 2: Bundle Replay Attack
+    // Audit 1d: Verify unauthenticated upload is rejected (regression test for CVE-SIBNA-002)
+    println!("[1d] Unauthenticated Upload Rejection (CVE-SIBNA-002 regression)");
+    let ctx_unauth = setup_context("Unauth").await;
+    let unauth_bundle = ctx_unauth.keystore().read().generate_prekey_bundle_bytes().unwrap();
+    let unauth_res = client.post(format!("{}/v1/prekeys/upload", server_url))
+        .json(&json!({ "bundle_hex": hex::encode(&unauth_bundle) }))  // no bearer token
+        .send().await.unwrap();
+    assert_eq!(unauth_res.status().as_u16(), 401,
+        "Audit 1d FAILED: Unauthenticated upload was accepted! CVE-SIBNA-002 regression.");
+    println!("  PASS (Unauthenticated upload correctly rejected with 401)\n");
+
+    // Audit 2: Bundle Replay Attack (same bundle, same JWT — should get 409)
     println!("[2] Bundle Replay Attack");
     let res2 = client.post(format!("{}/v1/prekeys/upload", server_url))
+        .bearer_auth(&alice_jwt)
         .json(&json!({ "bundle_hex": hex::encode(&alice_bundle) }))
         .send().await.unwrap();
     assert_eq!(res2.status().as_u16(), 409, "Audit 2 FAILED: Replay not detected!");
@@ -113,12 +152,13 @@ async fn run_all_security_audits() {
     assert_eq!(res_reuse.status().as_u16(), 404, "Audit 3 FAILED: Zero-reuse not enforced!");
     println!("  PASS (Bundle deleted after fetch)\n");
 
-    // Audit 4: Signature Forgery
+    // Audit 4: Signature Forgery (authenticated upload of a forged bundle — should get 400)
     println!("[4] Bundle Signature Forgery");
     let mut forged = alice_bundle.clone();
     let last = forged.len() - 1;
     forged[last] ^= 0xFF;
     let res_forge = client.post(format!("{}/v1/prekeys/upload", server_url))
+        .bearer_auth(&alice_jwt)
         .json(&json!({ "bundle_hex": hex::encode(&forged) }))
         .send().await.unwrap();
     assert_eq!(res_forge.status().as_u16(), 400, "Audit 4 FAILED: Forged signature accepted!");
@@ -181,6 +221,28 @@ async fn run_all_security_audits() {
     let bob_bundle = ctx_bob.keystore().read().generate_prekey_bundle_bytes().unwrap();
     let bob_id = hex::encode(&bob_bundle[..32]);
 
+    // Register Bob's bundle + get Bob's JWT for sending
+    let bob_id_hex = hex::encode(&bob_bundle[..32]);
+    let bob_challenge_res = client.post(format!("{}/v1/auth/challenge", server_url))
+        .json(&json!({ "identity_key_hex": bob_id_hex }))
+        .send().await.unwrap();
+    let bob_challenge_json: serde_json::Value = bob_challenge_res.json().await.unwrap_or_default();
+    let bob_challenge_hex = bob_challenge_json["challenge_hex"].as_str().unwrap_or("").to_string();
+    let bob_jwt = if !bob_challenge_hex.is_empty() {
+        let bob_challenge_bytes = hex::decode(&bob_challenge_hex).unwrap_or_default();
+        let bob_identity = ctx_bob.get_identity().unwrap();
+        let bob_sig = bob_identity.sign(&bob_challenge_bytes).unwrap();
+        let bob_prove_res = client.post(format!("{}/v1/auth/prove", server_url))
+            .json(&json!({
+                "identity_key_hex": bob_id_hex,
+                "challenge_hex": bob_challenge_hex,
+                "signature_hex": hex::encode(bob_sig),
+            }))
+            .send().await.unwrap();
+        let bob_token_json: serde_json::Value = bob_prove_res.json().await.unwrap_or_default();
+        bob_token_json["token"].as_str().unwrap_or("").to_string()
+    } else { String::new() };
+
     let tampered_envelope = json!({
         "recipient_id": bob_id,
         "payload_hex": "deadbeef",
@@ -190,11 +252,22 @@ async fn run_all_security_audits() {
         "signature_hex": "ff".repeat(64),
         "compressed": false,
     });
-    let env_res = client.post(format!("{}/v1/messages/send", server_url))
+    // Audit 8a: Unauthenticated send must return 401 (CVE-SIBNA-006 regression)
+    let unauth_env_res = client.post(format!("{}/v1/messages/send", server_url))
         .json(&tampered_envelope)
         .send().await.unwrap();
-    assert!(env_res.status().as_u16() < 500, "Audit 8 FAILED: Server crashed on tampered envelope!");
-    println!("  PASS (Server is blind relay, SDK verifies signatures on receipt)\n");
+    assert_eq!(unauth_env_res.status().as_u16(), 401,
+        "Audit 8a FAILED: Unauthenticated message send accepted (CVE-SIBNA-006 regression)!");
+
+    // Audit 8b: Authenticated send with tampered content must not crash server
+    if !bob_jwt.is_empty() {
+        let env_res = client.post(format!("{}/v1/messages/send", server_url))
+            .bearer_auth(&bob_jwt)
+            .json(&tampered_envelope)
+            .send().await.unwrap();
+        assert!(env_res.status().as_u16() < 500, "Audit 8b FAILED: Server crashed on tampered envelope!");
+    }
+    println!("  PASS (Unauthenticated send rejected; tampered payload does not crash server)\n");
 
     // Audit 9: Rate Limit Bypass Attempt
     println!("[9] Rate Limit Bypass (Identity-based secondary limit)");

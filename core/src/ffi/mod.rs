@@ -6,12 +6,12 @@
 use std::cell::RefCell;
 use std::ffi::{c_void, CString};
 use std::os::raw::c_char;
-use std::slice;
 use std::ptr;
+use std::slice;
 use zeroize::Zeroize;
 
-use crate::error::ProtocolError;
 use crate::crypto::{CryptoHandler, SecureRandom, KEY_LENGTH};
+use crate::error::ProtocolError;
 use crate::Config;
 
 /// Opaque handle to a secure context
@@ -76,7 +76,7 @@ impl ByteBuffer {
         let capacity = data.capacity();
         let ptr = data.as_mut_ptr();
         std::mem::forget(data);
-        
+
         Self {
             data: ptr,
             len,
@@ -110,13 +110,25 @@ impl ByteBuffer {
             // Zeroize before freeing
             let slice = slice::from_raw_parts_mut(self.data, self.len);
             slice.zeroize();
-            
+
             let _ = Vec::from_raw_parts(self.data, self.len, self.capacity);
             self.data = ptr::null_mut();
             self.len = 0;
             self.capacity = 0;
         }
     }
+}
+
+// Thread-local last error storage
+thread_local! {
+    static LAST_ERROR: RefCell<String> = RefCell::new(String::new());
+}
+
+/// Set the thread-local last error message (internal use)
+fn set_last_error(msg: &str) {
+    LAST_ERROR.with(|e| {
+        *e.borrow_mut() = msg.to_string();
+    });
 }
 
 /// Create a new secure context
@@ -130,6 +142,7 @@ pub unsafe extern "C" fn sibna_context_create(
     context: *mut *mut SibnaContext,
 ) -> SibnaResult {
     if context.is_null() {
+        set_last_error("context pointer is null");
         return SibnaResult::InvalidArgument;
     }
 
@@ -140,14 +153,17 @@ pub unsafe extern "C" fn sibna_context_create(
     };
 
     let config = Config::default();
-    
+
     match crate::SecureContext::new(config, password_slice) {
         Ok(ctx) => {
             let ctx_ptr = Box::into_raw(Box::new(ctx));
             unsafe { *context = ctx_ptr as *mut _; }
             SibnaResult::Ok
         }
-        Err(_) => SibnaResult::InternalError,
+        Err(e) => {
+            set_last_error(&e.to_string());
+            SibnaResult::InternalError
+        }
     }
 }
 
@@ -176,20 +192,24 @@ pub unsafe extern "C" fn sibna_context_set_device_link(
     signature: *const u8,
 ) -> SibnaResult {
     if context.is_null() || root_key.is_null() || signature.is_null() {
+        set_last_error("Null pointer argument");
         return SibnaResult::InvalidArgument;
     }
 
-    let ctx = unsafe { &*(context as *const crate::SecureContext) };
-    
+    let ctx = unsafe { &mut *(context as *mut crate::SecureContext) };
+
     let mut root_arr = [0u8; 32];
     unsafe { std::ptr::copy_nonoverlapping(root_key, root_arr.as_mut_ptr(), 32); }
-    
+
     let mut sig_arr = [0u8; 64];
     unsafe { std::ptr::copy_nonoverlapping(signature, sig_arr.as_mut_ptr(), 64); }
 
     match ctx.set_device_link(device_id, &root_arr, &sig_arr) {
         Ok(_) => SibnaResult::Ok,
-        Err(_) => SibnaResult::InternalError,
+        Err(e) => {
+            set_last_error(&e.to_string());
+            SibnaResult::InternalError
+        }
     }
 }
 
@@ -202,23 +222,25 @@ pub unsafe extern "C" fn sibna_context_set_device_link(
 /// # Returns
 /// `SibnaResult::Ok` on success
 #[no_mangle]
-pub extern "C" fn sibna_version(
-    version: *mut c_char,
-    version_len: usize,
-) -> SibnaResult {
+pub extern "C" fn sibna_version(version: *mut c_char, version_len: usize) -> SibnaResult {
     if version.is_null() {
+        set_last_error("version buffer is null");
         return SibnaResult::InvalidArgument;
     }
 
     let version_str = crate::VERSION;
     let version_cstr = match CString::new(version_str) {
         Ok(s) => s,
-        Err(_) => return SibnaResult::InternalError,
+        Err(_) => {
+            set_last_error("failed to create CString from version");
+            return SibnaResult::InternalError;
+        }
     };
 
     let version_bytes = version_cstr.as_bytes_with_nul();
-    
+
     if version_bytes.len() > version_len {
+        set_last_error("version buffer too small");
         return SibnaResult::BufferTooSmall;
     }
 
@@ -255,6 +277,7 @@ pub extern "C" fn sibna_encrypt(
     ciphertext: *mut ByteBuffer,
 ) -> SibnaResult {
     if key.is_null() || plaintext.is_null() || ciphertext.is_null() {
+        set_last_error("Null pointer argument");
         return SibnaResult::InvalidArgument;
     }
 
@@ -268,7 +291,10 @@ pub extern "C" fn sibna_encrypt(
 
     let handler = match CryptoHandler::new(key_slice) {
         Ok(h) => h,
-        Err(_) => return SibnaResult::InvalidKey,
+        Err(e) => {
+            set_last_error(&e.to_string());
+            return SibnaResult::InvalidKey;
+        }
     };
 
     match handler.encrypt(plaintext_slice, ad_slice) {
@@ -278,7 +304,10 @@ pub extern "C" fn sibna_encrypt(
             }
             SibnaResult::Ok
         }
-        Err(_) => SibnaResult::EncryptionFailed,
+        Err(e) => {
+            set_last_error(&e.to_string());
+            SibnaResult::EncryptionFailed
+        }
     }
 }
 
@@ -304,6 +333,7 @@ pub extern "C" fn sibna_decrypt(
     plaintext: *mut ByteBuffer,
 ) -> SibnaResult {
     if key.is_null() || ciphertext.is_null() || plaintext.is_null() {
+        set_last_error("Null pointer argument");
         return SibnaResult::InvalidArgument;
     }
 
@@ -317,7 +347,10 @@ pub extern "C" fn sibna_decrypt(
 
     let handler = match CryptoHandler::new(key_slice) {
         Ok(h) => h,
-        Err(_) => return SibnaResult::InvalidKey,
+        Err(e) => {
+            set_last_error(&e.to_string());
+            return SibnaResult::InvalidKey;
+        }
     };
 
     match handler.decrypt(ciphertext_slice, ad_slice) {
@@ -328,9 +361,13 @@ pub extern "C" fn sibna_decrypt(
             SibnaResult::Ok
         }
         Err(crate::crypto::CryptoError::AuthenticationFailed) => {
+            set_last_error("Authentication failed");
             SibnaResult::AuthenticationFailed
         }
-        Err(_) => SibnaResult::DecryptionFailed,
+        Err(e) => {
+            set_last_error(&e.to_string());
+            SibnaResult::DecryptionFailed
+        }
     }
 }
 
@@ -343,22 +380,23 @@ pub extern "C" fn sibna_decrypt(
 /// # Returns
 /// `SibnaResult::Ok` on success
 #[no_mangle]
-pub extern "C" fn sibna_random_bytes(
-    len: usize,
-    output: *mut u8,
-) -> SibnaResult {
+pub extern "C" fn sibna_random_bytes(len: usize, output: *mut u8) -> SibnaResult {
     if output.is_null() {
+        set_last_error("output buffer is null");
         return SibnaResult::InvalidArgument;
     }
-    // FIX: Bound len to prevent mapping huge memory slices from C callers.
     const MAX_RANDOM_LEN: usize = 1024 * 1024; // 1 MB
     if len == 0 || len > MAX_RANDOM_LEN {
+        set_last_error("invalid random length");
         return SibnaResult::InvalidArgument;
     }
 
     let mut rng = match SecureRandom::new() {
         Ok(r) => r,
-        Err(_) => return SibnaResult::InternalError,
+        Err(e) => {
+            set_last_error(&e.to_string());
+            return SibnaResult::InternalError;
+        }
     };
 
     let output_slice = unsafe { slice::from_raw_parts_mut(output, len) };
@@ -375,16 +413,18 @@ pub extern "C" fn sibna_random_bytes(
 /// # Returns
 /// `SibnaResult::Ok` on success
 #[no_mangle]
-pub extern "C" fn sibna_generate_key(
-    key: *mut u8,
-) -> SibnaResult {
+pub extern "C" fn sibna_generate_key(key: *mut u8) -> SibnaResult {
     if key.is_null() {
+        set_last_error("key buffer is null");
         return SibnaResult::InvalidArgument;
     }
 
     let mut rng = match SecureRandom::new() {
         Ok(r) => r,
-        Err(_) => return SibnaResult::InternalError,
+        Err(e) => {
+            set_last_error(&e.to_string());
+            return SibnaResult::InternalError;
+        }
     };
 
     let key_slice = unsafe { slice::from_raw_parts_mut(key, KEY_LENGTH) };
@@ -406,36 +446,26 @@ pub extern "C" fn sibna_free_buffer(buffer: *mut ByteBuffer) {
     }
 }
 
-// FIX: Thread-local last error storage for FFI callers
-thread_local! {
-    static LAST_ERROR: RefCell<String> = RefCell::new(String::new());
-}
-
-/// Set the thread-local last error message (internal use)
-fn set_last_error(msg: &str) {
-    LAST_ERROR.with(|e| { *e.borrow_mut() = msg.to_string(); });
-}
-
 /// Get the last error message
 ///
 /// # Arguments
-/// * `buffer` - Output buffer for error message  
+/// * `buffer` - Output buffer for error message
 /// * `buffer_len` - Length of output buffer
 ///
 /// # Returns
 /// `SibnaResult::Ok` on success
 #[no_mangle]
-pub extern "C" fn sibna_last_error(
-    buffer: *mut c_char,
-    buffer_len: usize,
-) -> SibnaResult {
-    // FIX: Returns actual last error message from thread-local storage
+pub extern "C" fn sibna_last_error(buffer: *mut c_char, buffer_len: usize) -> SibnaResult {
     let error_msg_owned = LAST_ERROR.with(|e| {
         let s = e.borrow();
-        if s.is_empty() { "No error\0".to_string() } else { format!("{}\0", s) }
+        if s.is_empty() {
+            "No error\0".to_string()
+        } else {
+            format!("{}\0", s)
+        }
     });
     let error_msg = error_msg_owned.as_str();
-    
+
     if buffer.is_null() {
         return SibnaResult::InvalidArgument;
     }
@@ -473,10 +503,11 @@ pub extern "C" fn sibna_session_create(
     session: *mut *mut SibnaSession,
 ) -> SibnaResult {
     if context.is_null() || peer_id.is_null() || session.is_null() {
+        set_last_error("Null pointer argument");
         return SibnaResult::InvalidArgument;
     }
 
-    let ctx = unsafe { &*(context as *mut crate::SecureContext) };
+    let ctx = unsafe { &mut *(context as *mut crate::SecureContext) };
     let peer_id_slice = unsafe { slice::from_raw_parts(peer_id, peer_id_len) };
 
     match ctx.create_session(peer_id_slice) {
@@ -502,8 +533,7 @@ pub extern "C" fn sibna_session_destroy(session: *mut SibnaSession) {
     }
 }
 
-
-/// Map ProtocolError to SibnaResult
+/// Map ProtocolError to SibnaResult and set last error
 fn map_error(error: ProtocolError) -> SibnaResult {
     let msg = error.to_string();
     set_last_error(&msg);
@@ -527,7 +557,7 @@ fn map_error(error: ProtocolError) -> SibnaResult {
 // NEW: Identity & Prekey Bundle Functions
 // ============================================================
 
-/// Protocol output layout for identity key generation.
+/// Generate identity keypair (Ed25519 + X25519)
 ///
 /// On success, fills `ed25519_pub_out` (32 bytes) with the Ed25519 public key
 /// and `x25519_pub_out` (32 bytes) with the X25519 DH public key.
@@ -546,7 +576,7 @@ pub extern "C" fn sibna_generate_identity(
         return SibnaResult::InvalidArgument;
     }
 
-    let ctx = unsafe { &*(context as *mut crate::SecureContext) };
+    let ctx = unsafe { &mut *(context as *mut crate::SecureContext) };
 
     match ctx.generate_identity() {
         Ok(keypair) => {
@@ -563,11 +593,7 @@ pub extern "C" fn sibna_generate_identity(
 /// Generate a prekey bundle from the context's keystore.
 ///
 /// The bundle is serialized using the `PreKeyBundle::to_bytes()` format
-/// (identity_key || signed_prekey || signature || has_opk || [opk] || timestamp)
 /// and written to `bundle_out`.
-///
-/// Call this after `sibna_generate_identity` — it will fail if no identity
-/// or signed prekey is available in the context.
 ///
 /// # Returns
 /// `SibnaResult::Ok` on success, `SibnaResult::KeyNotFound` if no identity or signed prekey.
@@ -581,7 +607,7 @@ pub extern "C" fn sibna_generate_prekey_bundle(
         return SibnaResult::InvalidArgument;
     }
 
-    let ctx = unsafe { &*(context as *mut crate::SecureContext) };
+    let ctx = unsafe { &mut *(context as *mut crate::SecureContext) };
     let keystore = ctx.keystore.read();
 
     let bytes = match keystore.generate_prekey_bundle_bytes() {
@@ -597,15 +623,11 @@ pub extern "C" fn sibna_generate_prekey_bundle(
     SibnaResult::Ok
 }
 
-
 /// Perform X3DH handshake using a peer's prekey bundle.
 ///
-/// `bundle_bytes` / `bundle_len` — serialized `PreKeyBundle` (from `sibna_generate_prekey_bundle`)
+/// `bundle_bytes` / `bundle_len` — serialized `PreKeyBundle`
 /// `peer_id` / `peer_id_len` — opaque peer identifier (used as session key)
 /// `initiator` — non-zero if we are initiating the handshake
-///
-/// On success the session is stored inside `context` and can be used with
-/// `sibna_session_encrypt` / `sibna_session_decrypt` using `peer_id` as the session ID.
 ///
 /// # Returns
 /// `SibnaResult::Ok` on success
@@ -622,26 +644,21 @@ pub extern "C" fn sibna_perform_handshake(
         set_last_error("Null pointer argument");
         return SibnaResult::InvalidArgument;
     }
-    // FIX: Add upper bound on bundle_len to prevent C callers from passing
-    // SIZE_MAX which would cause from_raw_parts to map gigabytes of memory.
-    // A valid PreKeyBundle serialization is always under 4 KB.
     const MAX_BUNDLE_LEN: usize = 8 * 1024; // 8 KB hard ceiling
     if bundle_len == 0 || bundle_len > MAX_BUNDLE_LEN || peer_id_len == 0 || peer_id_len > 256 {
         set_last_error("Invalid buffer length");
         return SibnaResult::InvalidArgument;
     }
 
-    let ctx = unsafe { &*(context as *mut crate::SecureContext) };
+    let ctx = unsafe { &mut *(context as *mut crate::SecureContext) };
     let bundle_slice = unsafe { slice::from_raw_parts(bundle_bytes, bundle_len) };
     let peer_id_slice = unsafe { slice::from_raw_parts(peer_id, peer_id_len) };
 
-    // Parse prekey bundle
     let bundle = match crate::handshake::PreKeyBundle::from_bytes(bundle_slice) {
         Ok(b) => b,
         Err(e) => return map_error(e),
     };
 
-    // Validate bundle (Ed25519 signature of signed_prekey)
     if let Err(e) = bundle.validate() {
         return map_error(e);
     }
@@ -667,12 +684,10 @@ pub extern "C" fn sibna_perform_handshake(
 
 /// Encrypt a message through a Double Ratchet session.
 ///
-/// `session_id` / `session_id_len` — the peer ID used in `sibna_session_create` or
-///   returned from `sibna_perform_handshake`.
-/// `plaintext` / `plaintext_len` — data to encrypt (must be ≥ 1 byte).
-/// `associated_data` / `ad_len` — optional AAD (pass NULL / 0 for none).
-/// `ciphertext_out` — receives the allocated ciphertext buffer; caller must free with
-///   `sibna_free_buffer`.
+/// `session_id` / `session_id_len` — the peer ID used in `sibna_session_create`
+/// `plaintext` / `plaintext_len` — data to encrypt (must be ≥ 1 byte)
+/// `associated_data` / `ad_len` — optional AAD (pass NULL / 0 for none)
+/// `ciphertext_out` — receives the allocated ciphertext buffer; caller must free with `sibna_free_buffer`
 ///
 /// # Returns
 /// `SibnaResult::Ok` on success
@@ -687,7 +702,11 @@ pub extern "C" fn sibna_session_encrypt(
     ad_len: usize,
     ciphertext_out: *mut ByteBuffer,
 ) -> SibnaResult {
-    if context.is_null() || session_id.is_null() || plaintext.is_null() || ciphertext_out.is_null() {
+    if context.is_null()
+        || session_id.is_null()
+        || plaintext.is_null()
+        || ciphertext_out.is_null()
+    {
         set_last_error("Null pointer argument");
         return SibnaResult::InvalidArgument;
     }
@@ -700,7 +719,7 @@ pub extern "C" fn sibna_session_encrypt(
         return SibnaResult::InvalidArgument;
     }
 
-    let ctx = unsafe { &*(context as *mut crate::SecureContext) };
+    let ctx = unsafe { &mut *(context as *mut crate::SecureContext) };
     let session_id_slice = unsafe { slice::from_raw_parts(session_id, session_id_len) };
     let plaintext_slice = unsafe { slice::from_raw_parts(plaintext, plaintext_len) };
     let ad_slice: Option<&[u8]> = if associated_data.is_null() || ad_len == 0 {
@@ -722,12 +741,6 @@ pub extern "C" fn sibna_session_encrypt(
 
 /// Decrypt a message through a Double Ratchet session.
 ///
-/// `session_id` / `session_id_len` — session identifier.
-/// `ciphertext` / `ciphertext_len` — data to decrypt.
-/// `associated_data` / `ad_len` — optional AAD (must match what was used for encryption).
-/// `plaintext_out` — receives the allocated plaintext buffer; caller must free with
-///   `sibna_free_buffer`.
-///
 /// # Returns
 /// `SibnaResult::Ok` on success, `SibnaResult::AuthenticationFailed` on tampered data,
 /// `SibnaResult::SessionNotFound` if the session does not exist.
@@ -742,7 +755,11 @@ pub extern "C" fn sibna_session_decrypt(
     ad_len: usize,
     plaintext_out: *mut ByteBuffer,
 ) -> SibnaResult {
-    if context.is_null() || session_id.is_null() || ciphertext.is_null() || plaintext_out.is_null() {
+    if context.is_null()
+        || session_id.is_null()
+        || ciphertext.is_null()
+        || plaintext_out.is_null()
+    {
         set_last_error("Null pointer argument");
         return SibnaResult::InvalidArgument;
     }
@@ -750,12 +767,13 @@ pub extern "C" fn sibna_session_decrypt(
         set_last_error("Invalid session_id length");
         return SibnaResult::InvalidArgument;
     }
-    if ciphertext_len < 29 { // HEADER_SIZE(56) - but we need at minimum nonce+tag+1
+    if ciphertext_len < 29 {
+        // minimum header size (nonce + tag + 1)
         set_last_error("Ciphertext too short");
         return SibnaResult::InvalidCiphertext;
     }
 
-    let ctx = unsafe { &*(context as *mut crate::SecureContext) };
+    let ctx = unsafe { &mut *(context as *mut crate::SecureContext) };
     let session_id_slice = unsafe { slice::from_raw_parts(session_id, session_id_len) };
     let ciphertext_slice = unsafe { slice::from_raw_parts(ciphertext, ciphertext_len) };
     let ad_slice: Option<&[u8]> = if associated_data.is_null() || ad_len == 0 {
@@ -783,10 +801,10 @@ mod tests {
     fn test_byte_buffer() {
         let data = vec![1, 2, 3, 4, 5];
         let buffer = ByteBuffer::new(data);
-        
+
         assert_eq!(buffer.len, 5);
         assert!(!buffer.data.is_null());
-        
+
         unsafe {
             buffer.free();
         }
@@ -796,7 +814,7 @@ mod tests {
     fn test_generate_key() {
         let mut key = [0u8; 32];
         let result = sibna_generate_key(key.as_mut_ptr());
-        
+
         assert_eq!(result, SibnaResult::Ok);
         assert!(!key.iter().all(|&b| b == 0));
     }
@@ -806,10 +824,10 @@ mod tests {
         let mut key = [0x42u8; 32];
         // Make key valid (not all same byte)
         key[0] = 0x41;
-        
+
         let plaintext = b"Hello, World!";
         let mut ciphertext = ByteBuffer::empty();
-        
+
         let result = sibna_encrypt(
             key.as_ptr(),
             plaintext.as_ptr(),
@@ -818,10 +836,10 @@ mod tests {
             0,
             &mut ciphertext,
         );
-        
+
         assert_eq!(result, SibnaResult::Ok);
         assert!(!ciphertext.data.is_null());
-        
+
         let mut decrypted = ByteBuffer::empty();
         let result = sibna_decrypt(
             key.as_ptr(),
@@ -831,13 +849,13 @@ mod tests {
             0,
             &mut decrypted,
         );
-        
+
         assert_eq!(result, SibnaResult::Ok);
-        
+
         unsafe {
             let decrypted_vec = decrypted.to_vec();
             assert_eq!(decrypted_vec, plaintext);
-            
+
             ciphertext.free();
             decrypted.free();
         }
@@ -847,10 +865,10 @@ mod tests {
     fn test_random_bytes() {
         let mut buf1 = [0u8; 32];
         let mut buf2 = [0u8; 32];
-        
+
         sibna_random_bytes(32, buf1.as_mut_ptr());
         sibna_random_bytes(32, buf2.as_mut_ptr());
-        
+
         assert_ne!(buf1, buf2);
     }
 }

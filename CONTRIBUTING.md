@@ -1,34 +1,47 @@
-# Contributing to Sibna Protocol
+# المساهمة في Sibna Protocol
 
-## Security First
+## الأمان أولاً
 
-This is a cryptographic library. Every contribution must follow these rules:
+هذه مكتبة تشفير. كل مساهمة يجب أن تتبع هذه القواعد:
 
-### Critical rules
+### القواعد الحرجة
 
-- **No `.unwrap()` or `.expect()` in production code** — use `?` or explicit error handling
-- **No new dependencies without security review** — run `cargo audit` before adding any crate
-- **No custom cryptographic primitives** — use existing audited crates only (RustCrypto)
-- **All public API must be documented** — security notes required for crypto functions
-- **All tests must pass** including `cargo clippy -- -D warnings`
+- **لا `.unwrap()` أو `.expect()` في كود الإنتاج** — استخدم `?` أو معالجة أخطاء صريحة
+- **لا تبعيات جديدة بدون مراجعة أمنية** — شغّل `cargo audit` قبل إضافة أي crate
+- **لا primitives تشفير مخصصة** — استخدم فقط crates مُدقَّقة من RustCrypto
+- **كل Public API يجب توثيقه** — مطلوب ملاحظات أمنية للدوال التشفيرية
+- **جميع الاختبارات يجب أن تنجح** بما فيها `cargo clippy -- -D warnings`
 
-### Submitting changes
+### قاعدة `InternalErrorDetailed`
 
-1. Fork the repository and create a feature branch
-2. Run the full test suite: `cargo test --all`
-3. Run Clippy: `cargo clippy --all-targets -- -D warnings -D clippy::unwrap_used`
-4. Run formatting: `cargo fmt --all`
-5. Run security audit: `cargo audit`
-6. Submit a pull request with a clear description
+يُسمح باستخدام `ProtocolError::InternalErrorDetailed { details }` **فقط** لأغراض التسجيل الداخلي (`warn!` / `error!`). يجب **عدم إرجاعه** إلى المستدعي الخارجي. استخدم `ProtocolError::InternalError` للقيمة المُرجَعة العامة.
 
-### Reporting vulnerabilities
+```rust
+// ✅ صحيح
+.map_err(|e| {
+    warn!("OPERATION_FAILED: {:?}", e);   // تفاصيل في السجل فقط
+    ProtocolError::InternalError          // عام للمستدعي
+})?;
 
-**Do NOT open public issues for security vulnerabilities.**
+// ❌ خطأ
+.map_err(|e| ProtocolError::InternalErrorDetailed { details: e.to_string() })?;
+```
 
-Email: security@sibna.dev
+### إرسال التغييرات
 
-See [SECURITY.md](SECURITY.md) for the full disclosure policy.
+1. Fork المستودع وأنشئ feature branch
+2. شغّل مجموعة الاختبارات الكاملة: `cargo test --all`
+3. شغّل Clippy: `cargo clippy --all-targets -- -D warnings -D clippy::unwrap_used`
+4. شغّل التنسيق: `cargo fmt --all`
+5. شغّل التدقيق الأمني: `cargo audit`
+6. أرسل pull request مع وصف واضح
 
-### Code of Conduct
+### الإبلاغ عن الثغرات
 
-Be respectful and constructive. Security research benefits everyone.
+**لا تفتح issues عامة للثغرات الأمنية.**
+
+📧 `security@sibna.dev`
+
+### قواعد السلوك
+
+احترام وبناء. بحث الأمان يفيد الجميع.

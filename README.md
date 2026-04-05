@@ -1,37 +1,46 @@
 # Sibna Protocol
 
-A Rust implementation of X3DH and the Double Ratchet algorithm for commercially-compatible E2EE.
+تطبيق Rust لبروتوكول X3DH والـ Double Ratchet — تشفير E2EE مرخّص Apache 2.0 / MIT.
 
 ---
 
-**Notice**: This is an independent project. It is not affiliated with, endorsed by, or a fork of the Signal Technology Foundation or Signal Messenger.
+> **ملاحظة**: هذا مشروع مستقل. غير تابع لـ Signal Technology Foundation ولا Signal Messenger ولا يستخدم كودهم.
 
 ---
 
-## Overview
+## نظرة عامة
 
-Sibna is a cryptographic library providing an independent implementation of Signal-style end-to-end encryption (E2EE). It is designed to be integrated into proprietary or open-source applications where Signal's official app-specific infrastructure or GPLv3 licensing is not a fit.
+Sibna مكتبة تشفير توفر تطبيقاً مستقلاً لبروتوكول Signal-style E2EE. مصمم للتكامل مع تطبيقات تجارية أو مفتوحة المصدر حيث ترخيص GPLv3 أو البنية التحتية الرسمية لـ Signal غير ملائمة.
 
-- **Asynchronous Handshake**: Extended Triple Diffie-Hellman (X3DH).
-- **Continuous Re-keying**: Double Ratchet algorithm for forward secrecy and post-compromise security.
-- **Quantum Resistance (Default ON)**: Hybrid X25519 + ML-KEM-768 (FIPS 203) handshake. The session key is secure as long as *either* primitive is unbroken.
-- **Group Messaging**: Sender Key pattern.
-- **Licensing**: Apache 2.0 / MIT (Permissive).
+| الميزة | الحالة | التفاصيل |
+|--------|--------|----------|
+| **سرية الرسائل** | ✅ مدعوم | ChaCha20-Poly1305 AEAD |
+| **Forward Secrecy** | ✅ مدعوم | رatchet متماثل يُجدد المفتاح مع كل رسالة |
+| **Post-Compromise Security** | ✅ مدعوم | DH ratchet يُعيد التهيئة بعد كل جولة |
+| **مقاومة الكم (افتراضي)** | ✅ مدعوم | هجين X25519 + ML-KEM-768 (FIPS 203) |
+| **إخفاء حجم الرسالة** | ✅ مدعوم | padding بكتل ثابتة (256 B → 16 KB) |
+| **Cover Traffic** | ✅ مدعوم | توزيع أسي (Poisson) — F-08 |
+| **مصادقة P2P** | ✅ مدعوم | X3DH مباشر عبر TCP |
+| **Relay مُشفَّر** | ✅ مدعوم | WebSocket + Sealed Sender (الخادم لا يرى المُرسِل) |
+| **SOCKS5 / Tor** | ✅ مدعوم | `P2pConfig::proxy` أو `RelayClient::new(url, Some(proxy))` |
+| **رسائل المجموعات** | ✅ مدعوم | Sender Key pattern |
+| **FFI (C/Flutter/Python)** | ✅ مدعوم | `core/src/ffi/mod.rs` |
+| **WASM** | ✅ مدعوم | `core/src/wasm.rs` |
 
-## Quick Start (Rust)
+## البدء السريع (Rust)
 
 ```rust
 use sibna_core::{SecureContext, Config};
 use sibna_core::crypto::{CryptoHandler, KeyGenerator};
 
-// 1. Initialize context
+// 1. تهيئة السياق
 let config = Config::default();
 let ctx = SecureContext::new(config, Some(b"SecurePass123!"))?;
 
-// 2. Identity generation
+// 2. توليد الهوية
 let identity = ctx.generate_identity()?;
 
-// 3. Encrypt payload
+// 3. تشفير وفك تشفير
 let key     = KeyGenerator::generate_key()?;
 let handler = CryptoHandler::new(key.as_ref())?;
 
@@ -39,50 +48,52 @@ let ciphertext = handler.encrypt(b"Hello world", b"aad")?;
 let plaintext  = handler.decrypt(&ciphertext, b"aad")?;
 ```
 
-## Security & Architecture
+## التوجيه الهجين (P2P + Relay)
 
-Sibna focuses on technical transparency. The table below states exactly what this library does and does not provide.
+`HybridRouter` ينفذ سياسة "P2P أولاً":
 
-### What This Library Provides
+1. يحاول الاتصال المباشر عبر P2P إذا توفّر جلسة نشطة
+2. يتحوّل تلقائياً إلى Relay إذا فشل P2P
+3. يدعم اكتشاف الأجهزة المحلية عبر mDNS
 
-| Property | Status | Notes |
-|---|---|---|
-| Message Confidentiality | Supported | ChaCha20-Poly1305 AEAD |
-| Forward Secrecy | Supported | Symmetric ratchet re-keys every message |
-| Post-Compromise Security | Supported | DH ratchet re-keys after round-trips |
-| **Quantum Resistance** | **Default ON** | Hybrid X25519 + ML-KEM-768 (FIPS 203) |
-| Memory Key Zeroization | Supported | via `zeroize` |
+```rust
+let mut router = HybridRouter::new(ctx);
 
-### What This Library Does NOT Provide
+// اختياري: تفعيل P2P
+let node = P2pNode::new(P2pConfig::default(), ctx2).await?;
+router.set_p2p_node(node);
+router.start_discovery_loop().await?;
+
+// اختياري: Cover Traffic (توزيع أسي، متوسط 5 ثوانٍ)
+router.set_cover_traffic(true);
+router.start_cover_traffic_loop(2, 30);
+
+// إرسال رسالة (P2P أو Relay تلقائياً)
+router.send_message(&recipient_id, b"Hello").await?;
+
+// إيقاف نظيف
+router.stop_discovery();
+```
+
+## حدود الأمان (اقرأها)
 
 > [!CAUTION]
-> These are architectural constraints, not bugs. Integrators must handle them explicitly.
+> هذه قيود معمارية وليست أخطاء. المطوّرون مسؤولون عن معالجتها.
 
-| Limitation | Description |
-|---|---|
-| **Metadata (Traffic Size)** | Partial — Padding hides size, but not frequency without Cover Traffic | Enable `PaddingMode::Maximum` and implement `generate_cover_message()` on a timer |
-| **Metadata (Anonymity)** | IP is visible by default on direct socket connection | Set `proxy` to Tor SOCKS5 and enforce `require_anonymity: true` |
-| **Trust-On-First-Use (TOFU) limits** | The library securely pins Peer Identity Keys, automatically breaking connections if a MITM swapped the key later. However, **Safety Numbers must still be verified out-of-band** to prove the very first initially-pinned key. |
+| القيد | التوضيح |
+|-------|---------|
+| **TOFU** | التبادل الأول عرضة لـ MITM. يجب التحقق من "Safety Numbers" خارج النطاق للتأكيد المطلق |
+| **GPA** | لا حماية كاملة من مراقب يرى الشبكة الكاملة (Global Passive Adversary) |
+| **Anonymity** | إخفاء الهوية متاح فقط عبر Tor (`proxy = Some("socks5://127.0.0.1:9050")`) |
+| **Transport Security** | المكتبة لا توفر TLS — التطبيق مسؤول عن تأمين الطبقة التحتية |
+| **Side Channels** | نستخدم `subtle` لمقاومة timing attacks لكن لا ضمان ضد Spectre/Meltdown |
 
-### Technical Details
+## حالة المشروع: v1.0.3
 
-- **Constant-Time Cryptography**: Constant-time comparison via the `subtle` crate across all security-sensitive paths.
-- **Metadata Protection**: Constant 1KB block padding + Cover Traffic background heartbeats.
-- **Relay & P2P Routing**: Seamless failover between SOCKS5/Tor friendly relays and direct P2P connections.
-- **Hybrid PQC Default**: Both X25519 and ML-KEM-768 contribute to the session key. A quantum computer must break *both* to compromise a session.
-- **Without `pqc` feature**: X25519 only — vulnerable to a sufficiently capable quantum computer.
-- To disable PQC: `sibna-core = { default-features = false, features = ["std"] }`
+- **التحقق الآلي**: مجموعة 12 اختباراً أمنياً (attack vectors)
+- **لا تدقيق خارجي**: لم تُجرَ مراجعة أمنية مستقلة خارجية حتى الآن
+- راجع [SECURITY.md](SECURITY.md) و[PROTOCOL_SPECIFICATION.md](PROTOCOL_SPECIFICATION.md)
 
-## Project Status: Version 1.0.3
+## الترخيص
 
-**Critical**: This library is a protocol implementation and is NOT verified for high-risk production environments.
-
-- **Automated Validation**: We use a 12-vector test suite to verify protocol invariants and resilience against basic protocol-level attacks.
-- **No External Audit**: NO independent external security audit has been performed.
-- **Known Limitations**: Does not protect against global passive adversaries or advanced traffic correlation. See [SECURITY.md](SECURITY.md).
-
-See [SECURITY.md](SECURITY.md) and [PROTOCOL_SPECIFICATION.md](PROTOCOL_SPECIFICATION.md) for full threat model details.
-
-## License
-
-Dual-licensed under Apache License 2.0 and MIT.
+Apache License 2.0 / MIT (مزدوج — اختر ما يناسبك)

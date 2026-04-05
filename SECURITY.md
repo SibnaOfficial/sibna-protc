@@ -1,43 +1,79 @@
-# Sibna Protocol Security Model
+# نموذج الأمان — Sibna Protocol v1.0.3
 
-This document outlines the security model, trust assumptions, and known limitations of the Sibna Protocol (v1.0.3).
+هذا الملف يوثق نموذج التهديد، الافتراضات، والقيود المعروفة للبروتوكول.
 
-## Project Status
+---
 
-Sibna is an experimental protocol implementation. While it incorporates modern cryptographic standards (hybrid X25519 + ML-KEM-768), it has **not** undergone a formal external security audit. It is designed for researchers and advanced users, not for mission-critical production use without prior independent verification.
+## حالة المشروع
 
-## Threat Model
+Sibna تطبيق بروتوكول تشفير يستخدم معايير حديثة. **لم تُجرَ عليه مراجعة أمنية خارجية مستقلة.** مخصص للباحثين والمطورين المتقدمين — لا تستخدمه في بيئات الإنتاج الحرجة دون مراجعة مستقلة.
 
-### Adversary Capabilities
-We consider an adversary who can:
-- **Passively observe**: Monitor network traffic between peers or between a peer and the relay.
-- **Actively intercept**: MITM connections, drop, or inject packets.
-- **Compromise temporary state**: Access ephemeral secrets in memory (mitigated by `Zeroize`).
-- **Global Passive Adversary (GPA)**: An opponent that can monitor large portions of the global internet backbone.
+---
 
-### Protections Provided
-| Feature | Mitigation | Status |
-|---|---|---|
-| **Data Confidentiality** | ChaCha20-Poly1305 (256-bit) AEAD | Supported |
-| **Quantum Resistance** | Hybrid ML-KEM-768 + X25519 Handshake | Supported |
-| **Integrity Checks** | Constant-Time comparisons | Supported |
-| **Replay Protection** | Atomic Message Counters + Timestamping | Supported |
-| **Traffic Masking** | Jittered Cover Traffic | Supported |
-| **Metadata Protection** | Constant-size (1KB) blocks + Padding | Supported |
+## نموذج التهديد
 
-### Critical Limitations
+### قدرات الخصم المفترض
 
-#### 1. Global Passive Adversaries (GPA)
-While Sibna provides padding and optional cover traffic, it **cannot** fully protect against an adversary who sees the entire global network graph. Such an opponent can perform sophisticated **traffic correlation** and **statistical analysis** to link sender/receiver pairs.
+| القدرة | الوضع |
+|--------|-------|
+| مراقبة سلبية لحركة الشبكة | مُعالَج جزئياً |
+| اعتراض نشط / MITM | مُعالَج (بعد تحقق Safety Numbers) |
+| الوصول إلى الذاكرة المؤقتة | مُعالَج عبر `zeroize` |
+| مراقبة شاملة للإنترنت (GPA) | **غير مُعالَج بالكامل** |
+| قراءة ملفات قاعدة البيانات المحلية | مُعالَج (N-03 — التحقق عبر HMAC) |
 
-#### 2. Anonymity vs Transport Proxy
-The built-in SOCKS5/Tor support is a **transport option**, not a built-in anonymity guarantee. Routing traffic through Tor hides your IP from the recipient, but does not prevent the provider from seeing that you are using the Sibna protocol unless additional obfuscation (Bridges/Pluggable Transports) is used.
+---
 
-#### 3. Trust-On-First-Use (TOFU)
-The initial exchange remains vulnerable to a MITM attack. Users **must** verify "Safety Numbers" (fingerprints) out-of-band for absolute assurance of identity.
+## الحمايات المُطبَّقة
 
-#### 4. Side-Channel Resistance
-We use the `subtle` crate to prevent timing attacks in code, but we cannot guarantee resistance against lower-level micro-architectural side channels (e.g., Spectre, Meltdown) or hardware-level probes.
+| الميزة | الآلية | الحالة |
+|--------|--------|--------|
+| **سرية البيانات** | ChaCha20-Poly1305 (256-bit) AEAD | ✅ مدعوم |
+| **مقاومة الكم** | هجين ML-KEM-768 + X25519 | ✅ افتراضي |
+| **التكامل** | مقارنات constant-time عبر `subtle` | ✅ مدعوم |
+| **حماية الإعادة** | عدادات رسائل ذرية + طوابع زمنية | ✅ مدعوم |
+| **Cover Traffic** | توزيع أسي (Poisson process) — متوسط 5 ثوانٍ | ✅ مدعوم |
+| **إخفاء حجم الرسالة** | كتل ثابتة 256 B / 1 KB / 4 KB / 16 KB | ✅ مدعوم |
+| **Sealed Sender** | الخادم لا يعرف هوية المُرسِل | ✅ مدعوم |
+| **نزاهة المغلَّف** | Ed25519 + SHA-512 على جميع الحقول بما فيها `is_dummy` | ✅ مدعوم |
+| **حد الـ peers** | MAX_ACTIVE_PEERS = 500 في HybridRouter | ✅ مدعوم |
+| **تحقق العناوين** | رفض loopback/multicast/unspecified/port-0 | ✅ مدعوم |
+| **حد حجم الرسالة** | 64 MiB قبل أي تخصيص ذاكرة | ✅ مدعوم |
+| **graceful shutdown** | `stop_discovery()` + `tokio::select!` | ✅ مدعوم |
+| **نزاهة تحديات المصادقة** | HMAC-SHA256(challenge, jwt_secret) في sled | ✅ مدعوم |
 
-## Security Reporting
-Please report vulnerabilities privately via [security@sibna.dev].
+---
+
+## القيود الحرجة
+
+### 1. المراقب العالمي السلبي (GPA)
+
+Sibna يوفر padding وcover traffic لكنه **لا يستطيع** الحماية الكاملة من خصم يرى الشبكة الكاملة. مثل هذا الخصم يمكنه تحليل ارتباط الحركة إحصائياً لربط المرسل والمستقبل.
+
+**التخفيف الجزئي المتاح:** استخدام Tor عبر `P2pConfig { proxy: Some("socks5://127.0.0.1:9050"), .. }` أو `RelayClient::new(url, Some("socks5://127.0.0.1:9050"))`.
+
+### 2. TOFU (ثقة أولى بدون تحقق)
+
+التبادل الأول عرضة لـ MITM. المكتبة تثبّت مفاتيح الهوية (`verify_or_pin_peer_key`) وتكشف أي تغيير لاحق تلقائياً — لكن **يجب التحقق من Safety Numbers خارج النطاق** لتأمين التبادل الأول.
+
+### 3. إخفاء الهوية
+
+إخفاء الهوية ليس ميزة مدمجة. IP المستخدم مرئي للخادم بشكل افتراضي. إخفاء الهوية متاح **فقط** عند تكوين Tor أو SOCKS5 proxy صراحةً.
+
+### 4. قنوات الجانب (Side Channels)
+
+نستخدم `subtle` لمنع timing attacks في الكود — لكن لا ضمان ضد قنوات الجانب المعمارية (Spectre، Meltdown، أو مسابر الأجهزة).
+
+### 5. Timing Oracle في Rate Limiter (جزئي)
+
+`RateLimiter::check()` يستخدم `RwLock` عالمي. مهاجم دقيق يمكنه استنتاج وجود client_id من فرق الزمن. الإصلاح الكامل يتطلب إعادة هيكلة النوع بـ `DashMap` + `subtle::ConstantTimeEq` — موثَّق للإصلاح في الإصدار القادم.
+
+---
+
+## الإبلاغ عن الثغرات
+
+**لا تفتح issues عامة للثغرات الأمنية.**
+
+📧 `security@sibna.dev`
+
+راجع [CONTRIBUTING.md](CONTRIBUTING.md) لسياسة الإفصاح الكاملة.

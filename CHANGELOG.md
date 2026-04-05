@@ -1,231 +1,125 @@
 # Changelog
 
+كل التغييرات الملحوظة لبروتوكول Sibna موثَّقة هنا.
+
+الصيغة مبنية على [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+المشروع يتبع [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## [1.0.3] - 2026-04-05
+
+### أمان — إصلاحات حرجة
+
+- **F-01** `manager.rs`: إصلاح Race Condition في حلقة اكتشاف P2P — استُبدل نمط `contains_key + connect + insert` بـ `DashMap::entry().or_insert_with()` لإغلاق نافذة TOCTOU
+- **F-02** `manager.rs`: إصلاح `unwrap_or_default()` على hex decode للـ peer ID — كان يُنتج ghost peers بمفتاح فارغ مشترك في الـ DashMap؛ الآن يُسجِّل `warn!` ويتخطى الـ peer
+
+### أمان — إصلاحات عالية الخطورة
+
+- **F-03** `manager.rs`: إضافة `MAX_ACTIVE_PEERS = 500` في `add_p2p_peer` وحلقة الاكتشاف — يمنع استنزاف الذاكرة عبر mDNS flood
+- **F-04** `manager.rs`: `InternalErrorDetailed { details: e.to_string() }` استُبدل بـ `InternalError` في جميع نقاط الإرجاع العامة — التفاصيل في `warn!` الداخلي فقط
+- **F-05** `manager.rs`: إضافة `Arc<tokio::sync::Notify>` + `stop_discovery()` + `tokio::select!` — حلقة الاكتشاف الآن قابلة للإيقاف النظيف
+
+### أمان — إصلاحات متوسطة الخطورة
+
+- **F-06** `manager.rs`: إضافة حارس `MAX_MESSAGE_BYTES = 64 MiB` في `send_message` قبل أي تخصيص ذاكرة
+- **F-07** `manager.rs`: إضافة `is_valid_peer_addr()` — ترفض loopback / multicast / unspecified / port 0
+- **F-08** `manager.rs`: استبدال التوزيع المنتظم بتوزيع أسي (Poisson process، متوسط 5 ثوانٍ) في cover traffic — يُصعِّب التعرف على الأنماط
+- **N-01** `ws.rs`: استبدال `serde_json::to_vec(...).unwrap_or_default()` في موضعين بـ `match` صريح — يتجنب إرسال frame فارغ عند فشل التسلسل
+- **N-02** `rate_limit.rs`: توثيق timing oracle المحتمل في `check()` (جزئي) — الإصلاح الكامل مؤجَّل لـ v1.1.0 (يتطلب إعادة هيكلة النوع)
+- **N-03** `auth.rs`: تخزين `HMAC-SHA256(challenge, jwt_secret)` بدلاً من نص واضح في sled — يمنع استخراج challenges من قراءة ملفات قاعدة البيانات
+
+### إضافات تبعيات
+
+- `server/Cargo.toml`: إضافة `hmac = { workspace = true }` لدعم N-03
+
+### توثيق
+
+- `README.md`: تحديث شامل يعكس الميزات الفعلية والقيود الحقيقية
+- `SECURITY.md`: إضافة جدول الحمايات المُطبَّقة والقيود الموثَّقة
+- `PROTOCOL_SPECIFICATION.md`: توثيق `SignedEnvelope.signing_payload()` بدقة (تأكيد أن `is_dummy` مُضمَّن)
+- `CONTRIBUTING.md`: إضافة قاعدة `InternalErrorDetailed` بأمثلة واضحة
+
+---
+
 ## [1.0.1] - 2026-04-03
-### Added
-- **Full FFI Session Lifecycle**: Added `sibna_generate_identity`, `sibna_generate_prekey_bundle`, `sibna_perform_handshake`, `sibna_session_encrypt`, and `sibna_session_decrypt` allowing full X3DH and Double Ratchet usage from C/C++/Flutter/Python via FFI.
-- **Persistent Keystore**: Added `save_to_disk` and `load_from_disk` to `KeyStore` allowing persistence of Identity and Prekeys to disk, encrypted with ChaCha20-Poly1305. Opt-in via `persistent` feature (using `sled`).
-- **Ed25519 Challenge-Response**: Added `generate_challenge` and `verify_signed_challenge` for real cryptographic authentication.
-- **WASM Bindings**: Added `wasm.rs` exposing all session/handshake functions to JavaScript/TypeScript via `wasm-bindgen`.
-- **Prekey Server (`sibna-server`)**: Added a new workspace crate running an in-memory Axum HTTP server for PreKeyBundle upload and retrieval.
 
-### Fixed
-- Fixed compile error in `IdentityKeyPair::from_bytes` returning incorrect type and proper error propagation.
-- Fixed `lib.rs` loading identity with wrong signature.
+### إضافات
 
+- **FFI كامل لدورة الجلسة**: إضافة `sibna_generate_identity`، `sibna_generate_prekey_bundle`، `sibna_perform_handshake`، `sibna_session_encrypt`، `sibna_session_decrypt` — يتيح استخدام X3DH والـ Double Ratchet من C/C++/Flutter/Python عبر FFI
+- **Persistent Keystore**: إضافة `save_to_disk` و`load_from_disk` لـ `KeyStore` — تخزين مشفر بـ ChaCha20-Poly1305 عبر feature `persistent` (sled)
+- **Ed25519 Challenge-Response**: إضافة `generate_challenge` و`verify_signed_challenge` للمصادقة التشفيرية الحقيقية
+- **WASM Bindings**: إضافة `wasm.rs` يكشف دوال الجلسة/المصافحة لـ JavaScript/TypeScript عبر `wasm-bindgen`
+- **Sibna Server**: crate جديدة تشغّل Axum HTTP server لرفع واسترجاع PreKeyBundle
 
+### إصلاحات
 
-All notable changes to the Sibna Protocol will be documented in this file.
+- إصلاح خطأ compile في `IdentityKeyPair::from_bytes` (نوع مُرجَع خاطئ)
+- إصلاح `lib.rs` لتحميل الهوية بتوقيع صحيح
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+---
 
 ## [0.9.0] - 2026-03-20
 
-### Security — Critical fixes
+### أمان — إصلاحات حرجة
 
-* **HKDF session init**: Replaced dual `expand()` on same PRK with single 64-byte expand + split
-* **QR code mac_key**: Removed secret MAC key from serialized QR payload (was leaking private key)
-* **Shared secret exposure**: `perform_handshake()` no longer returns raw shared_secret to caller
-* **chain.rs derive_key**: Fixed `?` operator used inside non-Result return type (compile/panic bug)
-* **keystore::from_bytes**: Converted from panic-on-error to `ProtocolResult<Self>`
+- **HKDF session init**: استبدال `expand()` مزدوج على نفس PRK بـ expand واحد 64-byte + split
+- **QR code mac_key**: إزالة مفتاح MAC السري من حمولة QR المسلسلة (كان يُسرِّب مفتاح خاص)
+- **كشف الـ shared secret**: `perform_handshake()` لم يعد يُرجع raw shared_secret للمستدعي
+- **chain.rs derive_key**: إصلاح `?` operator مستخدم داخل دالة non-Result (كان يُسبب compile error / panic)
+- **keystore::from_bytes**: تحويل من panic-on-error إلى `ProtocolResult<Self>`
 
-### Security — High severity fixes
+### أمان — إصلاحات عالية الخطورة
 
-* **Group DoS prevention**: Added `MAX_SKIP_GROUP=500` bound in `GroupSession::decrypt()`
-* **Encryptor counter**: Fixed `initial_message_number=u64::MAX` → `0` (broke replay detection)
-* **session.rs panics**: Replaced 4 `.unwrap()` calls in `skip_message_keys()` with `?`
-* **add_group_member**: Propagated `ProtocolResult` from `add_member()` (was silently ignored)
-* **builder.rs panic**: Replaced `SecureRandom::new().unwrap()` with proper error propagation
-* **constant_time_cmp**: Documented as non-constant-time, hidden from public API
+- **Group DoS prevention**: إضافة حد `MAX_SKIP_GROUP=500` في `GroupSession::decrypt()`
+- **Encryptor counter**: إصلاح `initial_message_number=u64::MAX` → `0` (كان يُعطِّل كشف الإعادة)
+- **session.rs panics**: استبدال 4 استدعاءات `.unwrap()` في `skip_message_keys()` بـ `?`
+- **add_group_member**: تمرير `ProtocolResult` من `add_member()` (كان يُتجاهَل بصمت)
+- **builder.rs panic**: استبدال `SecureRandom::new().unwrap()` بمعالجة أخطاء صحيحة
+- **constant_time_cmp**: توثيق أنها غير constant-time، وإخفاؤها من الـ Public API
 
-### Security — Medium severity fixes
+### أمان — إصلاحات متوسطة الخطورة
 
-* **MAX_AD_LEN alignment**: Unified validation limit (1024→256) with crypto layer limit
-* **FFI last_error**: Implemented thread-local error storage (was always returning generic message)
-* **burst_tokens init**: Fixed initialization to `0` from `100` (rate limiter was ineffective initially)
-* **X3DH HKDF salt**: Replaced empty `&[]` salt with domain-separation constant
-* **Debug log files**: Removed 30 `errors_v*.log` files from repository
+- **MAX_AD_LEN**: توحيد حد التحقق (1024→256) مع حد طبقة التشفير
+- **FFI last_error**: تطبيق تخزين thread-local للأخطاء (كان دائماً يُرجع رسالة عامة)
+- **burst_tokens init**: إصلاح التهيئة من `100` → `0` (كان rate limiter غير فعّال ابتداءً)
+- **X3DH HKDF salt**: استبدال `&[]` بثابت domain-separation
+- **ملفات debug log**: إزالة 30 ملف `errors_v*.log` من المستودع
 
-### Changed
+### تغييرات
 
-* Version bumped to 0.9.0
-* `bincode` dependency: replaced RC version `2.0.0-rc.3` with stable `1.3.3`
-* `aes-gcm` dependency: removed (unused, increases attack surface)
-* Integration tests: completely rewritten with realistic scenarios
+- رفع الإصدار إلى 0.9.0
+- `bincode`: استبدال RC version بـ stable `1.3.3`
+- `aes-gcm`: إزالة (غير مستخدم، يزيد سطح الهجوم)
+- اختبارات التكامل: إعادة كتابة كاملة بسيناريوهات واقعية
 
-### Added
+### إضافات
 
-* `.github/workflows/ci.yml` — CI/CD with security audit, Miri, cross-platform tests
-* `deny.toml` — cargo-deny dependency policy (license + advisory + ban rules)
-* `clippy.toml` — strict clippy configuration
-* `rustfmt.toml` — unified code formatting
-* `.cargo/config.toml` — build configuration and shortcuts
-* `CONTRIBUTING.md` — security-first contribution guidelines
+- `.github/workflows/ci.yml` — CI/CD مع security audit + Miri + اختبارات cross-platform
+- `deny.toml` — سياسة cargo-deny (ترخيص + advisory + قواعد الحظر)
+- `clippy.toml` — إعدادات clippy صارمة
+- `rustfmt.toml` — تنسيق موحد
+- `CONTRIBUTING.md` — إرشادات المساهمة ذات أولوية أمنية
+
+---
 
 ## [0.8.0] - 2024-XX-XX
 
-### Security
+### أمان — إصلاحات حرجة
 
-#### Critical Fixes
-- **Memory Zeroization**: All sensitive data now properly zeroized on drop using `zeroize` crate
-- **Secure Serialization**: Session state now serialized with encrypted binary format instead of JSON
-- **Key Storage**: Skipped message keys now stored with automatic expiration and secure cleanup
+- **Memory Zeroization**: جميع البيانات الحساسة تُصفَّر عند الإسقاط عبر `zeroize`
+- **Secure Serialization**: حالة الجلسة تُسلسَل الآن بصيغة binary مشفرة بدلاً من JSON
+- **Key Storage**: مفاتيح الرسائل المتخطاة تُخزَّن مع انتهاء صلاحية تلقائي وتنظيف آمن
 
-#### High Severity Fixes
-- **Input Validation**: Comprehensive validation added for all external-facing APIs
-- **Rate Limiting**: DoS protection implemented for all cryptographic operations
-- **Timing Attack Prevention**: Constant-time comparison operations throughout
-- **Authentication**: HMAC verification strengthened with constant-time comparison
+### أمان — إصلاحات عالية الخطورة
 
-#### Medium Severity Fixes
-- **Group Messaging**: Sender key validation and rotation improved
-- **FFI Safety**: Double-free prevention and pointer validation added
-- **Error Handling**: Sensitive information no longer exposed in error messages
+- **Input Validation**: تحقق شامل لجميع الـ APIs الخارجية
+- **Rate Limiting**: حماية DoS لجميع عمليات التشفير
+- **Timing Attack Prevention**: مقارنات constant-time في جميع المسارات
+- **Authentication**: تقوية HMAC verification بمقارنة constant-time
 
-### Added
-
-#### Core Features
-- `SecureContext` - Main entry point for all protocol operations
-- `DoubleRatchetSession` - Improved session management with automatic rotation
-- `RateLimiter` - Configurable rate limiting with burst support
-- `SafetyNumber` - Identity verification with QR code support
-- `GroupManager` - Efficient group messaging with sender keys
-
-#### Cryptographic Improvements
-- `CryptoHandler` - Unified encryption interface with ChaCha20-Poly1305
-- `SecureRandom` - CSPRNG with entropy mixing and reseeding
-- `HkdfKdf` - HKDF key derivation with iteration support
-- `X3dhKdf` - X3DH shared secret derivation
-- `constant_time_eq` - Constant-time comparison functions
-
-#### Validation
-- `validate_message()` - Message size and content validation
-- `validate_key()` - Key strength and format validation
-- `validate_session_id()` - Session ID validation
-- `validate_password()` - Password strength validation
-- `validate_timestamp()` - Timestamp validation with clock skew handling
-
-### Changed
-
-#### API Changes
-- All error types now use `ProtocolError` enum
-- Results use `ProtocolResult<T>` type alias
-- Configuration moved to `Config` struct
-- Session creation returns `SessionHandle` instead of raw session
-
-#### Performance Improvements
-- Reduced allocations in hot paths
-- Improved cache locality
-- Batch operations for group messaging
-- Optimized key derivation
-
-### Deprecated
-
-- `sibna_protocol_v7` and `sibna_protocol_v8` modules (use `sibna_core` v9 instead)
-- Direct access to session state (use provided methods)
-- Manual key rotation (use automatic rotation)
-
-### Removed
-
-- Insecure JSON serialization for session state
-- Weak key acceptance
-- Unlimited skipped message keys storage
-- Timing-sensitive comparison operations
-
-### Fixed
-
-#### Memory Safety
-- Memory leaks in key storage
-- Use-after-free in FFI bindings
-- Double-free in buffer management
-- Stack overflow in recursive operations
-
-#### Cryptographic Issues
-- Weak key detection
-- Nonce reuse prevention
-- Key derivation improvements
-- Signature validation
-
-#### Protocol Issues
-- Replay attack prevention
-- Out-of-order message handling
-- Session state corruption
-- Group membership synchronization
+---
 
 ## [7.0.0] - 2023-XX-XX
 
-### Added
-- Initial release of Sibna Protocol
-- X3DH key agreement
-- Double Ratchet algorithm
-- Basic group messaging
-- FFI bindings
-
-### Security
-- Basic encryption with ChaCha20-Poly1305
-- X25519 key exchange
-- Ed25519 signatures
-
----
-
-## Migration Guide
-
-### From v7/v8 to v9
-
-1. **Update Dependencies**
-   ```toml
-   [dependencies]
-   sibna-core = "9.0.0"
-   ```
-
-2. **Update Configuration**
-   ```rust
-   // Old
-   let config = Config::default_v7();
-   
-   // New
-   let config = Config::default();
-   ```
-
-3. **Update Error Handling**
-   ```rust
-   // Old
-   match result {
-       Ok(val) => val,
-       Err(e) => handle_error(e),
-   }
-   
-   // New
-   result.map_err(|e| {
-       log_error(&e);
-       e.into()
-   })?;
-   ```
-
-4. **Update Session Management**
-   ```rust
-   // Old
-   let session = ctx.get_session(id)?;
-   
-   // New
-   let handle = ctx.create_session(id)?;
-   let session = handle.session();
-   ```
-
-## Security Advisories
-
-### Internal hardening (Fixed in 1.0.1)
-**Severity**: Critical
-**Description**: Memory leak in key storage could expose private keys
-**Impact**: Private key exposure
-**Fix**: All keys now properly zeroized on drop
-
-### Internal hardening (Fixed in 1.0.1)
-**Severity**: High
-**Description**: Insecure serialization could leak session state
-**Impact**: Session state exposure
-**Fix**: Binary serialization with encryption
-
----
-
-**Note**: This changelog only covers versions 7.0.0 and above. Earlier versions are not supported.
+*(إصدار قديم — تفاصيل في git history)*

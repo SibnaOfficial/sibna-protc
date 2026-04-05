@@ -231,6 +231,9 @@ pub struct GroupSession {
     pub last_activity: u64,
     /// Maximum group size
     pub max_size: usize,
+    /// Our Ed25519 signing key (32-byte seed) for message authentication.
+    /// FIX: Required to sign outgoing group messages and prevent impersonation.
+    pub our_signing_key: Option<[u8; 32]>,
 }
 
 impl GroupSession {
@@ -251,7 +254,14 @@ impl GroupSession {
             created_at: now,
             last_activity: now,
             max_size: max_size.min(MAX_GROUP_SIZE),
+            our_signing_key: None,
         }
+    }
+
+    /// Set the Ed25519 signing key (32-byte seed) for outgoing message signing.
+    /// Call this immediately after creating a GroupSession.
+    pub fn set_signing_key(&mut self, seed: [u8; 32]) {
+        self.our_signing_key = Some(seed);
     }
 
     /// Initialize sender key for this group
@@ -307,17 +317,28 @@ impl GroupSession {
         let crypto = CryptoHandler::new(&message_key)?;
         let ciphertext = crypto.encrypt(plaintext, &self.group_id)?;
         
-        let message = GroupMessage {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut message = GroupMessage {
             group_id: self.group_id,
             sender_key_id: sender_key.key_id,
             message_number: sender_key.message_number - 1,
             ciphertext,
             epoch: self.epoch,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
+            timestamp,
+            sender_signature: Vec::new(), // filled below after signing
         };
+        // Sign the message if a signing key is available
+        if let Some(ref sk_bytes) = self.our_signing_key {
+            use ed25519_dalek::{SigningKey, Signer};
+            let sk = SigningKey::from_bytes(sk_bytes);
+            let payload = message.signable_bytes();
+            let sig = sk.sign(&payload);
+            message.sender_signature = sig.to_bytes().to_vec();
+        }
 
         self.touch();
         
@@ -337,6 +358,24 @@ impl GroupSession {
         // Check epoch
         if message.epoch < self.epoch {
             return Err(ProtocolError::InvalidMessage);
+        }
+
+        // FIX: Verify sender's Ed25519 signature before deriving any keys.
+        // Without this, any peer with a valid sender_key_id can forge messages.
+        if !message.sender_signature.is_empty() {
+            use ed25519_dalek::{VerifyingKey, Signature, Verifier};
+            let vk = VerifyingKey::from_bytes(sender_public_key)
+                .map_err(|_| ProtocolError::InvalidKey)?;
+            let sig_bytes: [u8; 64] = message.sender_signature.as_slice()
+                .try_into()
+                .map_err(|_| ProtocolError::InvalidMessage)?;
+            let sig = Signature::from_bytes(&sig_bytes);
+            let payload = message.signable_bytes();
+            vk.verify(&payload, &sig)
+                .map_err(|_| ProtocolError::AuthenticationFailed)?;
+        } else {
+            // Reject unsigned group messages
+            return Err(ProtocolError::AuthenticationFailed);
         }
 
         let sender_key = self.sender_keys.get_mut(sender_public_key)
@@ -438,11 +477,40 @@ pub struct GroupMessage {
     pub epoch: u64,
     /// Timestamp
     pub timestamp: u64,
+    /// Ed25519 signature over signable_bytes() by the sender's identity key.
+    /// FIX: Added to prevent sender impersonation — any group member (or a
+    /// compromised server) could forge messages without this signature.
+    #[serde(with = "serde_bytes")]
+    pub sender_signature: Vec<u8>,
 }
 
 impl GroupMessage {
+    /// Returns the canonical byte sequence that the sender must sign.
+    /// Covers: group_id || sender_key_id || message_number || epoch ||
+    ///         timestamp || first 32 bytes of ciphertext hash.
+    pub fn signable_bytes(&self) -> Vec<u8> {
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(&self.ciphertext);
+        let ct_hash: [u8; 32] = hasher.finalize().into();
+
+        let mut buf = Vec::with_capacity(32 + 4 + 4 + 8 + 8 + 32);
+        buf.extend_from_slice(&self.group_id);
+        buf.extend_from_slice(&self.sender_key_id.to_le_bytes());
+        buf.extend_from_slice(&self.message_number.to_le_bytes());
+        buf.extend_from_slice(&self.epoch.to_le_bytes());
+        buf.extend_from_slice(&self.timestamp.to_le_bytes());
+        buf.extend_from_slice(&ct_hash);
+        buf
+    }
+
     /// Validate the message
     pub fn validate(&self) -> ProtocolResult<()> {
+        // Reject unsigned messages
+        if self.sender_signature.is_empty() {
+            return Err(ProtocolError::AuthenticationFailed);
+        }
+
         // Check timestamp
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

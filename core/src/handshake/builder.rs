@@ -368,18 +368,20 @@ impl X3dhHandshake {
         // Build associated data
         let ad = self.build_associated_data(&our_identity.x25519_public, &peer_ik);
 
-        // Ephemeral keys in responder flow usually refer to the key the responder might generate,
-        // but in basic X3DH responder doesn't send a *new* ephemeral, they just finish the DH.
-        // However, HandshakeOutput expects a 'local_ephemeral_key'. For responder, we return 
-        // our signed prekey as a placeholder or we just populate it with something valid.
-        // Actually, some X3DH variants have responder send an ephemeral. 
-        // Our 'x3dh_responder' doesn't use a new responder ephemeral.
-        // I will use our signed prekey secret as a sensible substitute for 'local_ephemeral_key' 
-        // in the output struct, or the OPK if it was used.
-        // Wait, 'HandshakeOutput::new' needs local_ephemeral_key.
+        // NOTE: In the standard X3DH responder flow, the responder does NOT generate
+        // a new ephemeral key — it uses its long-term signed prekey (SPK) for DH.
+        // HandshakeOutput::new requires a "local_ephemeral_key" parameter, which we
+        // populate with the SPK here. This is architecturally correct for X3DH:
+        // the SPK plays the role of a "semi-ephemeral" key (rotated periodically).
+        //
+        // SECURITY NOTE: The signed prekey is NOT forward-secret in the same way as
+        // a truly ephemeral key, because it is reused until explicitly rotated.
+        // Callers must rotate the signed prekey regularly (recommended: every 7 days,
+        // enforced by SignedPreKey::is_expired). The one-time prekey (OPK), when
+        // available, provides additional forward secrecy for the responder.
         let output = HandshakeOutput::new(
             x3dh_result.shared_secret,
-            our_signed_prekey.clone(),
+            our_signed_prekey.clone(), // SPK acts as semi-ephemeral key (see note above)
             PublicKey::from(&our_signed_prekey),
         ).with_associated_data(ad);
 

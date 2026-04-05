@@ -243,6 +243,10 @@ impl RateLimiter {
         }
     }
 
+    /// Maximum number of distinct client IDs tracked simultaneously.
+    /// Prevents unbounded memory growth when attacker rotates client_id strings.
+    const MAX_TRACKED_CLIENTS: usize = 100_000;
+
     /// Check if an operation is allowed
     ///
     /// # Arguments
@@ -260,8 +264,17 @@ impl RateLimiter {
         let limits = self.limits.read();
         let limit = limits.get(operation)
             .ok_or_else(|| RateLimitError::UnknownOperation(operation.to_string()))?;
-        
+
         let mut counters = self.counters.write();
+
+        // FIX: Bound the HashMap to prevent memory exhaustion.
+        // An attacker who rotates client IDs (e.g. one per request) could grow the
+        // counters map indefinitely. When the cap is reached, reject new unknown clients
+        // so the server remains stable. Known clients (already in the map) are unaffected.
+        if !counters.contains_key(client_id) && counters.len() >= Self::MAX_TRACKED_CLIENTS {
+            return Err(RateLimitError::GlobalRateExceeded);
+        }
+
         let counter = counters.entry(client_id.to_string()).or_default();
         let now = Instant::now();
         
@@ -408,12 +421,18 @@ impl RateLimiter {
         let limit = limits.get(operation)?;
         
         let mut counters = self.counters.write();
+        // Only create entry for known clients — don't grow the map on quota queries
+        if !counters.contains_key(client_id) {
+            if counters.len() >= Self::MAX_TRACKED_CLIENTS {
+                return None;
+            }
+        }
         let counter = counters.entry(client_id.to_string()).or_default();
         let now = Instant::now();
-        
+
         self.update_counters(counter, limit, now);
         self.refill_burst_tokens(counter, limit, now);
-        
+
         Some(RemainingQuota {
             per_second: limit.max_per_second.saturating_sub(counter.second_count),
             per_minute: limit.max_per_minute.saturating_sub(counter.minute_count),

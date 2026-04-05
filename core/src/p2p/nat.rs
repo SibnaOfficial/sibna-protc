@@ -97,7 +97,12 @@ impl NatManager {
         // or a default. Real parsing requires matching on XOR_MAPPED_ADDRESS.
         
         // Mocking the successful parse since library-specific attribute extraction is verbose
-        let remote_addr = socket.connect(stun_server).map(|_| socket.local_addr().unwrap()).unwrap_or(SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::new(127,0,0,1)), 0));
+        // FIX: Replace chained unwrap() with explicit error handling.
+        // socket.local_addr() after connect() can fail on some platforms.
+        let remote_addr = match socket.connect(stun_server).and_then(|_| socket.local_addr()) {
+            Ok(addr) => addr,
+            Err(_) => SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0),
+        };
         
         Ok(remote_addr)
     }

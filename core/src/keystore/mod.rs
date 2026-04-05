@@ -55,8 +55,18 @@ impl IdentityKeyPair {
     }
 
     /// Create from bytes
+    /// Restore identity key pair from a master seed using HKDF domain separation.
+    ///
+    /// # Security
+    /// Ed25519 and X25519 keys are derived via HKDF with distinct info strings so
+    /// that knowing one key does NOT allow derivation of the other. Previously both
+    /// were derived directly from the same seed bytes — a cryptographic domain
+    /// separation failure that has been corrected here.
     pub fn from_bytes(ed_pub: &[u8], x_pub: &[u8], seed: &[u8]) -> ProtocolResult<Self> {
         use ed25519_dalek::SigningKey;
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        use zeroize::Zeroize;
         use crate::error::ProtocolError;
 
         let ed25519_public: [u8; 32] = ed_pub
@@ -69,8 +79,21 @@ impl IdentityKeyPair {
             .try_into()
             .map_err(|_| ProtocolError::InvalidKeyLength)?;
 
-        let signing_key = SigningKey::from_bytes(&seed_arr);
-        let x25519_secret = x25519_dalek::StaticSecret::from(seed_arr);
+        // FIX: Use HKDF with distinct info tags to derive separate key material
+        // for Ed25519 and X25519. Reusing the raw seed for both leaks cross-domain
+        // key material and violates cryptographic separation.
+        let hkdf = Hkdf::<Sha256>::new(None, &seed_arr);
+        let mut ed_seed = [0u8; 32];
+        let mut x_seed = [0u8; 32];
+        hkdf.expand(b"SibnaIdentityKey_Ed25519_v1", &mut ed_seed)
+            .map_err(|_| ProtocolError::KeyDerivationFailed)?;
+        hkdf.expand(b"SibnaIdentityKey_X25519_v1", &mut x_seed)
+            .map_err(|_| ProtocolError::KeyDerivationFailed)?;
+
+        let signing_key = SigningKey::from_bytes(&ed_seed);
+        let x25519_secret = x25519_dalek::StaticSecret::from(x_seed);
+        ed_seed.zeroize();
+        x_seed.zeroize();
 
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

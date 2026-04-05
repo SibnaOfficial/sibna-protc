@@ -1,8 +1,16 @@
 #![allow(missing_docs)]
 //! Secure Random Number Generation
 //!
-//! Provides cryptographically secure random number generation
-//! with entropy mixing. All panics replaced with proper error propagation.
+//! Provides cryptographically secure random number generation.
+//! The primary source of entropy is `OsRng` (backed by getrandom/OS).
+//!
+//! An internal entropy pool is XOR'd into output bytes as a defence-in-depth
+//! measure. This does NOT strengthen `OsRng` output — if `OsRng` is working
+//! correctly the XOR is redundant. Its purpose is to provide a secondary
+//! mixing layer in the unlikely event of a partial `OsRng` failure.
+//! It cannot *reduce* the entropy of strong `OsRng` output.
+//!
+//! All panics replaced with proper error propagation.
 
 use super::{CryptoError, CryptoResult};
 use rand_core::{CryptoRng, RngCore};

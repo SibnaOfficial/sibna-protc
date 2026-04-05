@@ -21,10 +21,9 @@ pub struct X3dhResult {
 
 impl X3dhResult {
     /// Create a new X3DH result
-    pub fn new(shared_secret: [u8; 32], mut dh_results: Vec<[u8; 32]>) -> Self {
-        for dh in &mut dh_results {
-            dh.zeroize();
-        }
+    /// Creates an X3DH result. DH intermediates are stored and zeroized on Drop.
+    /// NOTE: Do NOT zeroize here — the values are needed until Drop.
+    pub fn new(shared_secret: [u8; 32], dh_results: Vec<[u8; 32]>) -> Self {
         Self {
             shared_secret,
             dh_results,

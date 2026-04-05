@@ -36,12 +36,15 @@ pub fn constant_time_copy(condition: bool, dst: &mut [u8], src: &[u8]) {
     }
 }
 
-/// Lexicographic byte-slice comparison.
-/// 
-/// # SECURITY WARNING
-/// This function is NOT constant-time. It is used only for non-sensitive sorting.
+/// Lexicographic byte-slice comparison for **non-sensitive** ordering only.
+///
+/// # ⚠️ SECURITY WARNING — NOT CONSTANT-TIME
+/// Despite being in the `secure_compare` module, this function uses early-exit
+/// comparisons and is **NOT** safe against timing attacks. It must never be
+/// used to compare secrets, tokens, MACs, or any security-sensitive data.
+/// Use `constant_time_eq` for any sensitive comparison.
 #[doc(hidden)]
-pub fn constant_time_cmp(a: &[u8], b: &[u8]) -> i8 {
+pub fn lexicographic_cmp_non_constant_time(a: &[u8], b: &[u8]) -> i8 {
     if a.len() != b.len() {
         return (a.len() as i8) - (b.len() as i8);
     }
@@ -106,7 +109,20 @@ pub fn verify_hmac(key: &[u8], data: &[u8], mac: &[u8]) -> bool {
     computed_mac.ct_eq(mac).into()
 }
 
-/// Secure comparison for passwords
+/// Constant-time byte comparison, intended for comparing a password against
+/// another byte sequence of equal length in constant time.
+///
+/// # ⚠️ WARNING — This is NOT a password verifier
+/// This function compares raw bytes. It does NOT perform password hashing.
+/// Never compare a plaintext password against a stored hash using this function —
+/// that would expose the hash to timing attacks.
+///
+/// For correct password verification, use Argon2 or bcrypt:
+///   - Hash the password with Argon2 at registration time
+///   - Use `argon2::verify_encoded()` at login time (it is already constant-time)
+///
+/// This function is safe only for comparing two values that are already
+/// derived through a KDF (e.g. two HMAC outputs of equal length).
 pub fn secure_password_compare(password: &[u8], hash: &[u8]) -> bool {
     password.ct_eq(hash).into()
 }

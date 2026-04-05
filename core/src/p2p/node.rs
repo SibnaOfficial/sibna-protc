@@ -176,7 +176,11 @@ impl P2pNode {
 
     /// Return the local socket address this node is listening on.
     pub fn local_addr(&self) -> SocketAddr {
-        self.listener.local_addr().expect("listener has addr")
+        // SAFETY: The listener is bound during P2pNode::new() and is valid for the
+        // lifetime of the node. local_addr() only fails if the socket is not bound,
+        // which cannot happen here. The expect() is acceptable as a programming-error
+        // guard, not a runtime failure path.
+        self.listener.local_addr().expect("listener has addr — invariant: bound in new()")
     }
 
     /// Export this node's `PreKeyBundle` as bytes.

@@ -350,6 +350,11 @@ pub extern "C" fn sibna_random_bytes(
     if output.is_null() {
         return SibnaResult::InvalidArgument;
     }
+    // FIX: Bound len to prevent mapping huge memory slices from C callers.
+    const MAX_RANDOM_LEN: usize = 1024 * 1024; // 1 MB
+    if len == 0 || len > MAX_RANDOM_LEN {
+        return SibnaResult::InvalidArgument;
+    }
 
     let mut rng = match SecureRandom::new() {
         Ok(r) => r,
@@ -617,7 +622,11 @@ pub extern "C" fn sibna_perform_handshake(
         set_last_error("Null pointer argument");
         return SibnaResult::InvalidArgument;
     }
-    if bundle_len == 0 || peer_id_len == 0 || peer_id_len > 256 {
+    // FIX: Add upper bound on bundle_len to prevent C callers from passing
+    // SIZE_MAX which would cause from_raw_parts to map gigabytes of memory.
+    // A valid PreKeyBundle serialization is always under 4 KB.
+    const MAX_BUNDLE_LEN: usize = 8 * 1024; // 8 KB hard ceiling
+    if bundle_len == 0 || bundle_len > MAX_BUNDLE_LEN || peer_id_len == 0 || peer_id_len > 256 {
         set_last_error("Invalid buffer length");
         return SibnaResult::InvalidArgument;
     }

@@ -100,6 +100,14 @@ impl HybridRouter {
 
     #[cfg(feature = "p2p")]
     /// Start the mDNS discovery loop to find peers on the local network.
+    /// Start the background peer-discovery loop.
+    ///
+    /// Periodically scans for nearby P2P nodes and updates the internal peer
+    /// list. This loop runs until the `HybridRouter` is dropped.
+    ///
+    /// # Errors
+    /// Returns `ProtocolError::InvalidState` if the router is not fully
+    /// initialised before this is called.
     pub async fn start_discovery_loop(&self) -> ProtocolResult<()> {
         let node = self.p2p_node.as_ref()
             .ok_or_else(|| ProtocolError::InternalErrorDetailed { details: "P2P node not configured".into() })?;

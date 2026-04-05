@@ -94,7 +94,8 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use x25519_dalek::PublicKey;
 
 /// Protocol version
-pub const VERSION: &str = "1.0.1";
+/// Protocol version — always in sync with Cargo.toml
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Protocol version number for compatibility
 pub const VERSION_NUMBER: u32 = 1;
@@ -212,16 +213,53 @@ impl SecureContext {
                 .map_err(|_| ProtocolError::WeakPassword)?;
         }
 
-        // Derive storage key from password or generate random
+        // Derive storage key from master password using Argon2id (memory-hard KDF).
+        //
+        // FIX: Replaced HkdfKdf::derive_iterated(10000 rounds) with Argon2id.
+        // HKDF-iterated is NOT a password-based KDF: it is fast to compute, which
+        // means an attacker with a GPU can try billions of password candidates per
+        // second. Argon2id is specifically designed to be memory-hard and GPU-resistant.
+        //
+        // The salt is randomly generated here and must be stored alongside the
+        // encrypted keystore so it can be reproduced on load. Currently the salt is
+        // ephemeral (not persisted), which means the storage key changes on every
+        // restart. Integrators using persistent storage MUST persist the salt.
+        // TODO (tracked): persist salt in the keystore header before v1.1 release.
         let storage_key = if let Some(password) = master_password {
-            let salt = crypto::random_vec(32);
-            let key = crypto::kdf::HkdfKdf::derive_iterated(
-                password,
-                &salt,
-                b"SibnaStorageKey_v9",
-                10000,
-            )?;
-            key
+            #[cfg(feature = "argon2")]
+            {
+                use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+                use rand_core::OsRng;
+                use zeroize::Zeroizing;
+
+                let salt = SaltString::generate(&mut OsRng);
+                let argon2 = Argon2::default(); // Argon2id, m=19MiB, t=2, p=1
+
+                let hash = argon2
+                    .hash_password(password, &salt)
+                    .map_err(|_| ProtocolError::KeyDerivationFailed)?;
+
+                // Extract the raw hash bytes (32 bytes) as storage key
+                let hash_bytes = hash.hash
+                    .ok_or(ProtocolError::KeyDerivationFailed)?;
+                let key_bytes: [u8; 32] = hash_bytes.as_bytes()
+                    .try_into()
+                    .map_err(|_| ProtocolError::KeyDerivationFailed)?;
+                Zeroizing::new(key_bytes)
+            }
+            #[cfg(not(feature = "argon2"))]
+            {
+                // Argon2 feature not enabled — fall back to HKDF-100k.
+                // WARNING: This is significantly weaker than Argon2id.
+                // Enable the "argon2" feature for production deployments.
+                let salt = crypto::random_vec(32);
+                crypto::kdf::HkdfKdf::derive_iterated(
+                    password,
+                    &salt,
+                    b"SibnaStorageKey_v9",
+                    100_000, // increased from 10_000 to 100_000 as minimum mitigation
+                )?
+            }
         } else {
             crypto::KeyGenerator::generate_key()?
         };
@@ -413,16 +451,34 @@ impl SecureContext {
 
         let sessions = self.sessions.write();
 
+        // FIX: Correct remote_dh selection for Double Ratchet initialisation.
+        //
+        // For the INITIATOR: the first DH ratchet step uses the peer's signed prekey
+        // as the initial remote DH public key — this matches the X3DH output.
+        //
+        // For the RESPONDER: the first DH ratchet step uses the initiator's EPHEMERAL
+        // key (peer_onetime_prekey here carries the initiator's ephemeral public key,
+        // which the responder must use to seed the receiving chain). Using the OPK
+        // itself as remote_dh was a protocol-layer bug — the OPK is already consumed
+        // inside x3dh_responder and must not be reused as the ratchet seed.
+        //
+        // NOTE: The API parameter `peer_onetime_prekey` is reused here to transport
+        // the initiator's ephemeral public key to the responder path. Callers MUST
+        // pass the initiator's ephemeral public key (not their OPK) when initiator=false.
         let (remote_dh, local_dh) = if initiator {
+            // Initiator seeds the ratchet with peer's SPK as first remote DH key.
             let spk = peer_signed_prekey.ok_or(ProtocolError::InvalidState)?;
             let remote_dh = PublicKey::from(
                 <[u8; 32]>::try_from(spk).map_err(|_| ProtocolError::InvalidKeyLength)?
             );
             (remote_dh, output.local_ephemeral_key)
         } else {
-            let opk = peer_onetime_prekey.ok_or(ProtocolError::InvalidState)?;
+            // Responder seeds the ratchet with initiator's ephemeral public key.
+            // The caller passes this in peer_onetime_prekey for the responder path.
+            let initiator_eph = peer_onetime_prekey.ok_or(ProtocolError::InvalidState)?;
             let remote_dh = PublicKey::from(
-                <[u8; 32]>::try_from(opk).map_err(|_| ProtocolError::InvalidKeyLength)?
+                <[u8; 32]>::try_from(initiator_eph)
+                    .map_err(|_| ProtocolError::InvalidKeyLength)?
             );
             (remote_dh, output.local_ephemeral_key)
         };

@@ -85,7 +85,7 @@ pub struct P2pConfig {
 impl Default for P2pConfig {
     fn default() -> Self {
         Self {
-            bind_addr: "0.0.0.0:0".parse().expect("static addr parse"),
+            bind_addr: "0.0.0.0:0".parse().expect("static literal addr is always valid"),
             handshake_timeout_secs: 30,
             max_peers: 256,
             max_message_size: 10 * 1024 * 1024, // 10 MB

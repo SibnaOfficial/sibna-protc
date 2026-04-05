@@ -1,0 +1,132 @@
+name: Build and Release Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build for ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: sibna-linux-x64
+          - name: Windows x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: sibna-windows-x64
+          - name: macOS x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: sibna-macos-x64
+          - name: macOS Apple Silicon
+            os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: sibna-macos-arm64
+          - name: Android aarch64
+            os: ubuntu-latest
+            target: aarch64-linux-android
+            artifact_name: sibna-android-arm64
+          - name: Android armv7
+            os: ubuntu-latest
+            target: armv7-linux-androideabi
+            artifact_name: sibna-android-armv7
+          - name: iOS ARM64
+            os: macos-latest
+            target: aarch64-apple-ios
+            artifact_name: sibna-ios-arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.target }}
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux' && !contains(matrix.platform.target, 'android')
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+
+      - name: Setup Android NDK
+        if: contains(matrix.platform.target, 'android')
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
+
+      - name: Install cargo-ndk
+        if: contains(matrix.platform.target, 'android')
+        run: cargo install cargo-ndk
+
+      - name: Build Core
+        run: |
+          if [[ "${{ matrix.platform.target }}" == *"android"* ]]; then
+            cargo ndk -t ${{ matrix.platform.target }} build --release -p sibna-core --features ffi
+          else
+            cargo build --release --target ${{ matrix.platform.target }} -p sibna-core --features ffi
+          fi
+        shell: bash
+
+      - name: Generate C Header (cbindgen)
+        run: |
+          cargo install cbindgen
+          cbindgen --config core/cbindgen.toml core/src/lib.rs -o core/sibna.h
+        shell: bash
+        if: matrix.platform.name == 'Linux x86_64' # Only need to generate once
+
+      - name: Package Artifacts
+        run: |
+          mkdir -p dist
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp target/${{ matrix.platform.target }}/release/sibna_core.dll dist/
+            cp target/${{ matrix.platform.target }}/release/sibna_core.lib dist/
+          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+            cp target/${{ matrix.platform.target }}/release/libsibna_core.dylib dist/ || true
+            cp target/${{ matrix.platform.target }}/release/libsibna_core.a dist/ || true
+          else
+            cp target/${{ matrix.platform.target }}/release/libsibna_core.so dist/ || true
+            cp target/${{ matrix.platform.target }}/release/libsibna_core.a dist/ || true
+          fi
+          
+          if [[ -f "core/sibna.h" ]]; then
+            cp core/sibna.h dist/
+          fi
+          
+          cd dist && zip -r ../${{ matrix.platform.artifact_name }}.zip .
+        shell: bash
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform.artifact_name }}
+          path: ${{ matrix.platform.artifact_name }}.zip
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

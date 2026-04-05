@@ -1,0 +1,29 @@
+# Rust
+/target
+/Cargo.lock
+**/*.rs.bk
+
+# IDEs
+.vscode/
+.idea/
+
+# Testing artifacts
+*.log
+test_run*
+errors_v*
+tests/test_db_*
+
+# JS libraries
+node_modules/
+/dist/
+*.tsbuildinfo
+
+# OS junk
+.DS_Store
+Thumbs.db
+.brain/
+.agents/
+.agent/
+_agents/
+_agent/
+brain/

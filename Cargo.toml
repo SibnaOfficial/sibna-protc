@@ -1,0 +1,98 @@
+# Sibna Protocol v1.0 - Production Hardened Edition
+# Implementation of the Signal Protocol. No independent external security audit has been performed.
+# See SECURITY.md for current threat model, limitations, and audit roadmap.
+
+[workspace]
+members = ["core", "tests", "server"]
+resolver  = "2"
+
+[workspace.dependencies]
+# === Cryptographic primitives (RustCrypto - audited) ===
+x25519-dalek    = { version = "2.0.1", features = ["reusable_secrets", "static_secrets", "zeroize"] }
+ed25519-dalek   = { version = "2.1.1", features = ["rand_core", "serde", "zeroize"] }
+chacha20poly1305 = { version = "0.10.1", features = ["std"] }
+# NOTE: aes-gcm removed — not used in production code, reduces attack surface
+hkdf            = "0.12.4"
+hmac            = { version = "0.12.1", features = ["std"] }
+sha2            = "0.10.8"
+sha3            = "0.10.8"
+blake3          = "1.5.1"
+rand_core       = { version = "0.6.4", features = ["getrandom", "std"] }
+rand            = { version = "0.8.5", features = ["std_rng"] }
+getrandom       = "0.2.14"
+
+# === Serialization ===
+serde           = { version = "1.0.203", features = ["derive", "rc"] }
+serde_json      = "1.0.117"
+# NOTE: bincode 2.x RC replaced with stable 1.x — RC versions are not production-safe
+bincode         = { version = "1.3.3" }
+
+# === Error handling ===
+thiserror       = "1.0.61"
+anyhow          = "1.0.86"
+
+# === Logging ===
+tracing         = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+
+# === Security ===
+zeroize         = { version = "1.8.1", features = ["zeroize_derive", "alloc", "serde"] }
+secrecy         = { version = "0.8.0", features = ["serde"] }
+constant_time_eq = "0.3.0"
+subtle = "2.6.1"
+mdns-sd         = "0.13"
+if-addrs        = "0.13"
+igd             = "0.12"
+stun            = "0.6"
+fips203         = "0.4.0"
+
+# === Utilities ===
+bytes           = { version = "1.6.0", features = ["serde"] }
+parking_lot     = "0.12.3"
+dashmap         = "6.0.1"
+once_cell       = "1.19.0"
+hex             = "0.4.3"
+libc            = "0.2.155"
+lz4_flex        = "0.11"
+
+# === Async runtime (P2P feature) ===
+tokio           = { version = "1.37", features = ["net", "rt-multi-thread", "sync", "io-util", "time", "macros"] }
+tokio-util      = { version = "0.7", features = ["codec"] }
+futures         = { version = "0.3" }
+reqwest         = { version = "0.12", default-features = false, features = ["json", "socks", "rustls-tls"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+url             = "2.5"
+
+# === WASM (optional) ===
+wasm-bindgen    = { version = "0.2.92" }
+js-sys          = { version = "0.3.69" }
+web-sys         = { version = "0.3.69" }
+
+[workspace.package]
+version     = "1.0.4"
+edition     = "2021"
+rust-version = "1.75"
+license     = "Apache-2.0 OR MIT"
+authors     = ["Sibna Security Team <security@sibna.dev>"]
+description = "Production-grade secure communication protocol — Signal Protocol implementation"
+repository  = "https://github.com/SibnaOfficial/sibna-protc"
+keywords    = ["cryptography", "encryption", "signal", "secure-messaging", "e2ee"]
+categories  = ["cryptography", "network-programming"]
+
+[profile.release]
+opt-level       = 3
+lto             = "fat"
+codegen-units   = 1
+panic           = "abort"
+strip           = true
+overflow-checks = true
+
+[profile.dev]
+opt-level       = 1
+debug           = true
+overflow-checks = true
+
+[profile.test]
+opt-level       = 2
+debug           = true
+overflow-checks = true

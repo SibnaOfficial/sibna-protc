@@ -1,0 +1,17 @@
+# Sibna Protocol — Rust formatting configuration
+edition           = "2021"
+max_width         = 100
+tab_spaces        = 4
+newline_style     = "Unix"
+use_small_heuristics = "Default"
+imports_granularity = "Module"
+group_imports     = "StdExternalCrate"
+reorder_imports   = true
+reorder_modules   = true
+remove_nested_parens = true
+merge_derives     = true
+use_field_init_shorthand = true
+format_strings    = false
+wrap_comments     = true
+comment_width     = 80
+normalize_comments = true

@@ -380,7 +380,6 @@ impl DoubleRatchetSession {
     }
 }
 
-
 impl Zeroize for DoubleRatchetSession {
     fn zeroize(&mut self) {
         // state contains ZeroizeOnDrop fields (root_key, chain keys, DH keys)
@@ -394,6 +393,7 @@ impl Zeroize for DoubleRatchetSession {
 impl Drop for DoubleRatchetSession {
     fn drop(&mut self) {}
 }
+
 impl ZeroizeOnDrop for DoubleRatchetSession {}
 
 #[cfg(test)]

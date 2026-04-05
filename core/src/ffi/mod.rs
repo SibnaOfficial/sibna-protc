@@ -131,22 +131,34 @@ fn set_last_error(msg: &str) {
     });
 }
 
+/// Maximum allowed password length (4 KiB)
+const MAX_PASSWORD_LEN: usize = 4096;
+
 /// Create a new secure context
 ///
 /// # Safety
 /// Caller must ensure that `context` is a valid pointer to a `*mut SibnaContext`.
+/// If `password_len > 0`, `password` must be a valid pointer to at least `password_len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn sibna_context_create(
     password: *const u8,
     password_len: usize,
     context: *mut *mut SibnaContext,
 ) -> SibnaResult {
+    // Check context pointer
     if context.is_null() {
         set_last_error("context pointer is null");
         return SibnaResult::InvalidArgument;
     }
 
-    let password_slice = if password.is_null() {
+    // Validate password length
+    if password_len > MAX_PASSWORD_LEN {
+        set_last_error("password too long");
+        return SibnaResult::InvalidArgument;
+    }
+
+    // Create password slice with bounds checking
+    let password_slice = if password.is_null() || password_len == 0 {
         None
     } else {
         Some(unsafe { slice::from_raw_parts(password, password_len) })
@@ -183,7 +195,10 @@ pub unsafe extern "C" fn sibna_context_destroy(context: *mut SibnaContext) {
 /// Set the device link credentials for a child device
 ///
 /// # Safety
-/// Caller must ensure `context`, `root_key`, and `signature` are valid pointers.
+/// Caller must ensure:
+/// - `context` is a valid pointer created by `sibna_context_create`.
+/// - `root_key` points to at least 32 bytes of valid data.
+/// - `signature` points to at least 64 bytes of valid data.
 #[no_mangle]
 pub unsafe extern "C" fn sibna_context_set_device_link(
     context: *mut SibnaContext,
@@ -198,11 +213,17 @@ pub unsafe extern "C" fn sibna_context_set_device_link(
 
     let ctx = unsafe { &mut *(context as *mut crate::SecureContext) };
 
+    // Copy root key (32 bytes) – caller must guarantee buffer size
     let mut root_arr = [0u8; 32];
-    unsafe { std::ptr::copy_nonoverlapping(root_key, root_arr.as_mut_ptr(), 32); }
+    unsafe {
+        std::ptr::copy_nonoverlapping(root_key, root_arr.as_mut_ptr(), 32);
+    }
 
+    // Copy signature (64 bytes) – caller must guarantee buffer size
     let mut sig_arr = [0u8; 64];
-    unsafe { std::ptr::copy_nonoverlapping(signature, sig_arr.as_mut_ptr(), 64); }
+    unsafe {
+        std::ptr::copy_nonoverlapping(signature, sig_arr.as_mut_ptr(), 64);
+    }
 
     match ctx.set_device_link(device_id, &root_arr, &sig_arr) {
         Ok(_) => SibnaResult::Ok,
@@ -554,7 +575,7 @@ fn map_error(error: ProtocolError) -> SibnaResult {
 }
 
 // ============================================================
-// NEW: Identity & Prekey Bundle Functions
+// Identity & Prekey Bundle Functions
 // ============================================================
 
 /// Generate identity keypair (Ed25519 + X25519)
@@ -768,7 +789,6 @@ pub extern "C" fn sibna_session_decrypt(
         return SibnaResult::InvalidArgument;
     }
     if ciphertext_len < 29 {
-        // minimum header size (nonce + tag + 1)
         set_last_error("Ciphertext too short");
         return SibnaResult::InvalidCiphertext;
     }

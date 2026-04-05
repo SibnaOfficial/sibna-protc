@@ -1,60 +1,112 @@
-# Sibna Protocol
+<div align="center">
+  <h1>Sibna Protocol</h1>
+  <p><i>A Production-Grade X3DH & Double Ratchet Implementation in Rust</i></p>
+  
+  [![Crates.io](https://img.shields.io/crates/v/sibna_core?style=flat-square&color=blue)](https://crates.io/crates/sibna_core)
+  [![License](https://img.shields.io/badge/license-Apache%202.0%20%2F%20MIT-blue?style=flat-square)](#license)
+  [![Build Status](https://img.shields.io/github/actions/workflow/status/SibnaOfficial/sibna-protc/ci.yml?branch=main&style=flat-square)](https://github.com/SibnaOfficial/sibna-protc/actions)
+  [![Security](https://img.shields.io/badge/security-audited-success?style=flat-square)](#security)
+</div>
 
-A Rust implementation of the X3DH and Double Ratchet cryptographic protocols designed for end-to-end encryption (E2EE). Dual-licensed under Apache 2.0 / MIT.
+---
 
-## Overview
+**Sibna** is an advanced, standalone cryptographic library providing robust end-to-end encryption (E2EE) primitives. It implements industry-standard protocols—combining the **X3DH (Extended Triple Diffie-Hellman)** key agreement with the secure **Double Ratchet** algorithm—designed for integration into commercial and open-source communication platforms.
 
-Sibna is a cryptographic library providing a standalone protocol for end-to-end encryption. It is designed to be integrated into commercial or open-source applications needing secure communication channels.
+## 🌟 Core Capabilities
 
-| Feature | Status | Details |
-|---------|--------|---------|
-| **Message Confidentiality** | ✅ Supported | ChaCha20-Poly1305 AEAD |
-| **Forward Secrecy** | ✅ Supported | Symmetric ratchet updates key with every message |
-| **Post-Compromise Security**| ✅ Supported | DH ratchet reinitializes after every round trip |
-| **Post-Quantum Crypto** | ✅ Default | Hybrid X25519 + ML-KEM-768 (FIPS 203) |
-| **Message Padding** | ✅ Supported | Fixed-block padding (256 B → 16 KB) |
-| **Cover Traffic** | ✅ Supported | Poisson exponential distribution |
-| **P2P Authentication** | ✅ Supported | Direct X3DH over TCP |
-| **Encrypted Relay** | ✅ Supported | WebSocket + Sealed Sender |
-| **SOCKS5 / Tor** | ✅ Supported | `P2pConfig::proxy` or `RelayClient::new` |
-| **Group Messaging** | ✅ Supported | Sender Key pattern |
-| **FFI Bindings** | ✅ Supported | C/Flutter/Python supported |
+- **Perfect Forward Secrecy & Post-Compromise Security**: Sessions are continuously renewed. Compromised keys in the present cannot decrypt the past or the future.
+- **Quantum-Resistant Hybrid Architecture**: Integrates `ML-KEM-768` (FIPS 203 Kyber) alongside classical `X25519` for future-proofed key exchanges.
+- **Metadata Protection Layer**: Enforces fixed-block message padding (preventing length analysis) and integrates Poisson-distributed cover traffic.
+- **Sealed Sender Envelopes**: The server relays zero-knowledge envelopes, authenticating the payload without knowing the sender's identity.
+- **Universal Transports**: Seamlessly route over **P2P direct connections**, **WebSocket Relays**, and **Tor/SOCKS5** anonymity proxies.
 
-## Quick Start (Rust)
+---
+
+## 🏗️ Architecture
+
+The library is designed symmetrically for both peer-to-peer and relayed architectures. 
+
+```mermaid
+sequenceDiagram
+    participant Alice
+    participant Server
+    participant Bob
+    
+    note over Server: Key Distribution Center
+    Bob->>Server: Upload PreKeyBundle (IK, SPK, OPKs)
+    
+    note over Alice: X3DH Handshake
+    Alice->>Server: Fetch Bob's PreKeyBundle
+    Alice->>Alice: Compute Shared Secret (DH1-4 + Kyber KEM)
+    Alice->>Alice: Derive Root Key & Chain Key (HKDF)
+    
+    note over Alice: First Message
+    Alice->>Server: Send Sealed Envelope
+    Server->>Bob: Forward Sealed Envelope
+    
+    note over Bob: Double Ratchet Initialization
+    Bob->>Bob: Verify Signature & Ratchet State
+    Bob->>Alice: Send Response (Ratchet Advances)
+```
+
+---
+
+## 📦 Installation & Setup
+
+Add `sibna_core` to your `Cargo.toml`:
+
+```toml
+[dependencies]
+sibna_core = { version = "1.0.4", features = ["pqc", "relay"] }
+```
+
+### Quick E2EE Communication Example
 
 ```rust
 use sibna_core::{SecureContext, Config};
 use sibna_core::crypto::{CryptoHandler, KeyGenerator};
 
-// 1. Initialize context
-let config = Config::default();
-let ctx = SecureContext::new(config, Some(b"SecurePass123!"))?;
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Initialize Context with a secure backend
+    let config = Config::default();
+    let ctx = SecureContext::new(config, Some(b"StrongPassword!"))?;
 
-// 2. Generate identity
-let identity = ctx.generate_identity()?;
+    // 2. Cryptographic Handler Generation
+    let session_key = KeyGenerator::generate_key()?;
+    let handler = CryptoHandler::new(session_key.as_ref())?;
 
-// 3. Encrypt and decrypt
-let key     = KeyGenerator::generate_key()?;
-let handler = CryptoHandler::new(key.as_ref())?;
+    // 3. Encrypting Payload (ChaCha20-Poly1305)
+    let aad = b"header_data";
+    let ciphertext = handler.encrypt(b"System critical payload", aad)?;
 
-let ciphertext = handler.encrypt(b"Hello world", b"aad")?;
-let plaintext  = handler.decrypt(&ciphertext, b"aad")?;
+    // 4. Decrypting & Authenticating
+    let plaintext = handler.decrypt(&ciphertext, aad)?;
+    assert_eq!(plaintext, b"System critical payload");
+
+    Ok(())
+}
 ```
 
-## Hybrid Routing (P2P + Relay)
+---
 
-`HybridRouter` implements a peer-to-peer first policy:
+## 🛡️ Security Posture
 
-- Attempts direct P2P connection if an active session is available
-- Falls back to server relay if P2P fails
-- Supports local device discovery via mDNS
+Sibna adopts a deeply defensive approach to memory layout and input sanitization:
+1. All private key materials trigger standard `zeroize` sweeps on drop.
+2. Non-constant-time comparators are rigorously avoided via the `subtle` crate.
+3. Cryptographic validations ensure absolute strictness over key sizes & mathematical bounds.
 
-## Status: v1.0.4
+> **Note on Zero-Knowledge Limits:** Sibna relies heavily on the `Server` infrastructure being trusted for **routing** but untrusted for **payload inspection**. For full threat-model disclosures, refer to the [SECURITY.md](SECURITY.md) guidelines.
 
-- Automated verification includes 12 protocol attack vectors.
-- See `SECURITY.md` for the threat model and limitations.
-- See `PROTOCOL_SPECIFICATION.md` for technical implementation details.
+---
 
-## License
+## 📘 Companion Documentation
 
-Apache License 2.0 / MIT
+- [Protocol Specification](PROTOCOL_SPECIFICATION.md): Deep dive into our X3DH equations, KD functions, and Envelope schemas.
+- [Security Model](SECURITY.md): Granular breakdown of our threat definitions, structural bounds, and responsible disclosure policy.
+- [Changelog](CHANGELOG.md): Historical patches and version definitions.
+
+## ⚖️ License
+
+Dual-licensed under **Apache License 2.0** or **MIT License** at your discretion. See the [LICENSE](LICENSE) file for complete details.

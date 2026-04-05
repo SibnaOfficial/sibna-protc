@@ -170,7 +170,6 @@ where
 // =========================
 
 pub fn random_bytes(buf: &mut [u8]) {
-    // best-effort (no panic)
     let _ = with_thread_rng(|rng| rng.fill_bytes(buf));
 }
 
@@ -182,7 +181,7 @@ pub fn random_vec(len: usize) -> Vec<u8> {
 
 pub fn random_u64() -> u64 {
     with_thread_rng(|rng| rng.next_u64())
-        .expect("RNG must not fail - system entropy unavailable")
+        .expect("ENTROPY_CRITICAL: RNG initialization failed")
 }
 
 pub fn shuffle<T>(slice: &mut [T]) {
@@ -211,7 +210,7 @@ pub fn random_alphanumeric(len: usize) -> String {
             })
             .collect()
     })
-    .expect("RNG initialization must not fail")
+    .expect("ENTROPY_CRITICAL: RNG initialization failed")
 }
 
 // =========================

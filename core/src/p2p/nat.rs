@@ -3,12 +3,15 @@
 //! Provides UPnP port mapping and STUN public IP discovery.
 
 use std::net::{SocketAddr, UdpSocket, IpAddr};
+use std::time::Duration;
 use tracing::info;
 
 #[cfg(feature = "p2p")]
 use igd::SearchOptions;
 #[cfg(feature = "p2p")]
-use stun::message::{Message as StunMessage, BINDING_REQUEST};
+use stun::message::{Message as StunMessage, BINDING_REQUEST, AttrType, XOR_MAPPED_ADDRESS};
+#[cfg(feature = "p2p")]
+use stun::textattrs::XorMappedAddress;
 
 use super::{P2pResult, P2pError};
 
@@ -37,11 +40,15 @@ impl NatManager {
 
         // 2. If UPnP failed or to verify, try STUN
         if manager.public_addr.is_none() {
-            if let Ok(stun_addr) = Self::try_stun().await {
-                info!("STUN: Discovered public address {}", stun_addr);
-                // We assume the local port is the one used for the TCP listener
-                // although STUN only gives us the public IP/UDP port affinity.
-                manager.public_addr = Some(SocketAddr::new(stun_addr.ip(), local_port));
+            match Self::try_stun().await {
+                Ok(stun_addr) => {
+                    info!("STUN: Discovered public address {}", stun_addr);
+                    // Use the discovered IP with the original local port (TCP listener port)
+                    manager.public_addr = Some(SocketAddr::new(stun_addr.ip(), local_port));
+                }
+                Err(e) => {
+                    tracing::debug!("STUN discovery failed: {}", e);
+                }
             }
         }
 
@@ -72,38 +79,51 @@ impl NatManager {
             .map_err(|e| P2pError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))
     }
 
-    /// Attempt to discover public IP using STUN.
+    /// Discover public IP and reflexive address using STUN.
+    ///
+    /// Sends a Binding Request to `stun.l.google.com:19302` and parses the
+    /// XOR-MAPPED-ADDRESS attribute from the response.
     async fn try_stun() -> P2pResult<SocketAddr> {
         let socket = UdpSocket::bind("0.0.0.0:0")?;
-        socket.set_read_timeout(Some(std::time::Duration::from_secs(3)))?;
+        socket.set_read_timeout(Some(Duration::from_secs(3)))?;
         
         let stun_server = "stun.l.google.com:19302";
         
+        // Build STUN Binding Request
         let mut request = StunMessage::new();
         request.set_type(BINDING_REQUEST);
         let _ = request.build(&[]);
-
-        let buf = request.marshal_binary().map_err(|e| P2pError::InvalidMessage(format!("STUN encode: {}", e)))?;
+        let buf = request.marshal_binary()
+            .map_err(|e| P2pError::InvalidMessage(format!("STUN encode: {}", e)))?;
+        
+        // Send request
         socket.send_to(&buf, stun_server)?;
         
-        let mut buf = [0u8; 1024];
-        let (size, _) = socket.recv_from(&mut buf)?;
+        // Receive response
+        let mut recv_buf = [0u8; 1024];
+        let (size, src) = socket.recv_from(&mut recv_buf)?;
         
+        // Verify response came from the expected STUN server (optional)
+        if src.to_string() != stun_server {
+            return Err(P2pError::InvalidMessage("STUN response from unexpected source".into()));
+        }
+        
+        // Parse response
         let mut response = StunMessage::new();
-        response.unmarshal_binary(&buf[..size]).map_err(|e| P2pError::InvalidMessage(format!("STUN decode: {}", e)))?;
+        response.unmarshal_binary(&recv_buf[..size])
+            .map_err(|e| P2pError::InvalidMessage(format!("STUN decode: {}", e)))?;
         
-        // In stun 0.6.0, attributes is a field. We just need any mapped address.
-        // For simplicity in this demo, if we got a valid STUN response, we just return the remote addr
-        // or a default. Real parsing requires matching on XOR_MAPPED_ADDRESS.
+        // Extract XOR-MAPPED-ADDRESS attribute
+        let xor_addr_attr = response.get_attr(AttrType::XorMappedAddress)
+            .ok_or_else(|| P2pError::InvalidMessage("STUN response missing XOR-MAPPED-ADDRESS".into()))?;
         
-        // Mocking the successful parse since library-specific attribute extraction is verbose
-        // FIX: Replace chained unwrap() with explicit error handling.
-        // socket.local_addr() after connect() can fail on some platforms.
-        let remote_addr = match socket.connect(stun_server).and_then(|_| socket.local_addr()) {
-            Ok(addr) => addr,
-            Err(_) => SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0),
-        };
+        // Decode the attribute into a SocketAddr
+        let xor_addr = XorMappedAddress::decode_from(&xor_addr_attr.value)
+            .map_err(|e| P2pError::InvalidMessage(format!("STUN XOR-MAPPED-ADDRESS decode: {}", e)))?;
         
-        Ok(remote_addr)
+        let public_addr = xor_addr.get_addr()
+            .map_err(|e| P2pError::InvalidMessage(format!("STUN address extraction: {}", e)))?;
+        
+        Ok(public_addr)
     }
 }

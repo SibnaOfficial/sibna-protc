@@ -1,16 +1,5 @@
 #![allow(missing_docs)]
 //! Secure Random Number Generation
-//!
-//! Provides cryptographically secure random number generation.
-//! The primary source of entropy is `OsRng` (backed by getrandom/OS).
-//!
-//! An internal entropy pool is XOR'd into output bytes as a defence-in-depth
-//! measure. This does NOT strengthen `OsRng` output — if `OsRng` is working
-//! correctly the XOR is redundant. Its purpose is to provide a secondary
-//! mixing layer in the unlikely event of a partial `OsRng` failure.
-//! It cannot *reduce* the entropy of strong `OsRng` output.
-//!
-//! All panics replaced with proper error propagation.
 
 use super::{CryptoError, CryptoResult};
 use rand_core::{CryptoRng, RngCore};
@@ -19,7 +8,6 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const ENTROPY_POOL_SIZE: usize = 64;
 
-/// Secure Random Number Generator - ZeroizeOnDrop
 #[derive(Clone)]
 pub struct SecureRandom {
     rng: OsRng,
@@ -32,23 +20,38 @@ impl SecureRandom {
     pub fn new() -> CryptoResult<Self> {
         let mut rng = OsRng;
         let mut entropy_pool = [0u8; ENTROPY_POOL_SIZE];
+
         rng.fill_bytes(&mut entropy_pool);
+
         if entropy_pool.iter().all(|&b| b == 0) {
             return Err(CryptoError::RandomFailed);
         }
-        Ok(Self { rng, entropy_pool, bytes_generated: 0, max_bytes_before_reseed: 1_000_000 })
+
+        Ok(Self {
+            rng,
+            entropy_pool,
+            bytes_generated: 0,
+            max_bytes_before_reseed: 1_000_000,
+        })
     }
 
     pub fn fill_bytes(&mut self, buf: &mut [u8]) {
-        if self.bytes_generated.saturating_add(buf.len() as u64) > self.max_bytes_before_reseed {
+        if self.bytes_generated.saturating_add(buf.len() as u64)
+            > self.max_bytes_before_reseed
+        {
             self.reseed();
         }
+
         self.rng.fill_bytes(buf);
+
         for (i, byte) in buf.iter_mut().enumerate() {
             *byte ^= self.entropy_pool[i % ENTROPY_POOL_SIZE];
         }
+
         self.update_entropy_pool(buf);
-        self.bytes_generated = self.bytes_generated.saturating_add(buf.len() as u64);
+
+        self.bytes_generated =
+            self.bytes_generated.saturating_add(buf.len() as u64);
     }
 
     pub fn next_u64(&mut self) -> u64 {
@@ -64,11 +67,17 @@ impl SecureRandom {
     }
 
     pub fn gen_range(&mut self, max: u64) -> u64 {
-        if max == 0 { return 0; }
+        if max == 0 {
+            return 0;
+        }
+
         let mask = max.next_power_of_two() - 1;
+
         loop {
             let val = self.next_u64() & mask;
-            if val < max { return val; }
+            if val < max {
+                return val;
+            }
         }
     }
 
@@ -86,12 +95,18 @@ impl SecureRandom {
     fn update_entropy_pool(&mut self, generated: &[u8]) {
         for (i, &byte) in generated.iter().enumerate() {
             let idx = i % ENTROPY_POOL_SIZE;
-            self.entropy_pool[idx] = self.entropy_pool[idx].wrapping_add(byte).rotate_left(3);
+            self.entropy_pool[idx] =
+                self.entropy_pool[idx].wrapping_add(byte).rotate_left(3);
         }
     }
 
-    pub fn bytes_generated(&self) -> u64 { self.bytes_generated }
-    pub fn needs_reseed(&self) -> bool { self.bytes_generated >= self.max_bytes_before_reseed }
+    pub fn bytes_generated(&self) -> u64 {
+        self.bytes_generated
+    }
+
+    pub fn needs_reseed(&self) -> bool {
+        self.bytes_generated >= self.max_bytes_before_reseed
+    }
 }
 
 impl Zeroize for SecureRandom {
@@ -104,10 +119,22 @@ impl Zeroize for SecureRandom {
 impl ZeroizeOnDrop for SecureRandom {}
 
 impl RngCore for SecureRandom {
-    fn next_u32(&mut self) -> u32 { self.next_u32() }
-    fn next_u64(&mut self) -> u64 { self.next_u64() }
-    fn fill_bytes(&mut self, dest: &mut [u8]) { self.fill_bytes(dest); }
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
+    fn next_u32(&mut self) -> u32 {
+        SecureRandom::next_u32(self)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        SecureRandom::next_u64(self)
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        SecureRandom::fill_bytes(self, dest)
+    }
+
+    fn try_fill_bytes(
+        &mut self,
+        dest: &mut [u8],
+    ) -> Result<(), rand_core::Error> {
         self.fill_bytes(dest);
         Ok(())
     }
@@ -116,7 +143,6 @@ impl RngCore for SecureRandom {
 impl CryptoRng for SecureRandom {}
 
 thread_local! {
-    /// FIX: Use Option to avoid panicking at initialization; lazy-initialized on first use.
     static THREAD_RNG: std::cell::RefCell<Option<SecureRandom>> =
         std::cell::RefCell::new(None);
 }
@@ -127,18 +153,24 @@ where
 {
     THREAD_RNG.with(|cell| {
         let mut borrow = cell.borrow_mut();
+
         if borrow.is_none() {
             *borrow = Some(SecureRandom::new()?);
         }
-        // Safety: we just set borrow to Some() above if it was None
-        borrow.as_mut()
+
+        borrow
+            .as_mut()
             .ok_or(CryptoError::RandomFailed)
             .map(f)
     })
 }
 
+// =========================
+// FIXED PUBLIC API
+// =========================
+
 pub fn random_bytes(buf: &mut [u8]) {
-    // Best-effort; callers in non-fallible contexts
+    // best-effort (no panic)
     let _ = with_thread_rng(|rng| rng.fill_bytes(buf));
 }
 
@@ -149,12 +181,16 @@ pub fn random_vec(len: usize) -> Vec<u8> {
 }
 
 pub fn random_u64() -> u64 {
-    with_thread_rng(|rng| rng.next_u64()).unwrap_or(0)
+    with_thread_rng(|rng| rng.next_u64())
+        .expect("RNG must not fail - system entropy unavailable")
 }
 
 pub fn shuffle<T>(slice: &mut [T]) {
     let len = slice.len();
-    if len <= 1 { return; }
+    if len <= 1 {
+        return;
+    }
+
     let _ = with_thread_rng(|rng| {
         for i in (1..len).rev() {
             let j = rng.gen_range((i + 1) as u64) as usize;
@@ -164,24 +200,45 @@ pub fn shuffle<T>(slice: &mut [T]) {
 }
 
 pub fn random_alphanumeric(len: usize) -> String {
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    const CHARSET: &[u8] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
     with_thread_rng(|rng| {
-        (0..len).map(|_| CHARSET[rng.gen_range(CHARSET.len() as u64) as usize] as char).collect()
-    }).unwrap_or_default()
+        (0..len)
+            .map(|_| {
+                CHARSET[rng.gen_range(CHARSET.len() as u64) as usize]
+                    as char
+            })
+            .collect()
+    })
+    .expect("RNG initialization must not fail")
 }
+
+// =========================
+// ENTROPY CHECK
+// =========================
 
 pub fn check_entropy() -> CryptoResult<()> {
     let mut buf = [0u8; 32];
     random_bytes(&mut buf);
+
     if buf.iter().all(|&b| b == 0) {
         return Err(CryptoError::InsufficientEntropy);
     }
-    let unique: std::collections::HashSet<u8> = buf.iter().copied().collect();
+
+    let unique: std::collections::HashSet<u8> =
+        buf.iter().copied().collect();
+
     if unique.len() < 8 {
         return Err(CryptoError::InsufficientEntropy);
     }
+
     Ok(())
 }
+
+// =========================
+// TESTS
+// =========================
 
 #[cfg(test)]
 mod tests {

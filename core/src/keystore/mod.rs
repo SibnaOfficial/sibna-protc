@@ -8,17 +8,17 @@ use crate::crypto::{CryptoHandler, constant_time_eq, constant_time_is_zero};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
+use crate::crypto::serde_helpers::dh_local_serde;
 
 /// Identity key pair (Ed25519 for signing, X25519 for DH)
 #[derive(Clone, Serialize, Deserialize)]
 pub struct IdentityKeyPair {
-    /// Ed25519 secret key (not serialized)
-    #[serde(skip)]
+    /// Ed25519 secret key
     pub ed25519_secret: Option<[u8; 32]>,
     /// Ed25519 public key
     pub ed25519_public: [u8; 32],
-    /// X25519 secret key (not serialized)
-    #[serde(skip)]
+    /// X25519 secret key
+    #[serde(with = "dh_local_serde")]
     pub x25519_secret: Option<x25519_dalek::StaticSecret>,
     /// X25519 public key
     pub x25519_public: [u8; 32],
@@ -201,8 +201,8 @@ impl Drop for IdentityKeyPair {
 pub struct SignedPreKey {
     /// Key ID
     pub key_id: u32,
-    /// X25519 secret key (not serialized)
-    #[serde(skip)]
+    /// X25519 secret key
+    #[serde(with = "dh_local_serde")]
     pub secret: Option<x25519_dalek::StaticSecret>,
     /// X25519 public key
     pub public: [u8; 32],
@@ -210,7 +210,6 @@ pub struct SignedPreKey {
     pub signature: Vec<u8>,
     /// Post-Quantum secret key (ML-KEM-768)
     #[cfg(feature = "pqc")]
-    #[serde(skip)]
     pub pq_secret: Option<Vec<u8>>,
     /// Post-Quantum public key (ML-KEM-768)
     #[cfg(feature = "pqc")]

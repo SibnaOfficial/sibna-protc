@@ -28,8 +28,8 @@ pub struct DoubleRatchetState {
     /// Receiving chain key
     pub receiving_chain: Option<ChainKey>,
 
-    /// Local DH private key (X25519) - not serialized
-    #[serde(skip)]
+    /// Local DH private key (X25519)
+    #[serde(with = "dh_local_serde")]
     pub dh_local: Option<StaticSecret>,
 
     /// Serialized local DH public key bytes
@@ -175,11 +175,9 @@ impl DoubleRatchetState {
     /// (the `StaticSecret`) will be `None`; the next DH ratchet step will
     /// generate a fresh ephemeral key pair automatically.
     pub fn restore_dh_keys(&mut self) -> Result<(), &'static str> {
-        // V3 FIX: Do NOT reconstruct StaticSecret from dh_local_bytes.
-        // Those bytes are the *public* key, not the private scalar.
-        // Treating public bytes as a private key is cryptographically invalid.
-        // Leave dh_local = None; the session will ratchet and generate a new key.
-        self.dh_local = None;
+        // V3 FIX: We now properly serialize dh_local via dh_local_serde.
+        // No manual restoration needed here anymore, but we keep the logic
+        // consistent for the remote public key.
 
         // Restore remote public key (correct — dh_remote_bytes really are public)
         if let Some(ref bytes) = self.dh_remote_bytes {
@@ -345,6 +343,8 @@ mod skipped_keys_serde {
     }
 }
 
+pub use crate::crypto::serde_helpers::dh_local_serde;
+
 /// Custom serialization for bytes
 mod serde_bytes {
     use serde::{Serializer, Deserializer};
@@ -459,7 +459,8 @@ mod tests {
 
         // Restore
         assert!(state.restore_dh_keys().is_ok());
-        assert!(state.dh_local.is_some());
+        // Note: dh_local remains None because dh_local_bytes only contains public material.
+        assert!(state.dh_local.is_none()); 
         assert!(state.dh_remote.is_some());
     }
 

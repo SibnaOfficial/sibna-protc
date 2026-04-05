@@ -91,7 +91,7 @@ impl Drop for X3dhResult {
 ///
 /// # Returns
 /// X3DH result containing shared secret
-pub fn x3dh_initiator(
+pub fn x3dh_initiator_v10(
     our_identity: &StaticSecret,
     our_ephemeral: &StaticSecret,
     peer_identity: &PublicKey,
@@ -99,6 +99,7 @@ pub fn x3dh_initiator(
     peer_onetime_prekey: Option<&PublicKey>,
     #[cfg(feature = "pqc")]
     peer_pq_pk: Option<&Vec<u8>>,
+    transcript_hash_ext: &[u8; 32],
 ) -> ProtocolResult<X3dhResult> {
     // DH1: Our identity + peer's signed prekey
     let dh1 = our_identity.diffie_hellman(peer_signed_prekey);
@@ -125,23 +126,33 @@ pub fn x3dh_initiator(
         dh_results.push(dh4.to_bytes());
     }
 
+    // Derive transcript hash (v2.0 Fortress)
+    // IMPORTANT: Only hash PUBLIC key material to ensure consistency and prevent leakage.
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(PublicKey::from(our_identity).as_bytes());
+    hasher.update(PublicKey::from(our_ephemeral).as_bytes());
+    hasher.update(peer_identity.as_bytes());
+    hasher.update(peer_signed_prekey.as_bytes());
+    if let Some(prekey) = peer_onetime_prekey {
+        hasher.update(prekey.as_bytes());
+    }
+    let mut transcript_hash: [u8; 32] = hasher.finalize().into();
+
+    // BIND EXTERNAL TRANSCRIPT (Audit v2.0):
+    // Combine the X3DH transcript with the P2P handshake transcript.
+    for (i, byte) in transcript_hash.iter_mut().enumerate() {
+        *byte ^= transcript_hash_ext[i];
+    }
+
     // Derive shared secret
     #[cfg(not(feature = "pqc"))]
-    let shared_secret = if let Some(dh4) = dh4 {
-        X3dhKdf::derive_shared_secret(
-            dh1.as_bytes(),
-            dh2.as_bytes(),
-            dh3.as_bytes(),
-            Some(dh4.as_bytes()),
-        )?
-    } else {
-        X3dhKdf::derive_shared_secret(
-            dh1.as_bytes(),
-            dh2.as_bytes(),
-            dh3.as_bytes(),
-            None,
-        )?
-    };
+    let shared_secret = X3dhKdf::derive_shared_secret(
+        dh1.as_bytes(),
+        dh2.as_bytes(),
+        dh3.as_bytes(),
+        dh4.as_ref().map(|d| d.as_bytes()),
+        &transcript_hash,
+    )?;
 
     #[cfg(feature = "pqc")]
     let (shared_secret, pq_ct) = if let Some(pk_vec) = peer_pq_pk {
@@ -161,25 +172,18 @@ pub fn x3dh_initiator(
             dh3.as_bytes(),
             dh4.as_ref().map(|d| d.as_bytes()),
             &ss_bytes,
+            &transcript_hash,
         )?;
         
         (derived, Some(SerDes::into_bytes(ct).to_vec()))
     } else {
-        let derived = if let Some(dh4) = dh4 {
-            X3dhKdf::derive_shared_secret(
-                dh1.as_bytes(),
-                dh2.as_bytes(),
-                dh3.as_bytes(),
-                Some(dh4.as_bytes()),
-            )?
-        } else {
-            X3dhKdf::derive_shared_secret(
-                dh1.as_bytes(),
-                dh2.as_bytes(),
-                dh3.as_bytes(),
-                None,
-            )?
-        };
+        let derived = X3dhKdf::derive_shared_secret(
+            dh1.as_bytes(),
+            dh2.as_bytes(),
+            dh3.as_bytes(),
+            dh4.as_ref().map(|d| d.as_bytes()),
+            &transcript_hash,
+        )?;
         (derived, None)
     };
 
@@ -206,7 +210,7 @@ pub fn x3dh_initiator(
 ///
 /// # Returns
 /// X3DH result containing shared secret
-pub fn x3dh_responder(
+pub fn x3dh_responder_v10(
     our_identity: &StaticSecret,
     our_signed_prekey: &StaticSecret,
     our_onetime_prekey: Option<&StaticSecret>,
@@ -216,6 +220,7 @@ pub fn x3dh_responder(
     our_pq_sk: Option<&Vec<u8>>,
     #[cfg(feature = "pqc")]
     peer_pq_ct: Option<&Vec<u8>>,
+    transcript_hash_ext: &[u8; 32],
 ) -> ProtocolResult<X3dhResult> {
     // DH1: Our signed prekey + peer's identity
     let dh1 = our_signed_prekey.diffie_hellman(peer_identity);
@@ -242,23 +247,33 @@ pub fn x3dh_responder(
         dh_results.push(dh4.to_bytes());
     }
 
+    // Derive transcript hash (v2.0 Fortress)
+    // IMPORTANT: Only hash PUBLIC key material to ensure consistency and prevent leakage.
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(peer_identity.as_bytes());
+    hasher.update(peer_ephemeral.as_bytes());
+    hasher.update(PublicKey::from(our_identity).as_bytes());
+    hasher.update(PublicKey::from(our_signed_prekey).as_bytes());
+    if let Some(prekey) = our_onetime_prekey {
+        hasher.update(PublicKey::from(prekey).as_bytes());
+    }
+    let mut transcript_hash: [u8; 32] = hasher.finalize().into();
+
+    // BIND EXTERNAL TRANSCRIPT (Audit v2.0):
+    // Combine the X3DH transcript with the P2P handshake transcript.
+    for (i, byte) in transcript_hash.iter_mut().enumerate() {
+        *byte ^= transcript_hash_ext[i];
+    }
+
     // Derive shared secret
     #[cfg(not(feature = "pqc"))]
-    let shared_secret = if let Some(dh4) = dh4 {
-        X3dhKdf::derive_shared_secret(
-            dh1.as_bytes(),
-            dh2.as_bytes(),
-            dh3.as_bytes(),
-            Some(dh4.as_bytes()),
-        )?
-    } else {
-        X3dhKdf::derive_shared_secret(
-            dh1.as_bytes(),
-            dh2.as_bytes(),
-            dh3.as_bytes(),
-            None,
-        )?
-    };
+    let shared_secret = X3dhKdf::derive_shared_secret(
+        dh1.as_bytes(),
+        dh2.as_bytes(),
+        dh3.as_bytes(),
+        dh4.as_ref().map(|d| d.as_bytes()),
+        &transcript_hash,
+    )?;
 
     #[cfg(feature = "pqc")]
     let shared_secret = if let (Some(sk_vec), Some(ct_vec)) = (our_pq_sk, peer_pq_ct) {
@@ -282,23 +297,16 @@ pub fn x3dh_responder(
             dh3.as_bytes(),
             dh4.as_ref().map(|d| d.as_bytes()),
             &ss_bytes,
+            &transcript_hash,
         )?
     } else {
-        if let Some(dh4) = dh4 {
-            X3dhKdf::derive_shared_secret(
-                dh1.as_bytes(),
-                dh2.as_bytes(),
-                dh3.as_bytes(),
-                Some(dh4.as_bytes()),
-            )?
-        } else {
-            X3dhKdf::derive_shared_secret(
-                dh1.as_bytes(),
-                dh2.as_bytes(),
-                dh3.as_bytes(),
-                None,
-            )?
-        }
+        X3dhKdf::derive_shared_secret(
+            dh1.as_bytes(),
+            dh2.as_bytes(),
+            dh3.as_bytes(),
+            dh4.as_ref().map(|d| d.as_bytes()),
+            &transcript_hash,
+        )?
     };
 
     let result = X3dhResult::new(*shared_secret, dh_results);
@@ -344,7 +352,7 @@ impl X3dhSessionKeys {
         ];
 
         // FIX: Use a proper domain-separation salt instead of empty slice
-        let keys = HkdfKdf::derive_multiple(shared_secret, b"SibnaX3DH_SessionKeys_v9", infos)?;
+        let keys = HkdfKdf::derive_multiple(shared_secret, b"SibnaX3DH_SessionKeys_v10", infos)?;
 
         if keys.len() < 3 {
             return Err(ProtocolError::KeyDerivationFailed);
@@ -393,10 +401,27 @@ impl Drop for X3dhSessionKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::{X3dhKdf};
     use rand_core::OsRng;
 
     #[test]
-    fn test_x3dh_initiator_responder() {
+    fn test_x3dh_kdf_direct() {
+        let dh1 = [0x01u8; 32];
+        let dh2 = [0x02u8; 32];
+        let dh3 = [0x03u8; 32];
+        let hash = [0xAAu8; 32];
+        
+        let secret1 = X3dhKdf::derive_shared_secret(&dh1, &dh2, &dh3, None, &hash).unwrap();
+        let secret2 = X3dhKdf::derive_shared_secret(&dh1, &dh2, &dh3, None, &hash).unwrap();
+        assert_eq!(secret1.as_ref(), secret2.as_ref());
+
+        let hash2 = [0xBBu8; 32];
+        let secret3 = X3dhKdf::derive_shared_secret(&dh1, &dh2, &dh3, None, &hash2).unwrap();
+        assert_ne!(secret1.as_ref(), secret3.as_ref());
+    }
+
+    #[test]
+    fn test_x3dh_initiator_responder_full() {
         // Generate keys for party A
         let a_identity = StaticSecret::random_from_rng(&mut OsRng);
         let a_identity_public = PublicKey::from(&a_identity);
@@ -413,36 +438,39 @@ mod tests {
 
         // A performs initiator handshake
         #[cfg(not(feature = "pqc"))]
-        let result_a = x3dh_initiator(
+        let result_a = x3dh_initiator_v10(
             &a_identity,
             &a_ephemeral,
             &b_identity_public,
             &b_signed_prekey_public,
             Some(&b_onetime_prekey_public),
+            &[0u8; 32],
         ).unwrap();
 
         #[cfg(feature = "pqc")]
-        let result_a = x3dh_initiator(
+        let result_a = x3dh_initiator_v10(
             &a_identity,
             &a_ephemeral,
             &b_identity_public,
             &b_signed_prekey_public,
             Some(&b_onetime_prekey_public),
             None,
+            &[0u8; 32],
         ).unwrap();
 
         // B performs responder handshake
         #[cfg(not(feature = "pqc"))]
-        let result_b = x3dh_responder(
+        let result_b = x3dh_responder_v10(
             &b_identity,
             &b_signed_prekey,
             Some(&b_onetime_prekey),
             &a_identity_public,
             &a_ephemeral_public,
+            &[0u8; 32],
         ).unwrap();
 
         #[cfg(feature = "pqc")]
-        let result_b = x3dh_responder(
+        let result_b = x3dh_responder_v10(
             &b_identity,
             &b_signed_prekey,
             Some(&b_onetime_prekey),
@@ -450,6 +478,7 @@ mod tests {
             &a_ephemeral_public,
             None,
             None,
+            &[0u8; 32],
         ).unwrap();
 
         // Shared secrets should match
@@ -458,7 +487,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "pqc")]
-    fn test_pq_x3dh_hybrid() {
+    fn test_pq_x3dh_hybrid_full() {
         use fips203::ml_kem_768;
         use fips203::traits::{KeyGen, SerDes};
 
@@ -479,20 +508,21 @@ mod tests {
         let pq_sk_bytes = SerDes::into_bytes(pq_sk).to_vec();
 
         // A performs initiator handshake with PQC
-        let result_a = x3dh_initiator(
+        let result_a = x3dh_initiator_v10(
             &a_identity,
             &a_ephemeral,
             &b_identity_public,
             &b_signed_prekey_public,
             None,
             Some(&pq_pk_bytes),
+            &[0u8; 32],
         ).unwrap();
 
         assert!(result_a.pq_ciphertext.is_some());
         let ct = result_a.pq_ciphertext.clone().unwrap();
 
         // B performs responder handshake with PQC
-        let result_b = x3dh_responder(
+        let result_b = x3dh_responder_v10(
             &b_identity,
             &b_signed_prekey,
             None,
@@ -500,6 +530,7 @@ mod tests {
             &a_ephemeral_public,
             Some(&pq_sk_bytes),
             Some(&ct),
+            &[0u8; 32],
         ).unwrap();
 
         // Shared secrets should match

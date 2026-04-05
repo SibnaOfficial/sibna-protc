@@ -19,6 +19,7 @@ pub struct ChainKey {
     pub index: u64,
     pub created_at: u64,
     pub max_messages: u64,
+    pub reserved_until: u64,
 }
 
 #[allow(missing_docs)]
@@ -27,7 +28,13 @@ impl ChainKey {
 
     pub fn new(key: [u8; 32]) -> Self {
         let created_at = crate::crypto::current_timestamp().unwrap_or(0);
-        Self { key, index: 0, created_at, max_messages: Self::DEFAULT_MAX_MESSAGES }
+        Self { 
+            key, 
+            index: 0, 
+            created_at, 
+            max_messages: Self::DEFAULT_MAX_MESSAGES,
+            reserved_until: 100, // Allow first 100 messages by default
+        }
     }
 
     pub fn with_max_messages(key: [u8; 32], max_messages: u64) -> Self {
@@ -87,6 +94,7 @@ impl Clone for ChainKey {
             index: self.index,
             created_at: self.created_at,
             max_messages: self.max_messages,
+            reserved_until: self.reserved_until,
         }
     }
 }
@@ -95,6 +103,7 @@ impl Zeroize for ChainKey {
     fn zeroize(&mut self) {
         self.key.zeroize();
         self.index = 0;
+        self.reserved_until = 0;
     }
 }
 

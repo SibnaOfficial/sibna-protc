@@ -22,7 +22,7 @@ Example usage:
     >>> decrypted = session.decrypt(encrypted)
 """
 
-__version__ = "1.0.1"
+__version__ = "2.0.0"
 __author__ = "Sibna Security Team"
 __license__ = "Apache-2.0 OR MIT"
 
@@ -174,7 +174,7 @@ class Context:
     def version() -> str:
         """Get the protocol version."""
         if _lib is None:
-            return "1.0.1"
+            return "2.0.0"
         
         buffer = ctypes.create_string_buffer(32)
         result = _lib.sibna_version(buffer, 32)

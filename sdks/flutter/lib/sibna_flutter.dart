@@ -1,4 +1,4 @@
-/// Sibna Flutter Plugin — v1.0.1
+/// Sibna Flutter Plugin — v2.0.0
 ///
 /// Flutter plugin for Sibna Protocol — Signal Protocol E2EE.
 /// Uses dart:ffi to call the Rust core on all platforms.

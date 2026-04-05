@@ -23,8 +23,32 @@ impl SecureRandom {
 
         rng.fill_bytes(&mut entropy_pool);
 
+        // Mix in environmental noise (v1.2)
+        let pid = std::process::id().to_le_bytes();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .to_le_bytes();
+        
+        for (i, &b) in pid.iter().chain(now.iter()).enumerate() {
+            entropy_pool[i % ENTROPY_POOL_SIZE] ^= b;
+        }
+
         if entropy_pool.iter().all(|&b| b == 0) {
             return Err(CryptoError::RandomFailed);
+        }
+
+        // MEMORY PINNING (Audit v2.0): Pin the entropy pool to RAM to prevent 
+        // it being swapped to disk where it could be recovered by an attacker.
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::System::Memory::VirtualLock;
+            let _ = VirtualLock(entropy_pool.as_ptr() as *const _, ENTROPY_POOL_SIZE);
+        }
+        #[cfg(unix)]
+        unsafe {
+            let _ = libc::mlock(entropy_pool.as_ptr() as *const _, ENTROPY_POOL_SIZE);
         }
 
         Ok(Self {
@@ -117,6 +141,21 @@ impl Zeroize for SecureRandom {
 }
 
 impl ZeroizeOnDrop for SecureRandom {}
+
+impl Drop for SecureRandom {
+    fn drop(&mut self) {
+        self.zeroize();
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::System::Memory::VirtualUnlock;
+            let _ = VirtualUnlock(self.entropy_pool.as_ptr() as *const _, ENTROPY_POOL_SIZE);
+        }
+        #[cfg(unix)]
+        unsafe {
+            let _ = libc::munlock(self.entropy_pool.as_ptr() as *const _, ENTROPY_POOL_SIZE);
+        }
+    }
+}
 
 impl RngCore for SecureRandom {
     fn next_u32(&mut self) -> u32 {

@@ -278,6 +278,10 @@ pub enum ProtocolError {
     /// the Safety Number out-of-band before trusting this peer again.
     #[error("Peer identity key changed — possible man-in-the-middle attack")]
     KeyMismatch,
+
+    /// Nonce reservation required for safety
+    #[error("Nonce reservation pool exhausted - persistent update required")]
+    NonceReservationRequired,
 }
 
 /// Result type for protocol operations

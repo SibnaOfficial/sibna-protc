@@ -281,7 +281,7 @@ impl X3dhHandshake {
 
     /// Perform initiator handshake
     fn perform_initiator(&mut self) -> ProtocolResult<HandshakeOutput> {
-        use super::x3dh_initiator;
+        use crate::handshake::x3dh::x3dh_initiator_v10;
 
         // Get our identity key
         let our_identity = self.keystore.get_identity_keypair()?;
@@ -301,7 +301,7 @@ impl X3dhHandshake {
         let ephemeral_public = PublicKey::from(&ephemeral_secret);
 
         // Perform X3DH initiator
-        let mut x3dh_result = x3dh_initiator(
+        let mut x3dh_result = x3dh_initiator_v10(
             our_identity.x25519_secret.as_ref().ok_or(ProtocolError::KeyNotFound)?,
             &ephemeral_secret,
             &peer_ik_pub,
@@ -309,6 +309,7 @@ impl X3dhHandshake {
             peer_opk_pub.as_ref(),
             #[cfg(feature = "pqc")]
             self.peer_pq_pk.as_ref(),
+            &[0u8; 32], // Default transcript hash for non-P2P flow
         )?;
 
         // Build associated data
@@ -332,7 +333,7 @@ impl X3dhHandshake {
 
     /// Perform responder handshake
     fn perform_responder(&mut self) -> ProtocolResult<HandshakeOutput> {
-        use super::x3dh_responder;
+        use crate::handshake::x3dh::x3dh_responder_v10;
 
         // Get our keys
         let our_identity = self.keystore.get_identity_keypair()?;
@@ -353,7 +354,7 @@ impl X3dhHandshake {
         };
 
         // Perform X3DH responder
-        let x3dh_result = x3dh_responder(
+        let x3dh_result = x3dh_responder_v10(
             our_identity.x25519_secret.as_ref().ok_or(ProtocolError::KeyNotFound)?,
             &our_signed_prekey,
             our_opk.as_ref(),
@@ -363,6 +364,7 @@ impl X3dhHandshake {
             self.our_pq_sk.as_ref(),
             #[cfg(feature = "pqc")]
             self.peer_pq_ct.as_ref(),
+            &[0u8; 32], // Default transcript hash for non-P2P flow
         )?;
 
         // Build associated data

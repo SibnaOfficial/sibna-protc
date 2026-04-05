@@ -178,21 +178,23 @@ impl X3dhKdf {
         dh2: &[u8; KEY_LENGTH],
         dh3: &[u8; KEY_LENGTH],
         dh4: Option<&[u8; KEY_LENGTH]>,
+        transcript_hash: &[u8; 32],
     ) -> CryptoResult<Zeroizing<[u8; KEY_LENGTH]>> {
-        // Concatenate all DH results
-        let mut concatenated = Vec::with_capacity(KEY_LENGTH * 4);
+        // Concatenate all DH results + transcript hash
+        let mut concatenated = Vec::with_capacity(KEY_LENGTH * 5);
         concatenated.extend_from_slice(dh1);
         concatenated.extend_from_slice(dh2);
         concatenated.extend_from_slice(dh3);
         if let Some(dh4) = dh4 {
             concatenated.extend_from_slice(dh4);
         }
+        concatenated.extend_from_slice(transcript_hash);
 
         // Use HKDF to derive final shared secret
         let hkdf = Hkdf::<Sha256>::new(None, &concatenated);
         let mut okm = [0u8; KEY_LENGTH];
 
-        hkdf.expand(b"SibnaX3DH_v9", &mut okm)
+        hkdf.expand(b"SibnaX3DH_v10", &mut okm)
             .map_err(|_| CryptoError::KeyDerivationFailed)?;
 
         concatenated.zeroize();
@@ -207,9 +209,10 @@ impl X3dhKdf {
         dh3: &[u8; KEY_LENGTH],
         dh4: Option<&[u8; KEY_LENGTH]>,
         pq_shared_secret: &[u8; 32],
+        transcript_hash: &[u8; 32],
     ) -> CryptoResult<Zeroizing<[u8; KEY_LENGTH]>> {
-        // Concatenate all DH results + PQ shared secret
-        let mut concatenated = Vec::with_capacity(KEY_LENGTH * 5);
+        // Concatenate all DH results + PQ shared secret + transcript hash
+        let mut concatenated = Vec::with_capacity(KEY_LENGTH * 6);
         concatenated.extend_from_slice(dh1);
         concatenated.extend_from_slice(dh2);
         concatenated.extend_from_slice(dh3);
@@ -217,6 +220,7 @@ impl X3dhKdf {
             concatenated.extend_from_slice(dh4);
         }
         concatenated.extend_from_slice(pq_shared_secret);
+        concatenated.extend_from_slice(transcript_hash);
 
         // Use HKDF to derive final hybrid shared secret
         // Note the version bump to v10 for PQC-capable core
@@ -253,27 +257,15 @@ impl Argon2Kdf {
         iterations: u32,
         parallelism: u32,
     ) -> CryptoResult<Zeroizing<[u8; KEY_LENGTH]>> {
-        use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, Salt};
+        use argon2::Argon2;
 
-        let argon2 = Argon2::new(
-            argon2::Algorithm::Argon2id,
-            argon2::Version::V0x13,
-            argon2::Params::new(memory, iterations, parallelism, Some(KEY_LENGTH))
-                .map_err(|_| CryptoError::KeyDerivationFailed)?,
-        );
-
-        let salt = Salt::from_bytes(salt).map_err(|_| CryptoError::InvalidKeyLength)?;
-
-        let hash = argon2
-            .hash_password(password, salt)
+        let params = argon2::Params::new(memory, iterations, parallelism, Some(KEY_LENGTH))
             .map_err(|_| CryptoError::KeyDerivationFailed)?;
+        let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
 
         let mut output = [0u8; KEY_LENGTH];
-        if let Some(hash_bytes) = hash.hash {
-            output.copy_from_slice(&hash_bytes.as_bytes()[..KEY_LENGTH]);
-        } else {
-            return Err(CryptoError::KeyDerivationFailed);
-        }
+        argon2.hash_password_into(password, salt, &mut output)
+            .map_err(|_| CryptoError::KeyDerivationFailed)?;
 
         Ok(Zeroizing::new(output))
     }
@@ -460,12 +452,18 @@ mod tests {
         let dh2 = [0x02u8; 32];
         let dh3 = [0x03u8; 32];
         let dh4 = [0x04u8; 32];
+        let hash = [0x55u8; 32];
 
-        let secret1 = X3dhKdf::derive_shared_secret(&dh1, &dh2, &dh3, Some(&dh4)).unwrap();
-        let secret2 = X3dhKdf::derive_shared_secret(&dh1, &dh2, &dh3, None).unwrap();
+        let secret1 = X3dhKdf::derive_shared_secret(&dh1, &dh2, &dh3, Some(&dh4), &hash).unwrap();
+        let secret2 = X3dhKdf::derive_shared_secret(&dh1, &dh2, &dh3, None, &hash).unwrap();
 
         // Should be different when dh4 is included vs not
         assert_ne!(secret1.as_ref(), secret2.as_ref());
+
+        // Should be different with different transcript hash
+        let hash2 = [0x66u8; 32];
+        let secret3 = X3dhKdf::derive_shared_secret(&dh1, &dh2, &dh3, None, &hash2).unwrap();
+        assert_ne!(secret2.as_ref(), secret3.as_ref());
     }
 
     #[test]

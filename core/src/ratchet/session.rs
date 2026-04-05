@@ -7,7 +7,7 @@
 //! - perform_handshake: shared_secret no longer returned to caller
 
 use super::{ChainKey, DoubleRatchetState, RatchetHeader, RatchetMessage, RatchetConfig};
-use super::super::crypto::{Encryptor, constant_time_eq, SecureRandom, RatchetKdf};
+use super::super::crypto::{Encryptor, SecureRandom, RatchetKdf};
 use super::super::error::{ProtocolError, ProtocolResult};
 use super::super::validation::{validate_message, validate_associated_data};
 use crate::Config;
@@ -17,24 +17,34 @@ use sha2::Sha256;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use zeroize::{Zeroize, ZeroizeOnDrop};
+use serde::{Serialize, Deserialize};
 
 /// Double Ratchet Session - manages state and cryptographic operations for a secure channel.
+#[derive(Serialize, Deserialize)]
 pub struct DoubleRatchetSession {
+    #[serde(with = "crate::crypto::serde_helpers::rw_lock_serde")]
     state: RwLock<DoubleRatchetState>,
     config: Config,
     _ratchet_config: RatchetConfig,
     session_id: String,
     peer_id: Option<String>,
+    #[serde(with = "atomic_u64_serde")]
     messages_sent: std::sync::atomic::AtomicU64,
+    #[serde(with = "atomic_u64_serde")]
     messages_received: std::sync::atomic::AtomicU64,
-    created_at: std::time::Instant,
+    /// Unix timestamp when session was created
+    created_at_ts: u64,
 }
 
 #[allow(missing_docs)]
 impl DoubleRatchetSession {
     pub fn new(config: Config) -> ProtocolResult<Self> {
-        let dh_local = StaticSecret::random_from_rng(&mut rand_core::OsRng);
-        let dh_local_bytes = dh_local.to_bytes().to_vec();
+        let mut rng = crate::crypto::SecureRandom::new()
+            .map_err(|_| ProtocolError::InternalError)?;
+        
+        let mut dh_local_bytes = [0u8; 32];
+        rng.fill_bytes(&mut dh_local_bytes);
+        let dh_local = StaticSecret::from(dh_local_bytes);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| ProtocolError::InternalError)?
@@ -45,7 +55,7 @@ impl DoubleRatchetSession {
             sending_chain: None,
             receiving_chain: None,
             dh_local: Some(dh_local),
-            dh_local_bytes,
+            dh_local_bytes: dh_local_bytes.to_vec(),
             dh_remote: None,
             dh_remote_bytes: None,
             skipped_message_keys: HashMap::new(),
@@ -65,7 +75,7 @@ impl DoubleRatchetSession {
             peer_id: None,
             messages_sent: std::sync::atomic::AtomicU64::new(0),
             messages_received: std::sync::atomic::AtomicU64::new(0),
-            created_at: std::time::Instant::now(),
+            created_at_ts: now,
         })
     }
 
@@ -132,7 +142,7 @@ impl DoubleRatchetSession {
             peer_id: None,
             messages_sent: std::sync::atomic::AtomicU64::new(0),
             messages_received: std::sync::atomic::AtomicU64::new(0),
-            created_at: std::time::Instant::now(),
+            created_at_ts: now,
         })
     }
 
@@ -152,6 +162,11 @@ impl DoubleRatchetSession {
 
         let sending_chain = state.sending_chain.as_mut()
             .ok_or(ProtocolError::InvalidState)?;
+
+        // Nonce Safety Check (v2.0.0)
+        if sending_chain.index >= sending_chain.reserved_until {
+            return Err(ProtocolError::NonceReservationRequired);
+        }
 
         let message_key = sending_chain.next_message_key()
             .ok_or(ProtocolError::InvalidState)?;
@@ -212,37 +227,51 @@ impl DoubleRatchetSession {
             );
         }
 
-        let needs_ratchet = match state.dh_remote {
-            None => true,
-            Some(ref current) => !constant_time_eq(current.as_bytes(), remote_dh.as_bytes()),
+        let result = {
+            let mut state_clone = state.clone();
+            let key_tuple_clone = (header.dh_public, header.message_number);
+
+            let needs_ratchet = state_clone.dh_remote.as_ref()
+                .map(|p| !crate::crypto::constant_time_eq(p.as_bytes(), remote_dh.as_bytes()))
+                .unwrap_or(true);
+
+            if needs_ratchet {
+                if let Some(prev_counter) = state_clone.sending_chain.as_ref().map(|c| c.index()) {
+                    state_clone.previous_counter = prev_counter;
+                }
+                self.skip_message_keys(&mut state_clone, header.previous_chain_length)?;
+                self.dh_ratchet(&mut state_clone, remote_dh)?;
+            }
+
+            self.skip_message_keys(&mut state_clone, header.message_number)?;
+
+            let mk = {
+                let receiving_chain = state_clone.receiving_chain.as_mut()
+                    .ok_or(ProtocolError::InvalidState)?;
+                if header.message_number < receiving_chain.index() {
+                    return Err(ProtocolError::ReplayAttackDetected);
+                }
+                receiving_chain.next_message_key().ok_or(ProtocolError::InvalidState)?
+            };
+
+            let decrypt_result = self.decrypt_with_key(
+                &mk, &ratchet_message.ciphertext, associated_data,
+                &header, &mut state_clone, &key_tuple_clone,
+            );
+
+            if decrypt_result.is_ok() {
+                state_clone.touch();
+                *state = state_clone; // Commit successful ratchet
+                decrypt_result
+            } else {
+                state_clone.zeroize(); // Securely wipe failed trial state
+                decrypt_result
+            }
         };
 
-        if needs_ratchet {
-            if let Some(prev_counter) = state.sending_chain.as_ref().map(|c| c.index()) {
-                state.previous_counter = prev_counter;
-            }
-            self.skip_message_keys(&mut state, header.previous_chain_length)?;
-            self.dh_ratchet(&mut state, remote_dh)?;
+        if result.is_ok() {
+            self.messages_received.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
-
-        self.skip_message_keys(&mut state, header.message_number)?;
-
-        let mk = {
-            let receiving_chain = state.receiving_chain.as_mut()
-                .ok_or(ProtocolError::InvalidState)?;
-            if header.message_number < receiving_chain.index() {
-                return Err(ProtocolError::ReplayAttackDetected);
-            }
-            receiving_chain.next_message_key().ok_or(ProtocolError::InvalidState)?
-        };
-
-        let result = self.decrypt_with_key(
-            &mk, &ratchet_message.ciphertext, associated_data,
-            &header, &mut state, &key_tuple,
-        );
-
-        state.touch();
-        self.messages_received.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         result
     }
@@ -312,15 +341,19 @@ impl DoubleRatchetSession {
         state.set_remote_dh(remote_dh);
 
         let dh_local = state.dh_local.as_ref().ok_or(ProtocolError::InvalidState)?;
-        let shared_secret = dh_local.diffie_hellman(&remote_dh);
-        let (root_key, receiving_key) = RatchetKdf::kdf_rk(&state.root_key, shared_secret.as_bytes())?;
-        state.root_key = *root_key;
+        let mut shared_secret = dh_local.diffie_hellman(&remote_dh);
+        let (rk, receiving_key) = RatchetKdf::kdf_rk(&state.root_key, shared_secret.as_bytes())?;
+        shared_secret.zeroize();
+        
+        state.root_key = *rk;
         state.receiving_chain = Some(ChainKey::new(*receiving_key));
 
         let new_local = StaticSecret::random_from_rng(&mut rand_core::OsRng);
-        let shared_secret_send = new_local.diffie_hellman(&remote_dh);
-        let (root_key, sending_key) = RatchetKdf::kdf_rk(&state.root_key, shared_secret_send.as_bytes())?;
-        state.root_key = *root_key;
+        let mut shared_secret_send = new_local.diffie_hellman(&remote_dh);
+        let (rk2, sending_key) = RatchetKdf::kdf_rk(&state.root_key, shared_secret_send.as_bytes())?;
+        shared_secret_send.zeroize();
+
+        state.root_key = *rk2;
         state.sending_chain = Some(ChainKey::new(*sending_key));
         state.set_local_dh(new_local);
 
@@ -330,9 +363,10 @@ impl DoubleRatchetSession {
     fn perform_dh_ratchet(&self, state: &mut DoubleRatchetState) -> ProtocolResult<()> {
         let new_local = StaticSecret::random_from_rng(&mut rand_core::OsRng);
         if let Some(remote_dh) = state.dh_remote {
-            let shared_secret = new_local.diffie_hellman(&remote_dh);
-            let (root_key, sending_key) = RatchetKdf::kdf_rk(&state.root_key, shared_secret.as_bytes())?;
-            state.root_key = *root_key;
+            let mut shared_secret = new_local.diffie_hellman(&remote_dh);
+            let (rk, sending_key) = RatchetKdf::kdf_rk(&state.root_key, shared_secret.as_bytes())?;
+            shared_secret.zeroize();
+            state.root_key = *rk;
             state.sending_chain = Some(ChainKey::new(*sending_key));
         }
         state.set_local_dh(new_local);
@@ -354,7 +388,13 @@ impl DoubleRatchetSession {
             self.messages_received.load(std::sync::atomic::Ordering::Relaxed),
         )
     }
-    pub fn age(&self) -> std::time::Duration { self.created_at.elapsed() }
+    pub fn age(&self) -> std::time::Duration { 
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        std::time::Duration::from_secs(now.saturating_sub(self.created_at_ts))
+    }
     pub fn state_summary(&self) -> super::StateSummary { self.state.read().summary() }
     /// Check if the session has expired
     pub fn is_expired(&self) -> bool { self.state.read().is_expired() }
@@ -370,25 +410,42 @@ impl DoubleRatchetSession {
 
     /// Restore session state from serialized bytes.
     pub fn deserialize_state(&self, data: &[u8]) -> ProtocolResult<()> {
-        let mut state = self.state.write();
-        let mut loaded: DoubleRatchetState = bincode::deserialize(data)
+        let loaded: DoubleRatchetState = bincode::deserialize(data)
             .map_err(|_| ProtocolError::DeserializationError)?;
-        loaded.restore_dh_keys().map_err(|_| ProtocolError::DeserializationError)?;
-        loaded.max_skip = self.config.max_skipped_messages;
-
-        // V2 FIX: Enforce the skipped-keys cap BEFORE assigning state.
-        // A crafted bincode payload could encode millions of entries causing OOM.
-        if loaded.skipped_message_keys.len() > loaded.max_skip {
-            let max_skip = loaded.max_skip;
-            let keys_map = std::mem::take(&mut loaded.skipped_message_keys);
-            let mut entries: Vec<_> = keys_map.into_iter().collect();
+        
+        {
+            let mut state = self.state.write();
+            *state = loaded;
+            let max_skip = state.max_skip;
+            let mut entries: Vec<_> = state.skipped_message_keys.clone().into_iter().collect();
             entries.sort_by_key(|((_, n), _)| *n);
             entries.reverse();
             entries.truncate(max_skip);
-            loaded.skipped_message_keys = entries.into_iter().collect();
+            state.skipped_message_keys = entries.into_iter().collect();
         }
 
-        *state = loaded;
+        Ok(())
+    }
+
+    /// Jump the sending ratchet to the reserved index (v2.0.0)
+    pub fn jump_to_reservation(&self) -> ProtocolResult<()> {
+        let mut state = self.state.write();
+        if let Some(ref mut ck) = state.sending_chain {
+            if ck.reserved_until > ck.index {
+                ck.index = ck.reserved_until;
+                state.touch();
+            }
+        }
+        Ok(())
+    }
+
+    /// Reserve nonces for future sends (v2.0.0)
+    pub fn reserve_nonces(&self, count: u64) -> ProtocolResult<()> {
+        let mut state = self.state.write();
+        if let Some(ref mut ck) = state.sending_chain {
+            ck.reserved_until = ck.index.saturating_add(count);
+            state.touch();
+        }
         Ok(())
     }
 }
@@ -400,6 +457,26 @@ impl Zeroize for DoubleRatchetSession {
         if let Some(mut state) = self.state.try_write() {
             state.zeroize();
         }
+    }
+}
+
+mod atomic_u64_serde {
+    use serde::{Serializer, Deserializer, Deserialize};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    pub fn serialize<S>(val: &AtomicU64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u64(val.load(Ordering::SeqCst))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<AtomicU64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let val = u64::deserialize(deserializer)?;
+        Ok(AtomicU64::new(val))
     }
 }
 

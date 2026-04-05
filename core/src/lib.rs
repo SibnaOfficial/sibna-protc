@@ -35,7 +35,7 @@
 //! > the hybrid handshake protects against this, but the feature must remain enabled.
 //!
 //! # Version
-//! 1.0.4
+//! 2.0.0
 
 #![allow(missing_docs)]
 #![allow(unsafe_op_in_unsafe_fn)]
@@ -74,6 +74,7 @@ pub mod metadata;
 pub mod manager;
 #[cfg(feature = "p2p")]
 pub mod transport;
+pub mod storage;
 
 // P2P transport (optional, requires feature = "p2p")
 #[cfg(feature = "p2p")]
@@ -93,7 +94,7 @@ pub use ratchet::*;
 pub use handshake::*;
 pub use keystore::*;
 pub use error::{ProtocolError, ProtocolResult};
-pub use group::{GroupSession, GroupManager, SenderKey, GroupMessage};
+pub use group::{GroupSession, SenderKey, GroupMessage, GroupManager};
 pub use safety::{SafetyNumber, VerificationQrCode};
 pub use rate_limit::{RateLimiter, RateLimitError, OperationLimit, RemainingQuota};
 pub use validation::{validate_message, validate_key, validate_session_id, ValidationError};
@@ -106,6 +107,7 @@ pub use manager::HybridRouter;
 use std::sync::Arc;
 use parking_lot::RwLock;
 use zeroize::{Zeroize, ZeroizeOnDrop};
+use serde::{Serialize, Deserialize};
 use x25519_dalek::PublicKey;
 
 /// Protocol version
@@ -136,10 +138,14 @@ pub struct SecureContext {
     random: Arc<RwLock<SecureRandom>>,
     /// Storage encryption key (never exposed)
     storage_key: Arc<RwLock<zeroize::Zeroizing<[u8; 32]>>>,
+    /// Salt used for the storage key derivation
+    storage_salt: Arc<RwLock<[u8; 32]>>,
     /// Device ID for multi-device sync
     device_id: [u8; 16],
     /// Rate limiter for operations
     rate_limiter: Arc<RwLock<RateLimiter>>,
+    /// Global sequence number for rollback protection
+    sequence_number: Arc<std::sync::atomic::AtomicU64>,
     /// Context creation time
     created_at: std::time::Instant,
 }
@@ -240,43 +246,45 @@ impl SecureContext {
         // ephemeral (not persisted), which means the storage key changes on every
         // restart. Integrators using persistent storage MUST persist the salt.
         // TODO (tracked): persist salt in the keystore header before v1.1 release.
-        let storage_key = if let Some(password) = master_password {
+        let (storage_key, storage_salt) = if let Some(password) = master_password {
             #[cfg(feature = "argon2")]
             {
-                use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
-                use rand_core::OsRng;
+                use argon2::Argon2;
                 use zeroize::Zeroizing;
 
-                let salt = SaltString::generate(&mut OsRng);
-                let argon2 = Argon2::default(); // Argon2id, m=19MiB, t=2, p=1
+                let salt_bytes = crate::crypto::random_vec(32);
+                let mut salt_arr = [0u8; 32];
+                salt_arr.copy_from_slice(&salt_bytes);
 
-                let hash = argon2
-                    .hash_password(password, &salt)
+                let params = argon2::Params::new(
+                    argon2::Params::DEFAULT_M_COST,
+                    argon2::Params::DEFAULT_T_COST,
+                    argon2::Params::DEFAULT_P_COST,
+                    Some(32)
+                ).map_err(|_| ProtocolError::KeyDerivationFailed)?;
+                let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+
+                let mut key_bytes = [0u8; 32];
+                argon2.hash_password_into(password, &salt_arr, &mut key_bytes)
                     .map_err(|_| ProtocolError::KeyDerivationFailed)?;
 
-                // Extract the raw hash bytes (32 bytes) as storage key
-                let hash_bytes = hash.hash
-                    .ok_or(ProtocolError::KeyDerivationFailed)?;
-                let key_bytes: [u8; 32] = hash_bytes.as_bytes()
-                    .try_into()
-                    .map_err(|_| ProtocolError::KeyDerivationFailed)?;
-                Zeroizing::new(key_bytes)
+                (Zeroizing::new(key_bytes), salt_arr)
             }
             #[cfg(not(feature = "argon2"))]
             {
-                // Argon2 feature not enabled — fall back to HKDF-100k.
-                // WARNING: This is significantly weaker than Argon2id.
-                // Enable the "argon2" feature for production deployments.
                 let salt = crypto::random_vec(32);
-                crypto::kdf::HkdfKdf::derive_iterated(
+                let mut salt_arr = [0u8; 32];
+                salt_arr.copy_from_slice(&salt);
+                let key = crypto::kdf::HkdfKdf::derive_iterated(
                     password,
                     &salt,
                     b"SibnaStorageKey_v9",
-                    100_000, // increased from 10_000 to 100_000 as minimum mitigation
-                )?
+                    100_000,
+                )?;
+                (key, salt_arr)
             }
         } else {
-            crypto::KeyGenerator::generate_key()?
+            (crypto::KeyGenerator::generate_key()?, [0u8; 32])
         };
 
         // Generate device ID
@@ -291,8 +299,7 @@ impl SecureContext {
         let sessions = SessionManager::new(config.clone())?;
 
         // Create group manager
-        let storage_key_arr: &[u8; 32] = storage_key.as_ref().try_into()
-            .map_err(|_| ProtocolError::InvalidKeyLength)?;
+        let storage_key_arr: &[u8; 32] = &storage_key;
         let groups = GroupManager::new(storage_key_arr)?;
 
         // Create rate limiter
@@ -305,8 +312,10 @@ impl SecureContext {
             config: config.clone(),
             random: Arc::new(RwLock::new(rng)),
             storage_key: Arc::new(RwLock::new(storage_key)),
+            storage_salt: Arc::new(RwLock::new(storage_salt)),
             device_id,
             rate_limiter: Arc::new(RwLock::new(rate_limiter)),
+            sequence_number: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             created_at: std::time::Instant::now(),
         })
     }
@@ -332,8 +341,10 @@ impl SecureContext {
             config,
             random: Arc::new(RwLock::new(rng)),
             storage_key: Arc::new(RwLock::new(storage_key)),
+            storage_salt: Arc::new(RwLock::new([0u8; 32])),
             device_id,
             rate_limiter: Arc::new(RwLock::new(rate_limiter)),
+            sequence_number: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             created_at: std::time::Instant::now(),
         })
     }
@@ -655,7 +666,7 @@ impl SecureContext {
         let mut groups = self.groups.write();
         let group = groups.get_group_mut(group_id)
             .ok_or_else(|| ProtocolError::InvalidState)?;
-        group.remove_member(public_key);
+        group.remove_member(public_key)?;
         Ok(())
     }
 
@@ -703,6 +714,66 @@ impl SecureContext {
 
         true
     }
+
+    /// Save the entire context to disk atomically.
+    pub fn save_to_disk(&self, path: &std::path::Path) -> ProtocolResult<()> {
+        let keystore = self.keystore.read();
+        let sessions = self.sessions.read();
+        let groups = self.groups.read();
+        let storage_key = self.storage_key.read();
+        let salt = self.storage_salt.read();
+        let seq = self.sequence_number.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        crate::storage::SecureStorage::save_context(
+            path,
+            &*storage_key,
+            &*salt,
+            &*keystore,
+            &*sessions,
+            &*groups,
+            seq + 1,
+        )
+    }
+
+    /// Load the entire context from disk.
+    pub fn load_from_disk(path: &std::path::Path, password: &[u8]) -> ProtocolResult<Self> {
+        // We use a dummy key first just to read the header/salt.
+        // Or we can modify SecureStorage to return the salt *before* decryption.
+        // For efficiency, we'll try to read the MAGIC + SALT directly.
+        use std::io::Read;
+        let mut file = std::fs::File::open(path).map_err(|_| ProtocolError::StorageError)?;
+        let mut magic = [0u8; 8];
+        file.read_exact(&mut magic).map_err(|_| ProtocolError::StorageError)?;
+        let mut salt = [0u8; 32];
+        file.read_exact(&mut salt).map_err(|_| ProtocolError::StorageError)?;
+        
+        let storage_key = crypto::kdf::HkdfKdf::derive_iterated(
+            password,
+            &salt,
+            b"SibnaStorageKey_v9",
+            100_000,
+        )?;
+
+        let (payload, _) = crate::storage::SecureStorage::load_context(path, &*storage_key)?;
+        
+        let config = payload.sessions._config.clone();
+        let mut device_id = [0u8; 16];
+        device_id.copy_from_slice(&[0u8; 16]); 
+
+        Ok(Self {
+            keystore: Arc::new(RwLock::new(payload.keystore)),
+            sessions: Arc::new(RwLock::new(payload.sessions)),
+            groups: Arc::new(RwLock::new(payload.groups)),
+            config,
+            random: Arc::new(RwLock::new(SecureRandom::new()?)),
+            storage_key: Arc::new(RwLock::new(storage_key)),
+            storage_salt: Arc::new(RwLock::new(salt)),
+            device_id,
+            rate_limiter: Arc::new(RwLock::new(RateLimiter::new())),
+            sequence_number: Arc::new(std::sync::atomic::AtomicU64::new(payload.sequence_number)),
+            created_at: std::time::Instant::now(),
+        })
+    }
 }
 
 
@@ -737,7 +808,9 @@ pub struct ContextStats {
 }
 
 /// Session Manager - Handles active sessions and persistence
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SessionManager {
+    #[serde(with = "sessions_map_serde")]
     sessions: dashmap::DashMap<Vec<u8>, Arc<RwLock<DoubleRatchetSession>>>,
     _config: Config,
 }
@@ -801,6 +874,48 @@ impl SessionManager {
     /// Check if manager is healthy
     pub fn is_healthy(&self) -> bool {
         !self.sessions.is_empty() || self.sessions.len() == 0
+    }
+
+    /// Iterate over sessions (v2.0.0)
+    pub fn iter(&self) -> dashmap::iter::Iter<'_, Vec<u8>, Arc<RwLock<DoubleRatchetSession>>> {
+        self.sessions.iter()
+    }
+}
+
+mod sessions_map_serde {
+    use super::*;
+    use serde::{Serializer, Deserializer, Deserialize};
+    use std::collections::HashMap;
+
+    pub fn serialize<S>(
+        map: &dashmap::DashMap<Vec<u8>, Arc<RwLock<DoubleRatchetSession>>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map_ser = serializer.serialize_map(Some(map.len()))?;
+        for item in map.iter() {
+            let session = item.value().read();
+            map_ser.serialize_entry(item.key(), &*session)?;
+        }
+        map_ser.end()
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<dashmap::DashMap<Vec<u8>, Arc<RwLock<DoubleRatchetSession>>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let normal_map: HashMap<Vec<u8>, DoubleRatchetSession> =
+            HashMap::deserialize(deserializer)?;
+        let dash = dashmap::DashMap::new();
+        for (k, v) in normal_map {
+            dash.insert(k, Arc::new(RwLock::new(v)));
+        }
+        Ok(dash)
     }
 }
 

@@ -230,6 +230,7 @@ impl P2pNode {
             &identity,
             protocol_cfg,
             &self.hs_cfg,
+            *self.ctx.device_id(),
         ).await?;
 
         Ok(Peer::new(peer_id, stream, session, remote_addr))
@@ -255,6 +256,7 @@ impl P2pNode {
             self.pq_sk.clone(),
             protocol_cfg,
             &self.hs_cfg,
+            *self.ctx.device_id(),
         ).await?;
 
         Ok(Peer::new(peer_id, stream, session, remote_addr))

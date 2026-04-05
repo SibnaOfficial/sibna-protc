@@ -50,6 +50,18 @@ pub fn compress(data: &[u8]) -> Vec<u8> {
 
 /// Decompress an LZ4-compressed payload
 pub fn decompress(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
+    const MAX_DECOMPRESSED_SIZE: usize = 20 * 1024 * 1024; // 20 MB limit
+    
+    // Check if the prepended size is too large (DoS protection)
+    if data.len() > 4 {
+        let mut size_bytes = [0u8; 4];
+        size_bytes.copy_from_slice(&data[..4]);
+        let uncompressed_size = u32::from_le_bytes(size_bytes) as usize;
+        if uncompressed_size > MAX_DECOMPRESSED_SIZE {
+            return Err(DecompressError::TooLarge);
+        }
+    }
+
     lz4_flex::decompress_size_prepended(data)
         .map_err(|_| DecompressError::InvalidData)
 }
@@ -58,6 +70,7 @@ pub fn decompress(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
 #[derive(Debug)]
 pub enum DecompressError {
     InvalidData,
+    TooLarge,
 }
 
 // ─── MQTT Topic Routing ────────────────────────────────────────────────────

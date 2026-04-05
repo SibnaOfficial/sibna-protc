@@ -2,7 +2,7 @@
 // FILE: core/src/transport/relay.rs - SECURITY HARDENED
 // ════════════════════════════════════════════════════════════════════════════
 
-//! Relay Transport — SOCKS5/Tor Anonymity v1.0.4 - SECURITY HARDENED
+//! Relay Transport — SOCKS5/Tor Anonymity v2.0.0 - SECURITY HARDENED
 //!
 //! The `RelayClient` connects to a Sibna Server via HTTP and WebSocket.
 //! When a proxy is configured, all HTTP traffic is tunneled through SOCKS5.

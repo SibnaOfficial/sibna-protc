@@ -22,7 +22,7 @@
  *   await client.sendMessage({ recipientId: '...', payloadHex: '...' });
  */
 
-export const VERSION = '1.0.1';
+export const VERSION = '2.0.0';
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 

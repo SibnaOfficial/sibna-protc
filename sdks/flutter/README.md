@@ -16,7 +16,7 @@ Add to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  sibna_flutter: ^1.0.4
+  sibna_flutter: ^2.0.0
 ```
 
 ## Usage

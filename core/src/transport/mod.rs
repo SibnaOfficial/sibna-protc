@@ -1,4 +1,4 @@
-//! Relay Transport Architecture — SOCKS5/Tor Anonymity v1.0.4
+//! Relay Transport Architecture — SOCKS5/Tor Anonymity v2.0.0
 //!
 //! This module implements the `RelayClient`, the primary transport layer
 //! for communicating with a Sibna Server. It supports:

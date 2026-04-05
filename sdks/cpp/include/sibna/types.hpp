@@ -13,7 +13,7 @@ namespace sibna {
 // Version information
 constexpr uint32_t PROTOCOL_VERSION = 8;
 constexpr uint32_t MIN_COMPATIBLE_VERSION = 7;
-constexpr const char* VERSION_STRING = "1.0.1";
+constexpr const char* VERSION_STRING = "2.0.0";
 
 // Constants
 constexpr size_t KEY_LENGTH = 32;

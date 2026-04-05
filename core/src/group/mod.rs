@@ -22,7 +22,7 @@ pub const MAX_GROUP_SIZE: usize = 1000;
 pub const MAX_GROUP_MESSAGE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
 
 /// Sender Key for group messaging
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SenderKey {
     /// Chain key for message derivation
     #[serde(with = "serde_bytes")]
@@ -36,6 +36,15 @@ pub struct SenderKey {
     /// Key ID for rotation
     pub key_id: u32,
 }
+
+impl Zeroize for SenderKey {
+    fn zeroize(&mut self) {
+        self.chain_key.zeroize();
+        self.message_number = 0;
+    }
+}
+
+impl ZeroizeOnDrop for SenderKey {}
 
 impl SenderKey {
     /// Default key expiration (7 days)
@@ -133,20 +142,6 @@ impl SenderKey {
     }
 }
 
-impl Zeroize for SenderKey {
-    fn zeroize(&mut self) {
-        self.chain_key.zeroize();
-        self.message_number = 0;
-    }
-}
-
-impl ZeroizeOnDrop for SenderKey {}
-
-impl Drop for SenderKey {
-    fn drop(&mut self) {
-        self.zeroize();
-    }
-}
 
 /// Sender Key Distribution Message
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -211,7 +206,8 @@ impl SenderKeyMessage {
     }
 }
 
-/// Group Session State
+/// Group Session state
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GroupSession {
     /// Group ID
     pub group_id: GroupId,
@@ -290,11 +286,20 @@ impl GroupSession {
     }
 
     /// Remove a member from the group
-    pub fn remove_member(&mut self, public_key: &[u8; 32]) {
+    pub fn remove_member(&mut self, public_key: &[u8; 32]) -> ProtocolResult<()> {
         self.members.retain(|k| !constant_time_eq(k, public_key));
         self.sender_keys.remove(public_key);
         self.epoch += 1;
+        
+        // V4 FIX: Immediate key rotation on member removal.
+        // This is critical for "Future Secrecy" within the group context.
+        // A removed member must NOT be able to decrypt future messages.
+        if let Some(ref mut sk) = self.our_sender_key {
+            sk.rotate()?;
+        }
+        
         self.touch();
+        Ok(())
     }
 
     /// Encrypt a group message
@@ -547,6 +552,7 @@ impl GroupMessage {
 }
 
 /// Group Manager - Handles multiple groups
+#[derive(Clone, Serialize, Deserialize)]
 pub struct GroupManager {
     groups: HashMap<GroupId, GroupSession>,
     master_key: [u8; 32],
@@ -726,7 +732,7 @@ mod tests {
         assert!(session.add_member(member2).is_ok());
         assert_eq!(session.member_count(), 2);
         
-        session.remove_member(&member1);
+        assert!(session.remove_member(&member1).is_ok());
         assert_eq!(session.member_count(), 1);
     }
 

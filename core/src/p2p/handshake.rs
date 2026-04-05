@@ -25,9 +25,10 @@ use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use x25519_dalek::{StaticSecret, PublicKey};
+use zeroize::Zeroize;
 
 use crate::{
-    handshake::{PreKeyBundle, x3dh::x3dh_initiator, x3dh::x3dh_responder},
+    handshake::PreKeyBundle,
     keystore::IdentityKeyPair,
     ratchet::DoubleRatchetSession,
     Config,
@@ -52,59 +53,72 @@ impl Default for P2pHandshakeConfig {
     }
 }
 
+
+// ── Stealth Handshake Structs (Internal) ──────────────────────────────────
+
+#[derive(Serialize, Deserialize, Debug)]
+struct StealthBundle {
+    responder_ed25519_pub: [u8; 32],
+    responder_x25519_pub: [u8; 32],
+    responder_device_id: [u8; 16],
+    bundle_bytes: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct StealthEnvelope {
+    initiator_ed25519_pub: [u8; 32],
+    initiator_x25519_pub: [u8; 32],
+    initiator_device_id: [u8; 16],
+    ephemeral_pub: [u8; 32],
+    signed_prekey_used: [u8; 32],
+    onetime_prekey_used: Option<[u8; 32]>,
+    #[cfg(feature = "pqc")]
+    pq_ciphertext: Option<Vec<u8>>,
+}
+
 // ── Wire messages ──────────────────────────────────────────────────────────
 
 /// All messages exchanged during a P2P handshake. Encoded with `bincode`.
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) enum P2pMsg {
-    /// Step 1 (Initiator → Responder): announce identity and protocol version.
+    /// Step 1 (Initiator → Responder): announce ephemeral public key and device ID.
     Hello {
-        /// Protocol wire version byte (must be `P2P_PROTOCOL_VERSION`)
+        /// Protocol wire version byte
         version: u8,
-        /// Initiator's Ed25519 public key (32 bytes; used as peer identity ID)
-        ed25519_pub: [u8; 32],
-        /// Initiator's X25519 public key (32 bytes; used in X3DH DH operations)
-        x25519_pub: [u8; 32],
-    },
-    Bundle {
-        /// Serialised `PreKeyBundle::to_bytes()` bytes
-        bundle_bytes: Vec<u8>,
-        /// Responder's X25519 identity key (needed for X3DH DH derivation)
-        responder_x25519_pub: [u8; 32],
-    },
-    /// Step 3 (Initiator → Responder): provide ephemeral key so responder can
-    /// independently compute the same X3DH shared secret.
-    Envelope {
-        /// Initiator's Ed25519 public key (used as peer identity ID)
-        initiator_ed25519_pub: [u8; 32],
-        /// Initiator's X25519 public key (used in DH operations)
-        initiator_x25519_pub: [u8; 32],
-        /// Fresh ephemeral X25519 public key generated for this handshake
+        /// Initiator's ephemeral X25519 public key
         ephemeral_pub: [u8; 32],
-        /// The signed prekey the initiator used (so responder can look it up)
-        signed_prekey_used: [u8; 32],
-        /// One-time prekey used, if any
-        onetime_prekey_used: Option<[u8; 32]>,
-        /// Post-Quantum Ciphertext (ML-KEM-768)
-        #[cfg(feature = "pqc")]
-        pq_ciphertext: Option<Vec<u8>>,
+        /// Initiator's device ID (to prevent state collision)
+        initiator_device_id: [u8; 16],
+    },
+    /// Step 2 (Responder → Initiator): provide encrypted bundle.
+    Bundle {
+        /// Responder's ephemeral X25519 public key
+        ephemeral_pub: [u8; 32],
+        /// AEAD encrypted `StealthBundle` payload
+        encrypted_bundle: Vec<u8>,
+    },
+    /// Step 3 (Initiator → Responder): provide encrypted envelope.
+    Envelope {
+        /// AEAD encrypted `StealthEnvelope` payload
+        encrypted_envelope: Vec<u8>,
     },
     /// Step 4 (Responder → Initiator): confirm that handshake is complete.
     Ok {
-        /// Responder's Ed25519 public key (for verification)
-        responder_ed25519_pub: [u8; 32],
+        /// AEAD encrypted confirm signal
+        encrypted_ok: Vec<u8>,
     },
-    /// Either side may send this to signal an abnormal termination.
+    /// Error signal.
     Error {
-        /// Human-readable reason (not sensitive)
         reason: String,
     },
 }
 
-/// Bumped on any breaking wire-format change.
-const P2P_PROTOCOL_VERSION: u8 = 1;
+use crate::crypto::{CryptoHandler, SimpleKdf};
 
-// ── Serialisation helpers ──────────────────────────────────────────────────
+/// Bumped on any breaking wire-format change.
+const P2P_PROTOCOL_VERSION: u8 = 2; // v2.0 Fortress
+
+// ── Serialisation & Handshake Crypto ───────────────────────────────────────
 
 pub(crate) fn encode_msg(msg: &P2pMsg) -> P2pResult<Bytes> {
     bincode::serialize(msg)
@@ -115,6 +129,19 @@ pub(crate) fn encode_msg(msg: &P2pMsg) -> P2pResult<Bytes> {
 pub(crate) fn decode_msg(bytes: &[u8]) -> P2pResult<P2pMsg> {
     bincode::deserialize(bytes)
         .map_err(|e| P2pError::InvalidMessage(e.to_string()))
+}
+
+/// Derive a transient key for protecting the handshake identity exchange.
+fn derive_handshake_key(
+    our_ephemeral: &StaticSecret,
+    peer_ephemeral_pub: &PublicKey,
+) -> P2pResult<CryptoHandler> {
+    let shared = our_ephemeral.diffie_hellman(peer_ephemeral_pub);
+    let key = SimpleKdf::derive_sha256(shared.as_bytes(), b"SibnaHandshake_v2.0")
+        .map_err(|e| P2pError::Crypto(e.to_string()))?;
+    
+    CryptoHandler::new(key.as_ref())
+        .map_err(|e| P2pError::Crypto(e.to_string()))
 }
 
 // ── Initiator side ─────────────────────────────────────────────────────────
@@ -128,102 +155,139 @@ pub async fn initiator_handshake(
     identity: &IdentityKeyPair,
     protocol_config: Config,
     handshake_cfg: &P2pHandshakeConfig,
+    our_device_id: [u8; 16],
 ) -> P2pResult<(DoubleRatchetSession, [u8; 32])> {
     let timeout = tokio::time::Duration::from_secs(handshake_cfg.timeout_secs);
 
-    // Extract our own X25519 public key
-    let our_x25519_pub: [u8; 32] = identity.x25519_public;
-
     tokio::time::timeout(timeout, async {
-        // ── 1. Send Hello ──────────────────────────────────────────────
+        // ── 1. Send Hello (Ephemeral + DeviceID) ───────────────────────
+        let alice_ephemeral = StaticSecret::random_from_rng(&mut rand::thread_rng());
+        let alice_ephemeral_pub = PublicKey::from(&alice_ephemeral);
+
         stream.send(encode_msg(&P2pMsg::Hello {
             version: P2P_PROTOCOL_VERSION,
-            ed25519_pub: identity.ed25519_public,
-            x25519_pub: our_x25519_pub,
+            ephemeral_pub: *alice_ephemeral_pub.as_bytes(),
+            initiator_device_id: our_device_id,
         })?).await
             .map_err(|e| P2pError::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string())))?;
 
-        // ── 2. Receive Bundle ──────────────────────────────────────────
+        // ── 2. Receive Bundle (Encrypted) ──────────────────────────────
         let frame = stream.next().await.ok_or(P2pError::Disconnected)?
             .map_err(|e| P2pError::Framing(e.to_string()))?;
-        let (bundle_bytes, responder_x25519_pub) = match decode_msg(&frame)? {
-            P2pMsg::Bundle { bundle_bytes, responder_x25519_pub } => (bundle_bytes, responder_x25519_pub),
+        
+        let (bob_ephemeral_pub, encrypted_bundle) = match decode_msg(&frame)? {
+            P2pMsg::Bundle { ephemeral_pub, encrypted_bundle } => {
+                let pub_key = PublicKey::from(ephemeral_pub);
+                crate::crypto::validate_public_key(pub_key.as_bytes())
+                    .map_err(|_| P2pError::Handshake("invalid responder ephemeral key".into()))?;
+                (pub_key, encrypted_bundle)
+            },
             P2pMsg::Error { reason } => return Err(P2pError::Handshake(reason)),
             other => return Err(P2pError::InvalidMessage(format!("expected Bundle, got {:?}", other))),
         };
 
-        let bundle = PreKeyBundle::from_bytes(&bundle_bytes)
-            .map_err(|e| P2pError::Handshake(format!("malformed bundle: {:?}", e)))?;
+        let handler = derive_handshake_key(&alice_ephemeral, &bob_ephemeral_pub)?;
+
+        let bundle_payload = handler.decrypt(&encrypted_bundle, b"handshake_bundle")
+            .map_err(|_| P2pError::Handshake("failed to decrypt bundle".into()))?;
+        let stealth_bundle: StealthBundle = bincode::deserialize(&bundle_payload)
+            .map_err(|e| P2pError::Handshake(format!("malformed stealth bundle: {}", e)))?;
+
+        let bundle = PreKeyBundle::from_bytes(&stealth_bundle.bundle_bytes)
+            .map_err(|e| P2pError::Handshake(format!("malformed internal bundle: {:?}", e)))?;
         bundle.validate()
             .map_err(|e| P2pError::Handshake(format!("bundle validation: {:?}", e)))?;
 
-        // ── Run X3DH initiator ─────────────────────────────────────────
-        // Generate a fresh ephemeral key pair for this handshake session
-        let ephemeral = StaticSecret::random_from_rng(&mut rand::thread_rng());
-        let ephemeral_pub = PublicKey::from(&ephemeral);
+        // ── Transcript Binding (v2.0) ──────────────────────────────────
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(alice_ephemeral_pub.as_bytes());
+        hasher.update(bob_ephemeral_pub.as_bytes());
+        hasher.update(&our_device_id);
+        hasher.update(&stealth_bundle.responder_device_id);
+        hasher.update(&identity.ed25519_public);
+        hasher.update(&stealth_bundle.responder_ed25519_pub);
+        let transcript_hash = hasher.finalize();
 
-        // FIX: Use reference instead of cloning the StaticSecret
+        // ── Run X3DH initiator ─────────────────────────────────────────
+        let x3dh_ephemeral = StaticSecret::random_from_rng(&mut rand::thread_rng());
+        let x3dh_ephemeral_pub = PublicKey::from(&x3dh_ephemeral);
+
         let our_identity_x = identity.x25519_secret.as_ref()
             .ok_or_else(|| P2pError::Crypto("identity X25519 secret not available".into()))?;
 
-        // The responder specifically sends their X25519 identity key alongside the bundle
-        let peer_identity_x = PublicKey::from(responder_x25519_pub);
+        let peer_identity_x = PublicKey::from(stealth_bundle.responder_x25519_pub);
         let peer_spk_pub    = PublicKey::from(bundle.signed_prekey);
         let peer_opk_pub    = bundle.onetime_prekey.map(PublicKey::from);
 
         #[cfg(feature = "pqc")]
-        let mut x3dh_result = x3dh_initiator(
+        let mut x3dh_result = crate::handshake::x3dh::x3dh_initiator_v10(
             our_identity_x,
-            &ephemeral,
+            &x3dh_ephemeral,
             &peer_identity_x,
             &peer_spk_pub,
             peer_opk_pub.as_ref(),
             bundle.pq_signed_prekey.as_ref(),
+            transcript_hash.as_bytes(),
         ).map_err(|e| P2pError::Handshake(format!("x3dh_initiator: {:?}", e)))?;
 
         #[cfg(not(feature = "pqc"))]
-        let mut x3dh_result = x3dh_initiator(
+        let mut x3dh_result = crate::handshake::x3dh::x3dh_initiator_v10(
             our_identity_x,
-            &ephemeral,
+            &x3dh_ephemeral,
             &peer_identity_x,
             &peer_spk_pub,
             peer_opk_pub.as_ref(),
+            transcript_hash.as_bytes(),
         ).map_err(|e| P2pError::Handshake(format!("x3dh_initiator: {:?}", e)))?;
 
-        let shared = x3dh_result.shared_secret;
-
-        // ── 3. Send Envelope ───────────────────────────────────────────
-        stream.send(encode_msg(&P2pMsg::Envelope {
+        // ── 3. Send Envelope (Encrypted) ───────────────────────────────
+        let stealth_envelope = StealthEnvelope {
             initiator_ed25519_pub: identity.ed25519_public,
-            initiator_x25519_pub: our_x25519_pub,
-            ephemeral_pub: *ephemeral_pub.as_bytes(),
+            initiator_x25519_pub: identity.x25519_public,
+            initiator_device_id: our_device_id,
+            ephemeral_pub: *x3dh_ephemeral_pub.as_bytes(),
             signed_prekey_used: bundle.signed_prekey,
             onetime_prekey_used: bundle.onetime_prekey,
             #[cfg(feature = "pqc")]
             pq_ciphertext: x3dh_result.pq_ciphertext.take(),
+        };
+        let envelope_payload = bincode::serialize(&stealth_envelope)
+            .map_err(|e| P2pError::Framing(e.to_string()))?;
+        let encrypted_envelope = handler.encrypt(&envelope_payload, b"handshake_envelope")
+            .map_err(|_| P2pError::Crypto("failed to encrypt envelope".into()))?;
+
+        stream.send(encode_msg(&P2pMsg::Envelope {
+            encrypted_envelope,
         })?).await
             .map_err(|e| P2pError::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string())))?;
 
-        // ── 4. Receive Ok ──────────────────────────────────────────────
+        // ── 4. Receive Ok (Encrypted) ──────────────────────────────────
         let frame = stream.next().await.ok_or(P2pError::Disconnected)?
             .map_err(|e| P2pError::Framing(e.to_string()))?;
-        let responder_ed25519_pub = match decode_msg(&frame)? {
-            P2pMsg::Ok { responder_ed25519_pub } => responder_ed25519_pub,
+        
+        let encrypted_ok = match decode_msg(&frame)? {
+            P2pMsg::Ok { encrypted_ok } => encrypted_ok,
             P2pMsg::Error { reason } => return Err(P2pError::Handshake(reason)),
             other => return Err(P2pError::InvalidMessage(format!("expected Ok, got {:?}", other))),
         };
 
-        // Build Double Ratchet session (initiator role)
+        let _ = handler.decrypt(&encrypted_ok, b"handshake_ok")
+            .map_err(|_| P2pError::Handshake("failed to decrypt ok signal".into()))?;
+
+        // Build Double Ratchet session
         let remote_dh = PublicKey::from(bundle.signed_prekey);
+        let mut shared_secret = x3dh_result.shared_secret;
         let session = DoubleRatchetSession::from_shared_secret(
-            &shared,
-            ephemeral,             // local DH secret
-            remote_dh,             // remote DH public
+            &shared_secret,
+            x3dh_ephemeral,
+            remote_dh,
             protocol_config,
-            true,                  // initiator
+            true,
         ).map_err(|e| P2pError::Crypto(format!("ratchet init: {:?}", e)))?;
 
-        Ok((session, responder_ed25519_pub))
+        shared_secret.zeroize();
+
+        Ok((session, stealth_bundle.responder_ed25519_pub))
     })
     .await
     .map_err(|_| P2pError::Timeout)?
@@ -245,96 +309,127 @@ pub async fn responder_handshake(
     pq_sk: Option<Vec<u8>>,
     protocol_config: Config,
     handshake_cfg: &P2pHandshakeConfig,
+    our_device_id: [u8; 16],
 ) -> P2pResult<(DoubleRatchetSession, [u8; 32])> {
     let timeout = tokio::time::Duration::from_secs(handshake_cfg.timeout_secs);
 
     tokio::time::timeout(timeout, async {
-        // ── 1. Receive Hello ───────────────────────────────────────────
+        // ── 1. Receive Hello (Alice's Ephemeral) ───────────────────────
         let frame = stream.next().await.ok_or(P2pError::Disconnected)?
             .map_err(|e| P2pError::Framing(e.to_string()))?;
-        let (initiator_ed25519_pub, initiator_x25519_pub) = match decode_msg(&frame)? {
-            P2pMsg::Hello { version, ed25519_pub, x25519_pub } => {
+        
+        let (alice_ephemeral_pub, initiator_device_id) = match decode_msg(&frame)? {
+            P2pMsg::Hello { version, ephemeral_pub, initiator_device_id } => {
                 if version != P2P_PROTOCOL_VERSION {
-                    let _ = stream.send(encode_msg(&P2pMsg::Error {
-                        reason: format!(
-                            "version mismatch: peer={}, us={}",
-                            version, P2P_PROTOCOL_VERSION
-                        ),
-                    })?).await;
-                    return Err(P2pError::Handshake("protocol version mismatch".into()));
+                    return Err(P2pError::Handshake("version mismatch".into()));
                 }
-                (ed25519_pub, x25519_pub)
+                let pub_key = PublicKey::from(ephemeral_pub);
+                crate::crypto::validate_public_key(pub_key.as_bytes())
+                    .map_err(|_| P2pError::Handshake("invalid initiator ephemeral".into()))?;
+                (pub_key, initiator_device_id)
             }
             other => return Err(P2pError::InvalidMessage(format!("expected Hello, got {:?}", other))),
         };
 
-        // ── 2. Send Bundle ─────────────────────────────────────────────
-        stream.send(encode_msg(&P2pMsg::Bundle {
-            bundle_bytes: bundle.to_bytes(),
+        // ── 2. Send Bundle (Encrypted) ─────────────────────────────────
+        let bob_ephemeral = StaticSecret::random_from_rng(&mut rand::thread_rng());
+        let bob_ephemeral_pub = PublicKey::from(&bob_ephemeral);
+
+        let handler = derive_handshake_key(&bob_ephemeral, &alice_ephemeral_pub)?;
+
+        let stealth_bundle = StealthBundle {
+            responder_ed25519_pub: identity.ed25519_public,
             responder_x25519_pub: identity.x25519_public,
+            responder_device_id: our_device_id,
+            bundle_bytes: bundle.to_bytes(),
+        };
+        let bundle_payload = bincode::serialize(&stealth_bundle)
+            .map_err(|e| P2pError::Framing(e.to_string()))?;
+        let encrypted_bundle = handler.encrypt(&bundle_payload, b"handshake_bundle")
+            .map_err(|_| P2pError::Crypto("failed to encrypt bundle".into()))?;
+
+        stream.send(encode_msg(&P2pMsg::Bundle {
+            ephemeral_pub: *bob_ephemeral_pub.as_bytes(),
+            encrypted_bundle,
         })?).await
             .map_err(|e| P2pError::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string())))?;
 
-        // ── 3. Receive Envelope ────────────────────────────────────────
+        // ── 3. Receive Envelope (Encrypted) ────────────────────────────
         let frame = stream.next().await.ok_or(P2pError::Disconnected)?
             .map_err(|e| P2pError::Framing(e.to_string()))?;
-        let (ephemeral_pub_bytes, pq_ct) = match decode_msg(&frame)? {
-            #[cfg(feature = "pqc")]
-            P2pMsg::Envelope { ephemeral_pub, pq_ciphertext, .. } => (ephemeral_pub, pq_ciphertext),
-            #[cfg(not(feature = "pqc"))]
-            P2pMsg::Envelope { ephemeral_pub, .. } => (ephemeral_pub, None),
-            
+        
+        let encrypted_envelope = match decode_msg(&frame)? {
+            P2pMsg::Envelope { encrypted_envelope } => encrypted_envelope,
             P2pMsg::Error { reason } => return Err(P2pError::Handshake(reason)),
             other => return Err(P2pError::InvalidMessage(format!("expected Envelope, got {:?}", other))),
         };
 
+        let envelope_payload = handler.decrypt(&encrypted_envelope, b"handshake_envelope")
+            .map_err(|_| P2pError::Handshake("failed to decrypt envelope".into()))?;
+        let stealth_envelope: StealthEnvelope = bincode::deserialize(&envelope_payload)
+            .map_err(|e| P2pError::Handshake(format!("malformed stealth envelope: {}", e)))?;
+
+        // ── Transcript Binding (v2.0) ──────────────────────────────────
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(alice_ephemeral_pub.as_bytes());
+        hasher.update(bob_ephemeral_pub.as_bytes());
+        hasher.update(&initiator_device_id);
+        hasher.update(&our_device_id);
+        hasher.update(&stealth_envelope.initiator_ed25519_pub);
+        hasher.update(&identity.ed25519_public);
+        let transcript_hash = hasher.finalize();
+
         // ── Run X3DH responder ─────────────────────────────────────────
-        // FIX: Use reference instead of cloning the StaticSecret
         let our_identity_x = identity.x25519_secret.as_ref()
             .ok_or_else(|| P2pError::Crypto("identity X25519 secret not available".into()))?;
 
-        // Initiator's X25519 identity public key (announced in Hello)
-        let initiator_identity_x = PublicKey::from(initiator_x25519_pub);
-        let initiator_eph_pub    = PublicKey::from(ephemeral_pub_bytes);
+        let initiator_identity_x = PublicKey::from(stealth_envelope.initiator_x25519_pub);
+        let initiator_eph_pub    = PublicKey::from(stealth_envelope.ephemeral_pub);
 
         #[cfg(feature = "pqc")]
-        let x3dh_result = x3dh_responder(
+        let x3dh_result = crate::handshake::x3dh::x3dh_responder_v10(
             our_identity_x,
             &spk_secret,
             opk_secret.as_ref(),
             &initiator_identity_x,
             &initiator_eph_pub,
             pq_sk.as_ref(),
-            pq_ct.as_ref(),
+            stealth_envelope.pq_ciphertext.as_ref(),
+            transcript_hash.as_bytes(),
         ).map_err(|e| P2pError::Handshake(format!("x3dh_responder: {:?}", e)))?;
 
         #[cfg(not(feature = "pqc"))]
-        let x3dh_result = x3dh_responder(
+        let x3dh_result = crate::handshake::x3dh::x3dh_responder_v10(
             our_identity_x,
             &spk_secret,
             opk_secret.as_ref(),
             &initiator_identity_x,
             &initiator_eph_pub,
+            transcript_hash.as_bytes(),
         ).map_err(|e| P2pError::Handshake(format!("x3dh_responder: {:?}", e)))?;
 
-        let shared = x3dh_result.shared_secret;
+        // ── 4. Send Ok (Encrypted) ─────────────────────────────────────
+        let encrypted_ok = handler.encrypt(b"OK", b"handshake_ok")
+            .map_err(|_| P2pError::Crypto("failed to encrypt ok signal".into()))?;
 
-        // ── 4. Send Ok ─────────────────────────────────────────────────
         stream.send(encode_msg(&P2pMsg::Ok {
-            responder_ed25519_pub: identity.ed25519_public,
+            encrypted_ok,
         })?).await
             .map_err(|e| P2pError::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string())))?;
 
-        // Build Double Ratchet session (responder role)
+        // Build Double Ratchet session
+        let mut shared_secret = x3dh_result.shared_secret;
         let session = DoubleRatchetSession::from_shared_secret(
-            &shared,
-            spk_secret,              // local DH secret
-            initiator_eph_pub,       // remote DH public
+            &shared_secret,
+            spk_secret,
+            initiator_eph_pub,
             protocol_config,
-            false,                   // responder
+            false,
         ).map_err(|e| P2pError::Crypto(format!("ratchet init: {:?}", e)))?;
 
-        Ok((session, initiator_ed25519_pub))
+        shared_secret.zeroize();
+
+        Ok((session, stealth_envelope.initiator_ed25519_pub))
     })
     .await
     .map_err(|_| P2pError::Timeout)?

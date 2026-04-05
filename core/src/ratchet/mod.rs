@@ -10,9 +10,9 @@
 //! - Constant-time operations where possible
 //! - Automatic key zeroization
 
-mod chain;
-mod state;
-mod session;
+pub (crate) mod chain;
+pub mod state;
+pub mod session;
 
 pub use chain::*;
 pub use state::*;
@@ -22,6 +22,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 use std::collections::HashMap;
 use crate::error::{ProtocolError, ProtocolResult};
 use crate::crypto::constant_time_eq;
+use serde::{Serialize, Deserialize};
 
 /// Maximum number of skipped messages to store
 pub const MAX_SKIPPED_MESSAGES: usize = 2000;
@@ -33,7 +34,7 @@ pub const MAX_MESSAGE_KEY_AGE_SECS: u64 = 86400;
 pub const HEADER_SIZE: usize = 32 + 8 + 8 + 8;
 
 /// Ratchet message header
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RatchetHeader {
     /// DH public key
     pub dh_public: [u8; 32],
@@ -119,7 +120,7 @@ impl RatchetHeader {
 }
 
 /// Skipped message key entry with metadata
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SkippedMessageKey {
     /// The message key
     pub key: [u8; 32],
@@ -150,7 +151,7 @@ impl SkippedMessageKey {
 }
 
 /// Ratchet message with header and ciphertext
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RatchetMessage {
     /// Message header
     pub header: RatchetHeader,
@@ -185,7 +186,7 @@ impl RatchetMessage {
 }
 
 /// Ratchet state summary (for debugging/monitoring)
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RatchetStateSummary {
     /// Current sending chain index
     pub sending_index: u64,
@@ -200,7 +201,7 @@ pub struct RatchetStateSummary {
 }
 
 /// Ratchet configuration
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RatchetConfig {
     /// Maximum skipped messages
     pub max_skipped_messages: usize,

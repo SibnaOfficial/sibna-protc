@@ -1,47 +1,16 @@
-# المساهمة في Sibna Protocol
+# Contributing
 
-## الأمان أولاً
+We welcome contributions to the Sibna Protocol.
 
-هذه مكتبة تشفير. كل مساهمة يجب أن تتبع هذه القواعد:
+## Pull Requests
 
-### القواعد الحرجة
+1. Fork the repository and create your branch from `main`.
+2. Ensure your code compiles without warnings (`cargo clippy -- -D warnings`).
+3. Run the full test suite (`cargo test --workspace`).
+4. Keep commits atomic and document any API changes.
 
-- **لا `.unwrap()` أو `.expect()` في كود الإنتاج** — استخدم `?` أو معالجة أخطاء صريحة
-- **لا تبعيات جديدة بدون مراجعة أمنية** — شغّل `cargo audit` قبل إضافة أي crate
-- **لا primitives تشفير مخصصة** — استخدم فقط crates مُدقَّقة من RustCrypto
-- **كل Public API يجب توثيقه** — مطلوب ملاحظات أمنية للدوال التشفيرية
-- **جميع الاختبارات يجب أن تنجح** بما فيها `cargo clippy -- -D warnings`
+## Security Changes
 
-### قاعدة `InternalErrorDetailed`
+If your pull request modifies cryptographic logic or changes the transport layer, please explicitly highlight these changes in the PR description. Security-sensitive changes will undergo mandatory review.
 
-يُسمح باستخدام `ProtocolError::InternalErrorDetailed { details }` **فقط** لأغراض التسجيل الداخلي (`warn!` / `error!`). يجب **عدم إرجاعه** إلى المستدعي الخارجي. استخدم `ProtocolError::InternalError` للقيمة المُرجَعة العامة.
-
-```rust
-// ✅ صحيح
-.map_err(|e| {
-    warn!("OPERATION_FAILED: {:?}", e);   // تفاصيل في السجل فقط
-    ProtocolError::InternalError          // عام للمستدعي
-})?;
-
-// ❌ خطأ
-.map_err(|e| ProtocolError::InternalErrorDetailed { details: e.to_string() })?;
-```
-
-### إرسال التغييرات
-
-1. Fork المستودع وأنشئ feature branch
-2. شغّل مجموعة الاختبارات الكاملة: `cargo test --all`
-3. شغّل Clippy: `cargo clippy --all-targets -- -D warnings -D clippy::unwrap_used`
-4. شغّل التنسيق: `cargo fmt --all`
-5. شغّل التدقيق الأمني: `cargo audit`
-6. أرسل pull request مع وصف واضح
-
-### الإبلاغ عن الثغرات
-
-**لا تفتح issues عامة للثغرات الأمنية.**
-
-📧 `security@sibna.dev`
-
-### قواعد السلوك
-
-احترام وبناء. بحث الأمان يفيد الجميع.
+Code modifying cryptographic primitives must use constant-time operations (e.g., via the `subtle` crate) and ensure that sensitive variables implement `zeroize` upon drop.

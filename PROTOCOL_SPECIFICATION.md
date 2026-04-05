@@ -1,44 +1,46 @@
-# Protocol Specification — Sibna Protocol v1.0.4
+# Protocol Specification
 
-## 1. Key Agreement: X3DH
+## 1. Key Agreement
 
-### 1.1 Key Types
-- **Identity Key (IK):** Ed25519 / X25519 (Permanent)
-- **Signed Prekey (SPK):** X25519 signed by IK (Medium-term)
-- **One-Time Prekey (OPK):** X25519 (Single-use)
-- **Ephemeral Key (EK):** X25519 (Single-session)
+The key agreement is based on Extended Triple Diffie-Hellman (X3DH). 
 
-### 1.2 Key Derivation
-The shared secret is derived from up to four Diffie-Hellman operations (DH1–DH4) combined via HKDF-SHA256 with specific versioned info constants.
+Key Definitions:
+- Identity Key (IK): Long-term Ed25519/X25519 key pair
+- Signed Prekey (SPK): Medium-term X25519 key pair signed by IK
+- One-Time Prekey (OPK): Single-use X25519 key pair
+- Ephemeral Key (EK): Single-session X25519 key pair
 
-### 1.3 Post-Quantum Hybrid (Default)
 By default, the handshake merges two independent mechanisms:
-1. **X25519**: Classical Diffie-Hellman
-2. **ML-KEM-768** (FIPS 203): Responder KEM encapsulation.
+1. X25519: Classical Diffie-Hellman
+2. ML-KEM-768 (FIPS 203): Responder KEM encapsulation
 
-Both secrets are concatenated and passed through HKDF. An adversary must break both algorithms simultaneously to compromise the session.
+Both resulting shared secrets are concatenated and passed through HKDF-SHA256 to derive the master session key. 
 
-## 2. Session Management: Double Ratchet
+## 2. Session Management
 
-Messages are encrypted using unique keys derived from a chain key updated via HMAC-SHA256 after every message (Forward Secrecy). A Diffie-Hellman ratchet is executed on every full round trip to provide Post-Compromise Security.
+Messages are encrypted using unique keys derived from a chain key. The chain key is updated via HMAC-SHA256 after every message, providing forward secrecy. A Diffie-Hellman ratchet is executed on every full round trip to provide post-compromise security. Message ordering and replay protection are enforced using strict atomic counter sequences.
 
 ## 3. Hybrid Routing
 
-`HybridRouter` defaults to a P2P-first policy, querying active sessions and gracefully falling back to a WebSocket encrypted relay if a direct connection cannot be established or drops.
+`HybridRouter` defaults to a P2P-first policy. It queries the local cache for active sessions and falls back to a WebSocket-based encrypted relay if a direct TCP connection cannot be established.
 
 ## 4. Sealed Sender
-The server routes sealed envelopes without knowing the sender's identity. Envelopes are Ed25519-signed over `SHA-512(recipient_id ∥ payload ∥ timestamp ∥ message_id ∥ is_dummy)`, guaranteeing metadata binding.
 
-## 5. Padding
-Message padding is implemented using standard block sizes: `None`, `Small` (256 B), `Standard` (1 KB), `Large` (4 KB), and `Maximum` (16 KB) to prevent length analysis.
+The central server routes envelopes without inspecting payload metadata. Envelopes are signed over the concatenated byte representation of the recipient ID, payload, timestamp, and metadata flags using Ed25519.
 
-## 6. Cryptographic Parameters
+## 5. Message Padding
 
-| Parameter | Algorithm |
-|-----------|-----------|
-| KDF | HKDF-SHA256 |
-| AEAD | ChaCha20-Poly1305 |
-| Key Exchange | X25519 (+ ML-KEM-768) |
-| Signature | Ed25519 |
-| Post-Quantum KEM | ML-KEM-768 (FIPS 203) |
-| Hash | SHA-512 / SHA-256 |
+Encryption incorporates message padding. Standard block sizes are 256 B, 1 KB, 4 KB, and 16 KB. This design prevents observers from inferring payload contents based on raw byte length. 
+
+## 6. Cryptographic Primitives
+
+- Key Derivation: HKDF-SHA256
+- Authenticated Encryption: ChaCha20-Poly1305
+- Key Exchange: X25519 and ML-KEM-768
+- Signatures: Ed25519
+- Hash Functions: SHA-512 and SHA-256
+- Randomness: OS-provided CSPRNG
+
+## 7. Storage Authentication
+
+The server handles client prekey upload challenges using an HMAC-SHA256 authenticated token. Challenges are strictly one-time-use.

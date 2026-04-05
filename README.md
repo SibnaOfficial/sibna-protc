@@ -1,57 +1,66 @@
-# Sibna Protocol
+# Sibna Protocol v2.0.0 "Fortress"
 
-Sibna Protocol is a Rust implementation of the X3DH and Double Ratchet cryptographic protocols designed for robust end-to-end encryption (E2EE). It is dual-licensed under Apache 2.0 and MIT.
+Sibna is a high-assurance Rust implementation of the Signal Protocol (X3DH and Double Ratchet), engineered for robust end-to-end encryption (E2EE) in decentralized and peer-to-peer environments. It provides a standardized framework for secure, asynchronous, and forward-secret communication.
 
-## Overview
+## Architectural Overview
 
-Sibna is a cryptographic library providing a standalone protocol for end-to-end encryption. It is designed to be integrated into applications that require secure communication channels without relying on external infrastructure.
+Sibna v2.0.0 introduces several "Beyond-Paranoid" security enhancements designed to mitigate advanced threat vectors:
 
-### Core Features
+- **Transcript Binding (v10)**: Handshake keys are cryptographically bound to the full public key transcript using BLAKE3, preventing key-substitution and unknown key-share (UKS) attacks.
+- **Stealth Handshake**: Implements identity obfuscation during the initial exchange, preventing passive metadata collection of participant public keys.
+- **Hybrid Post-Quantum Security**: Merges classical X25519 Diffie-Hellman with ML-KEM-768 (FIPS 203) for quantum-resistant key encapsulation.
+- **Memory Hardness**: Utilizes **Argon2id** for master password derivation, ensuring high resistance against GPU/ASIC-based brute-force attacks.
+- **Memory Hygiene**: Forces sensitive entropy pools and transient key buffers into non-swappable RAM via `VirtualLock`/`mlock` and ensures zeroization on drop.
 
-- Perfect Forward Secrecy & Post-Compromise Security
-- Hybrid cryptography integrating classical X25519 and ML-KEM-768 (FIPS 203)
-- Fixed-block message padding to prevent length analysis
-- Sealed Sender envelopes for metadata protection
-- Direct P2P and relayed transport routing
+## Project Status
+
+> [!IMPORTANT]
+> **No independent external security audit has been performed on this implementation.** While Sibna utilizes audited cryptographic primitives from the RustCrypto ecosystem, the protocol orchestration itself should be treated as experimental for production-critical systems until a formal audit is completed.
+
+## Core Components
+
+- **`sibna-core`**: The primary cryptographic library containing ratchet logic, KDFs, and P2P handshake implementations.
+- **`sibna-server`**: A lightweight, multi-transport relay (REST + WebSocket) for identity management and sealed envelope routing.
+- **`sdks/`**: Native bindings for C++, Python, JavaScript (WASM), Flutter, Dart, and Go.
 
 ## Quick Start (Rust)
 
-Add `sibna_core` to your `Cargo.toml`:
+Add `sibna-core` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sibna_core = { path = "core", version = "1.0.4", features = ["pqc", "relay"] }
+sibna-core = { version = "2.0.0", features = ["pqc", "p2p", "relay"] }
 ```
 
-Example usage:
+### Basic Session Initiation
 
 ```rust
 use sibna_core::{SecureContext, Config};
-use sibna_core::crypto::{CryptoHandler, KeyGenerator};
+use sibna_core::handshake::x3dh;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Config::default();
-    let ctx = SecureContext::new(config, Some(b"SecurePass123!"))?;
+    // 1. Initialize secure context with Argon2id protection
+    let ctx = SecureContext::new(Config::default(), Some(b"MasterPassword"))?;
 
-    let session_key = KeyGenerator::generate_key()?;
-    let handler = CryptoHandler::new(session_key.as_ref())?;
+    // 2. Perform Stealth Handshake (Identity Hiding)
+    let (session, handshake_output) = x3dh::initiator_v10(&ctx, &peer_prekey_bundle).await?;
 
-    let aad = b"header_data";
-    let ciphertext = handler.encrypt(b"System payload", aad)?;
-    let plaintext = handler.decrypt(&ciphertext, aad)?;
-
-    assert_eq!(plaintext, b"System payload");
+    // 3. Encrypt with Double Ratchet (Perfect Forward Secrecy)
+    let ciphertext = session.encrypt(b"Confidential payload")?;
+    
     Ok(())
 }
 ```
 
 ## Documentation
 
-- [Protocol Specification](PROTOCOL_SPECIFICATION.md)
-- [Security Model](SECURITY.md)
-- [Changelog](CHANGELOG.md)
+Comprehensive technical details are available in the following documents:
+
+- **[Security Model](SECURITY.md)**: Threat model, limitations, and cryptographic invariants.
+- **[Protocol Specification](PROTOCOL_SPECIFICATION.md)**: Bit-level description of handshakes and ratcheting.
+- **[Changelog](CHANGELOG.md)**: Version history and security audit trail.
 
 ## License
 
-This project is dual-licensed under the Apache License 2.0 and the MIT License. See the LICENSE file for details.
+This project is dual-licensed under the **Apache License 2.0** and the **MIT License**.

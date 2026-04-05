@@ -2462,7 +2462,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "sibna-core"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2510,13 +2510,14 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "web-sys",
+ "windows-sys 0.61.2",
  "x25519-dalek",
  "zeroize",
 ]
 
 [[package]]
 name = "sibna-server"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2545,7 +2546,7 @@ dependencies = [
 
 [[package]]
 name = "sibna-tests"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "ed25519-dalek",
  "hex",

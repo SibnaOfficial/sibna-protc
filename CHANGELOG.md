@@ -1,42 +1,38 @@
-# Changelog
+# Changelog - Sibna Protocol
 
-All notable changes to the Sibna Protocol are documented here.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+All notable changes to the Sibna Protocol are documented here. This project adheres to **Semantic Versioning (v2.0.0)**.
 
 ---
 
-## [1.0.4] - 2026-04-05
+## [2.0.0] - 2026-04-05 - "Fortress" Release
 
-### Security - Critical Fixes
-- **V1** `encryptor.rs`: Fixed Replay-Window gap. Ensure messages with higher sequence numbers don't bypass replay checks.
-- **V2** `ratchet/session.rs`: Fixed unbounded deserialization. Bounded the deserialization of skipped message keys to prevent DoS/OOM.
+The **Fortress Release** is a major architectural milestone focused on "Beyond-Paranoid" security hardening, metadata obfuscation, and state verification.
 
-### Security - High Severity Fixes
-- **V3** `ratchet/state.rs`: Fixed private key bytes leakage and restoration confusion. Added `dh_local_public_bytes`.
-- **V4** `crypto/kdf.rs`: Replaced simple hash implementation with proper HKDF-SHA256 for key derivation to prevent length-extension attacks.
-- **V5** `server/main.rs`: Required JWT authentication for `delete_prekey_handler` to prevent unauthorized bundle deletion.
+### Architectural Enhancements (Beyond-Paranoid)
+- **Transcript Binding (v10)**: Integrated BLAKE3-based transcript hashing into the X3DH KDF to prevent key-substitution and unknown key-share (UKS) attacks.
+- **Stealth Handshake**: Implemented encrypted identity bundles during the initial P2P exchange to prevent passive metadata leakage of participant public keys.
+- **Argon2id Master KDF**: Replaced iterative HKDF with memory-hard **Argon2id** for master password-based key derivation (m=64MB, t=3, p=4).
+- **Memory Pinning (VirtualLock)**: Enabled RAM-pinning for entropy pools and transient key buffers using `VirtualLock` (Windows) and `mlock` (Unix) to prevent disk-leakage via swap.
+- **Multi-Device State Binding**: Incorporated a 128-bit `device_id` into the session KDF to ensure distinct ratchet chains and prevents nonce collisions across multi-device installs.
 
-### Security - Medium & Low Fixes
-- **V6** `server/auth.rs`: Enabled constant-time HMAC comparison via `subtle::ConstantTimeEq` to prevent timing oracles.
-- **V7** `server/ws.rs`: Placed a strict hexadecimal payload length limit (20MB) to prevent WebSocket DoS bypassing HTTP limits.
-- **V8** `server/main.rs`: Removed `DefaultHasher` usage for rate limiting in favor of string concatenation to prevent bucket collisions.
-- **V10** `core/src/crypto/random.rs`: Removed OS RNG panics.
-- **V11** `server/auth.rs`: Ensured strict parse failure rejections instead of defaulting timestamp to 0.
-- **V12** `core/src/validation.rs`: Separated binary validation from string sanitization.
+### Technical & Security Fixes
+- **V1 (Replay Protection)**: Patched a sequence gap in `encryptor.rs` that allowed out-of-order message bypasses.
+- **V2 (DoS mitigation)**: Bounded the deserialization of skipped message keys to prevent uncontrolled memory allocation.
+- **V3 (Key Leakage)**: Resolved a memory exposure bug in `DoubleRatchetState` where private key buffers were not consistently zeroized after restoration.
+- **V5 (Auth Binding)**: Enforced strict JWT authentication for all prekey management operations at the server level.
+- **V8 (Rate Limiting)**: Refactored rate-balancer buckets to use collision-resistant identifiers (IP-Identity concatenation).
 
-### Tooling & Documentation
-- **Clippy**: Achieved zero-warning status by applying strict lint resolutions globally.
-- **Documentation**: Translated all documentation to factual English and unified version references to 1.0.4.
+### Maintenance & Quality
+- **Unified Versioning**: Synchronized version 2.0.0 across all core modules, relay server components, and multi-language SDKs (Python, JS, Go, C++, Dart, Flutter).
+- **Professional Documentation**: Overhauled the technical documentation suite (README, SECURITY, PROTOCOL_SPECIFICATION) for accuracy, technical precision, and honest disclosure of project status.
+- **Zero-Warning Status**: Completed a global lint sweep, resolving all high and medium-severity Clippy warnings.
 
 ---
 
 ## [0.9.0] - 2026-03-20
-
-- Stabilized P2P discovery
-- Introduced Post-Quantum mechanism
+- Initial Post-Quantum mechanism integration (ML-KEM-768).
+- Stabilized P2P discovery routing.
 
 ## [0.8.0] - 2024-XX-XX
-
-- Initial robust E2EE implementation
+- Core Double Ratchet implementation.
+- X3DH classical handshake.

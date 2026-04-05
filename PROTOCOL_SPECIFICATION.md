@@ -1,46 +1,56 @@
-# Protocol Specification
+# Sibna Protocol Specification (v2.0.0 "Fortress")
 
-## 1. Key Agreement
+This document detail the technical specification for the Sibna Protocol, covering key agreement, session management, and routing primitives.
 
-The key agreement is based on Extended Triple Diffie-Hellman (X3DH). 
+## 1. Key Agreement (X3DH v10)
 
-Key Definitions:
-- Identity Key (IK): Long-term Ed25519/X25519 key pair
-- Signed Prekey (SPK): Medium-term X25519 key pair signed by IK
-- One-Time Prekey (OPK): Single-use X25519 key pair
-- Ephemeral Key (EK): Single-session X25519 key pair
+The key agreement is an Extended Triple Diffie-Hellman (X3DH) implementation, augmented with hybrid post-quantum key encapsulation (KEM) and transcript binding.
 
-By default, the handshake merges two independent mechanisms:
-1. X25519: Classical Diffie-Hellman
-2. ML-KEM-768 (FIPS 203): Responder KEM encapsulation
+### Handshake Stages
+1. **Initiation**: The initiator (Alice) fetches the responder's (Bob) prekey bundle, containing a Signed Prekey (SPK) and an optional One-Time Prekey (OPK).
+2. **KEM Encapsulation**: Alice generates an ephemeral key pair (EK) and performs ML-KEM-768 encapsulation against Bob's SPK public key, yielding a shared secret `ss_kem`.
+3. **Classical DH**: Alice performs the standard X25519 DH exchanges:
+    - `dh1 = DH(IK_A, SPK_B)`
+    - `dh2 = DH(EK_A, IK_B)`
+    - `dh3 = DH(EK_A, SPK_B)`
+    - `dh4 = DH(EK_A, OPK_B)` (if available)
+4. **Transcript Hashing**: A BLAKE3 hash is computed over the concatenation of all public keys involved in the exchange: `transcript_hash = BLAKE3(IK_A || IK_B || EK_A || SPK_B || OPK_B || device_id_A || device_id_B)`.
+5. **KDF Derivation**: The final master shared secret is derived via HKDF-SHA256:
+    - `SK = HKDF(salt=transcript_hash, info="sibna_v10", ikm=ss_kem || dh1 || dh2 || dh3 || dh4)`
 
-Both resulting shared secrets are concatenated and passed through HKDF-SHA256 to derive the master session key. 
+### Stealth Mode (Identity Obfuscation)
+In Stealth Mode, the initiator identity key `IK_A` and any associated device metadata are encrypted using a transient "Stealth Envelope" derived from the initial ephemeral exchange. This ensures that a passive network observer cannot determine the communicating identities beyond the pre-established server-stored prekeys.
 
-## 2. Session Management
+## 2. Session Management (Double Ratchet)
 
-Messages are encrypted using unique keys derived from a chain key. The chain key is updated via HMAC-SHA256 after every message, providing forward secrecy. A Diffie-Hellman ratchet is executed on every full round trip to provide post-compromise security. Message ordering and replay protection are enforced using strict atomic counter sequences.
+Messages are protected using a Double Ratchet mechanism, combining a symmetric-key chain ratchet and a Diffie-Hellman-based re-keying ratchet.
 
-## 3. Hybrid Routing
+### Chain Ratchet
+- **Encryption**: Every message increments the chain index. The current `chain_key` produces a `message_key` and the next `chain_key` via HMAC-SHA256.
+- **Forward Secrecy**: Once a `message_key` is used, it is zeroized. The `chain_key` cannot be reversed to recover previous keys.
 
-`HybridRouter` defaults to a P2P-first policy. It queries the local cache for active sessions and falls back to a WebSocket-based encrypted relay if a direct TCP connection cannot be established.
+### DH Ratchet
+- **Post-Compromise Security**: A full X25519 DH exchange is performed on every message round-trip. This "ratchets" the root key, ensuring that even if a session participant is compromised, secrecy is restored as soon as a subsequent successful exchange occurs.
 
-## 4. Sealed Sender
+## 3. Wire Format & Routing
 
-The central server routes envelopes without inspecting payload metadata. Envelopes are signed over the concatenated byte representation of the recipient ID, payload, timestamp, and metadata flags using Ed25519.
+### Sealed Sender
+Sibna utilizes a "Sealed Sender" envelope design. The central relay server routes messages based on a 256-bit destination address without visibility into the sender's identity key or the message payload. Envelopes are authenticated via Ed25519 signatures over the encrypted payload and metadata.
 
-## 5. Message Padding
+### Message Padding
+To prevent traffic analysis via payload length, all messages are padded to the nearest power-of-2 block size (256 B, 1 KB, 4 KB, or 16 KB) before encryption.
 
-Encryption incorporates message padding. Standard block sizes are 256 B, 1 KB, 4 KB, and 16 KB. This design prevents observers from inferring payload contents based on raw byte length. 
+## 4. Cryptographic Primitives
 
-## 6. Cryptographic Primitives
+| Primitives | Technical Selection |
+| :--- | :--- |
+| **Key Exchange** | X25519 (classical) & ML-KEM-768 (quantum) |
+| **Encryption** | ChaCha20-Poly1305 (AEAD) |
+| **KDF** | HKDF-SHA256 |
+| **Signatures** | Ed25519 |
+| **Password Hashing** | Argon2id |
+| **Transcript Hash** | BLAKE3 |
 
-- Key Derivation: HKDF-SHA256
-- Authenticated Encryption: ChaCha20-Poly1305
-- Key Exchange: X25519 and ML-KEM-768
-- Signatures: Ed25519
-- Hash Functions: SHA-512 and SHA-256
-- Randomness: OS-provided CSPRNG
+## 5. Persistence & Storage
 
-## 7. Storage Authentication
-
-The server handles client prekey upload challenges using an HMAC-SHA256 authenticated token. Challenges are strictly one-time-use.
+State persistence mandates an atomic `StorageManifest` check. Every state transition increments a monotonic sequence counter linked to the master storage key, preventing unauthorized state rollback or splicing attacks.

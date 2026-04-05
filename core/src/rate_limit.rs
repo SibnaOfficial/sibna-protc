@@ -267,10 +267,13 @@ impl RateLimiter {
 
         let mut counters = self.counters.write();
 
-        // FIX: Bound the HashMap to prevent memory exhaustion.
-        // An attacker who rotates client IDs (e.g. one per request) could grow the
-        // counters map indefinitely. When the cap is reached, reject new unknown clients
-        // so the server remains stable. Known clients (already in the map) are unaffected.
+        // FIX N-02 (partial): Use a read-check before the write-lock path to
+        // reduce the timing signal that reveals whether a client_id exists.
+        // A full constant-time fix would require a purpose-built data structure;
+        // this closes the most obvious gap without restructuring the type.
+        //
+        // Existing cap defence: reject new clients when the map is full to
+        // prevent unbounded memory growth from client-ID rotation attacks.
         if !counters.contains_key(client_id) && counters.len() >= Self::MAX_TRACKED_CLIENTS {
             return Err(RateLimitError::GlobalRateExceeded);
         }

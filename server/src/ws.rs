@@ -140,9 +140,19 @@ async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEn
 
     // Try to deliver immediately if recipient is online
     if let Some(recipient_tx) = state.clients.get(&envelope.recipient_id) {
-        let data = serde_json::to_vec(&envelope).unwrap_or_default();
-        if recipient_tx.send(data).is_ok() {
-            return;
+        // FIX N-01: don't silently send an empty vec on serialisation failure.
+        // Drop the message and warn — a zero-byte frame would corrupt the
+        // client's stream parser with no indication of what went wrong.
+        match serde_json::to_vec(&envelope) {
+            Ok(data) => {
+                if recipient_tx.send(data).is_ok() {
+                    return;
+                }
+            }
+            Err(e) => {
+                warn!("WS_ROUTE: failed to serialise envelope for {}: {}", &envelope.recipient_id[..16], e);
+                return;
+            }
         }
     }
 
@@ -189,8 +199,13 @@ async fn deliver_queued_messages(state: &AppState, identity_id: &str, tx: &Clien
                     continue;
                 }
                 if let Ok(envelope) = serde_json::from_value::<SealedEnvelope>(json["envelope"].clone()) {
-                    let data = serde_json::to_vec(&envelope).unwrap_or_default();
-                    tx.send(data).ok();
+                    // FIX N-01: skip silently-empty frames on serialisation failure
+                    match serde_json::to_vec(&envelope) {
+                        Ok(data) => { tx.send(data).ok(); }
+                        Err(e) => {
+                            warn!("WS_DELIVER: failed to serialise queued envelope: {}", e);
+                        }
+                    }
                     to_delete.push(key);
                 }
             }

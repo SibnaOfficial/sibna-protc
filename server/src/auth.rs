@@ -2,6 +2,10 @@
 //! 
 //! Zero-trust identity binding: clients prove they own the Ed25519 key
 //! by signing a server-issued challenge. No passwords stored.
+//!
+//! # Security Fixes
+//! N-03: Challenge is now stored as HMAC-SHA256(challenge, jwt_secret) rather
+//!       than plaintext. Prevents DB-read attacks from recovering live challenges.
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
@@ -12,6 +16,8 @@ use chrono::Utc;
 use rand::RngCore;
 use axum::extract::ConnectInfo;
 use std::net::SocketAddr;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use crate::{AppState, enforce_rate_limit};
 
 /// JWT claims
@@ -89,7 +95,16 @@ pub async fn challenge_handler(
     };
     let db_key = format!("challenge:{}", req.identity_key_hex);
     let expires_at = Utc::now().timestamp() + 60;
-    let value = format!("{}:{}", challenge_hex, expires_at);
+
+    // FIX N-03: store an HMAC-SHA256 of the challenge keyed by the JWT secret.
+    // If the sled DB is read by an attacker, they cannot recover the challenge
+    // bytes and therefore cannot forge a valid proof response.
+    let mut mac = Hmac::<Sha256>::new_from_slice(state.jwt_secret.as_bytes())
+        .expect("HMAC accepts keys of any length");
+    mac.update(challenge_hex.as_bytes());
+    let challenge_mac = hex::encode(mac.finalize().into_bytes());
+
+    let value = format!("{}:{}:{}", challenge_hex, challenge_mac, expires_at);
     tree.insert(db_key.as_bytes(), value.as_bytes()).ok();
 
     (StatusCode::OK, Json(ChallengeResponse {
@@ -120,12 +135,26 @@ pub async fn prove_handler(
         _ => return (StatusCode::UNAUTHORIZED, "No pending challenge").into_response(),
     };
 
-    let parts: Vec<&str> = stored.splitn(2, ':').collect();
-    if parts.len() != 2 {
+    let parts: Vec<&str> = stored.splitn(3, ':').collect();
+    if parts.len() != 3 {
         return (StatusCode::INTERNAL_SERVER_ERROR, "Bad challenge format").into_response();
     }
 
-    let (expected_challenge_hex, expires_str) = (parts[0], parts[1]);
+    let (stored_challenge_hex, stored_mac_hex, expires_str) = (parts[0], parts[1], parts[2]);
+
+    // FIX N-03: verify the stored HMAC before trusting the challenge value.
+    // This ensures the DB record has not been tampered with.
+    let mut mac = Hmac::<Sha256>::new_from_slice(state.jwt_secret.as_bytes())
+        .expect("HMAC accepts any key length");
+    mac.update(stored_challenge_hex.as_bytes());
+    let expected_mac = hex::encode(mac.finalize().into_bytes());
+    if expected_mac != stored_mac_hex {
+        warn!("AUTH_PROVE: challenge HMAC mismatch — possible DB tampering for {}", &req.identity_key_hex[..16.min(req.identity_key_hex.len())]);
+        tree.remove(db_key.as_bytes()).ok();
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Challenge integrity error").into_response();
+    }
+
+    let expected_challenge_hex = stored_challenge_hex;
     let expires_at: i64 = expires_str.parse().unwrap_or(0);
     if Utc::now().timestamp() > expires_at {
         tree.remove(db_key.as_bytes()).ok();

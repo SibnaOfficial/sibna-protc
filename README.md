@@ -15,19 +15,19 @@ A high-security Rust implementation of the X3DH and Double Ratchet protocol — 
 
 ## Core Features
 
-### 🔐 Core Cryptography
+### Core Cryptography
 - **X3DH v3 + Transcript Binding**: BLAKE3-based binding to prevent UKS attacks.
 - **Double Ratchet**: Forward Secrecy and Post-Compromise Security.
 - **Hybrid PQC (Post-Quantum)**: Standard X25519 combined with ML-KEM-768 (FIPS 203).
 - **Memory Security**: `Zeroize` on drop and memory pinning (`mlock`) for sensitive keys.
 
-### 🌐 Transport & Networking
+### Transport & Networking
 - **mDNS / Stealth Handshake**: Identity-hiding discovery in P2P environments.
 - **Relay Support**: Native SOCKS5 and Tor transport integration.
 - **WebRTC Signaling**: Routing support for high-bandwidth media sessions.
 - **Delivery ACKs**: Reliable delivery with zero message loss.
 
-### 🛡️ Privacy & Metadata Resistance
+### Privacy & Metadata Resistance
 - **Sealed Sender (Blinded Relay)**: Infrastructure designed to minimize sender metadata at the relay layer.
 - **Metadata Obfuscation**: Hardened padding (1KB default, up to 64KB) with random noise prefixes.
 - **Cover Traffic**: Exponentially distributed dummy packets to mitigate traffic analysis.

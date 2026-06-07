@@ -93,15 +93,22 @@ impl ByteBuffer {
         }
     }
 
-    /// Convert to Vec<u8>
+    /// Convert to Vec<u8> (consumes the buffer — caller must NOT call `free` afterwards)
     ///
     /// # Safety
     /// Caller must ensure the buffer was created with `ByteBuffer::new` and has not been freed.
-    pub unsafe fn to_vec(&self) -> Vec<u8> {
+    /// After this call, the buffer's `data` pointer is set to null, so `free` is a no-op.
+    pub unsafe fn to_vec(&mut self) -> Vec<u8> {
         if self.data.is_null() {
             return Vec::new();
         }
-        Vec::from_raw_parts(self.data, self.len, self.capacity)
+        let data = self.data;
+        let len = self.len;
+        let capacity = self.capacity;
+        self.data = ptr::null_mut();
+        self.len = 0;
+        self.capacity = 0;
+        Vec::from_raw_parts(data, len, capacity)
     }
 
     /// Free the buffer
@@ -996,7 +1003,7 @@ mod tests {
     #[test]
     fn test_byte_buffer() {
         let data = vec![1, 2, 3, 4, 5];
-        let buffer = ByteBuffer::new(data);
+        let mut buffer = ByteBuffer::new(data);
 
         assert_eq!(buffer.len, 5);
         assert!(!buffer.data.is_null());
@@ -1053,6 +1060,7 @@ mod tests {
             assert_eq!(decrypted_vec, plaintext);
 
             ciphertext.free();
+            // `decrypted` is now null/empty; `free` is a safe no-op.
             decrypted.free();
         }
     }

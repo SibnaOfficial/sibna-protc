@@ -182,6 +182,26 @@ Continuous verification runs in CI on every push to `main` and on a weekly sched
 
 The `audit/` directory contains the 25-patch self-audit (`audit/AUDIT_REPORT.md`).
 
+## Network anonymity features
+
+Sibna Core provides two optional anonymity layers that you can opt into.
+**They are not enabled by default** and they have explicit limitations
+that callers must understand before relying on them.
+
+| Feature | How to enable | Verified? |
+|---|---|---|
+| SOCKS5 / Tor proxying (all HTTP + WebSocket) | `Config::proxy_url = Some("socks5://127.0.0.1:9050")` | ✅ wired (`core/src/transport/relay.rs:5,37,42-50`, `core/src/p2p/transport.rs:9,55`); requires an external Tor daemon |
+| Cover traffic (Poisson process) | `HybridRouter::set_cover_traffic(true)` + `start_cover_traffic_loop(min, max)` | ✅ working post-SIBNA-2026-001 patch; requires the `p2p` feature flag and an active relay client |
+
+**Limitations (read before relying on these features):**
+
+- **mDNS peer discovery broadcasts random session tokens in cleartext on the LAN.** SIBNA-2026-029 replaced the static peer ID with a per-session random token, but the token is still sent unencrypted on the local network. Tor protects relay traffic only; mDNS leaks local peer presence to anyone on the same broadcast domain.
+- **Cover traffic requires the `p2p` feature flag and an active relay client.** `start_cover_traffic_loop` is a no-op without `p2p`; calls to `set_cover_traffic(true)` without a relay client produce no cover traffic at all.
+- **Tor is not bundled and not required.** You provide your own Tor daemon; Sibna does not start it, verify the circuit, or detect deanonymisation. Setting `proxy_url` to a SOCKS5 proxy that is not Tor reduces your anonymity to whatever that proxy provides.
+- **Cover traffic does NOT protect against endpoint traffic analysis.** Local side-channels (process scheduling, OS-level telemetry, memory access patterns) are out of scope.
+- **Only the Rust core exposes SOCKS5 configuration.** The Python, JavaScript, and Go SDKs do not currently support `proxy_url`. Java has TLS pinning but no SOCKS5. Dart and Flutter are FFI bindings to the Rust core, so they inherit whatever the host native library is configured with.
+- **Cover traffic is a CRITICAL pre-audit hardening, not a formal guarantee.** SIBNA-2026-001 originally disabled cover traffic by rejecting empty plaintext in `CryptoHandler::encrypt`; the fix added SIBNA-2026-018 to randomise the per-block suffix length. The result is much harder to fingerprint, but has not been quantitatively evaluated against a state-level adversary model.
+
 ## Documentation index
 
 - [`PROTOCOL_SPECIFICATION.md`](PROTOCOL_SPECIFICATION.md) — wire formats, X3DH transcript, padding block, ratchet state layout.

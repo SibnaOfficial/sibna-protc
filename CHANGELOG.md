@@ -5,19 +5,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
-## [Unreleased] — Documentation Transparency Pass
+## [Unreleased] — v3.1.0 Security & Interop Fixes (2026-06-07)
 
-### Fixed
-- `core/src/p2p/handshake.rs:55` — corrected stale "warn-only mode" doc-comment on `P2pHandshakeConfig::expected_peer_identity` that contradicted the post-PATCH-17 behaviour (the field is now mandatory; `None` rejects the connection). A reader relying on the old comment would have assumed they could leave the field unset and merely receive a warning.
-- `audit/README.md:58` — reconciled the `fips203` version note: the actually pinned version is `0.4.3` (per `Cargo.toml:53` and `audit/VERIFICATION.md:152`); the `0.5.0` reference in `audit/AUDIT_REPORT.md:168,273` is a target upgrade that was never applied.
-- `audit/verification_report.md:52` — replaced the unqualified "production-ready" conclusion with a "hardened and pre-audit ready" status that cites `audit/EXECUTIVE_BRIEF.md` as the authoritative verdict and lists the four residual risk dimensions the EXECUTIVE_BRIEF names.
+### Security Fixes — CRITICAL
 
-### Added
-- `README.md` — new "Network anonymity features" section listing Tor (SOCKS5) and Cover Traffic with explicit limitations (mDNS cleartext on LAN, requires the `p2p` feature flag, only the Rust core exposes SOCKS5 configuration, etc.). Makes the threat model in `docs/THREAT_MODEL.md` discoverable from the README's table of contents.
-- `core/src/ffi/mod.rs:100` — `ByteBuffer::to_vec` now takes `&mut self` and nulls the inner pointer after transferring ownership to a `Vec<u8>`. The previous `&self` signature was a latent double-free: any caller doing `vec = buf.to_vec(); buf.free();` would crash with `STATUS_HEAP_CORRUPTION` on Windows. All FFI tests now pass (202/202 Rust tests green).
-- `core/src/ffi/mod.rs:999` — `test_byte_buffer` now declares `mut buffer` so the test compiles. The previous `let buffer = ...` failed `cargo test` with `E0596`.
+- **Java X3DH Responder (sdks/java)** — The X3DH responder silently derived a different shared secret from the initiator because `X3DHHandshake.respond()` had no access to the local signed prekey and used the identity key for all three DH operations. Result: `DH1 = IK_B*IK_A` (should be `SPK_B*IK_A`), `DH2 = IK_B*EK_A` (correct), `DH3 = IK_B*EK_A` (should be `SPK_B*EK_A` and equals DH2). **Fix:** new `PreKeyPair` class wrapping the local signed prekey; `X3DHHandshake` constructor takes it; `respond()` now uses SPK for DH1/DH3. `SibnaClient.acceptSession()` signature extended with required `PreKeyPair` parameter. Added `testX3DH_responderSharedSecretMatchesInitiator` proving cross-SDK shared secret equality.
+
+- **Go Padding Wire Format (sdks/go)** — `PadPayload`/`UnpadPayload` used a completely different on-wire format (`[indicator(1)|pad_len(2,BE)|plaintext|padding]`) than the Rust core (`[prefix_len(1)|prefix_noise(1..8)|plaintext|padding|pad_len(2,LE)]`), used BIG-endian pad_len, and produced deterministic block sizes. **Fix:** rewritten to match core/src/crypto/padding.rs exactly: prefix_len ∈ [1,8], prefix noise, LE pad_len, extra_blocks ∈ [0,7] per SIBNA-2026-018. Added 3 regression tests.
+
+- **Python Padding extra_blocks (sdks/python)** — `pad_payload` drew `extra_blocks` from [0,1] instead of [0,7], undermining SIBNA-2026-018 metadata resistance. **Fix:** `extra_blocks = secrets.randbelow(cap + 1)` with cap = min(7, max_blocks_for_budget). Added size distribution + wire format tests.
+
+- **JavaScript Math.random() + extra_blocks (sdks/javascript)** — `padPayload` used `Math.random()` (non-crypto) for `prefixLen` and `extraBlocks`, and capped `extraBlocks` at 0..1. **Fix:** uses `crypto.getRandomValues()` for both; `extraBlocks` ∈ [0,7] with budget cap. Added 3 tests mirroring Python/Go.
+
+- **Flutter/Dart FFI ABI Mismatch (sdks/flutter, sdks/dart)** — `sibna_session_encrypt/decrypt` native signature is 8 args (`context, session_id, session_id_len, plaintext, plaintext_len, ad, ad_len, out_buf`); Flutter binding declared 6 args (missing `ad, ad_len`). Session code passed session handle as context, plaintext as session_id. **Fix:** binding updated to 8 args; `SibnaSession` stores parent context and passes it correctly; Dart bindings added for session_encrypt/decrypt, group_create/destroy, identity_generate/destroy; stub `UnimplementedError` methods replaced with FFI calls. Added helpers `_copyToNative`, `_readAndFreeBuffer`.
+
+- **C++ SafetyNumber (sdks/cpp)** — Missing domain separator "SIBNA_SAFETY_NUMBER_V1" in hash input; 60 hex digits vs Rust's 80 decimal digits; different grouping. Cross-SDK verification was broken. **Fix:** domain separator added; output format matches Rust (80 decimal digits, 16 groups of 5, space every 3 groups); `parse()` and `similarity()` updated.
+
+- **Python WebSocket JWT Leak (sdks/python)** — Async WebSocket client appended JWT to query string (`/ws?token=...`), leaking in access logs, browser history, Referer. **Fix:** token now sent via `Authorization: Bearer <jwt>` header in `ws_connect()`.
+
+### SDK Completeness
+
+- **Dart/Flutter** — `sibna_session_encrypt/decrypt`, `sibna_group_create/destroy`, `sibna_identity_generate/destroy` now bound and implemented. No more `UnimplementedError` stubs.
+- **C++ Crypto::pad/unpad** — Previously declared but missing; test_crypto.cpp would not link. Now implemented matching Rust core format exactly.
+
+### CI & Testing
+
+- Added CI jobs for **Java (Maven)**, **JavaScript (Jest/ts-jest)**, **Dart (dart test)**, **C++ (CMake + Catch2)**. Previously only Python and Go ran in CI.
+- Added `tests/cross_sdk/padding_vectors.json` with canonical vectors and `tests/cross_sdk/test_cross_sdk_padding.py` validating Python against them + a hand-built Rust fixture.
+
+### Documentation
+
+- `CHANGELOG.md` — this entry
+- `README.md` — "Network anonymity features" section added
+- `audit/README.md` — fips203 version pinned to 0.4.3 (reconciled with Cargo.toml)
+- `audit/verification_report.md` — "production-ready" qualified to "hardened and pre-audit ready"
+- `core/src/p2p/handshake.rs:55` — stale "warn-only mode" comment corrected
+
+### Breaking Changes
+
+- **Java SDK**: `SibnaClient.acceptSession()` signature changed (added required `PreKeyPair localSignedPrekey`).
+- **Go SDK**: Wire format changed — stored padded payloads must be re-padded.
+- **Python SDK**: WebSocket handshake now uses `Authorization: Bearer` header instead of query string; server must be updated.
+- **Flutter/Dart SDK**: `SibnaSession` constructor now requires parent context; encrypt/decrypt signatures unchanged but now work correctly.
+- **C++ SDK**: SafetyNumber output format changed from 60 hex digits to 80 decimal digits.
 
 ---
+
+## [Unreleased] — Documentation Transparency Pass
 
 ## [3.0.1] — 2026-06-04 (Security Hardening)
 

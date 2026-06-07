@@ -41,7 +41,7 @@ public class IdentityTest {
     }
 
     @Test
-    public void testIdentityFromSeed() throws CryptoException {
+    public void testIdentityFromSeed() throws CryptoException, com.sibna.exceptions.InvalidArgumentException {
         byte[] seed = new byte[32];
         for(int i=0; i<32; i++) seed[i] = (byte)i;
         

@@ -91,23 +91,33 @@ class _SibnaBindings {
   // FIX: These were missing — session.dart silently used a random ephemeral
   // key per message that the recipient could never decrypt.
   // Rust core must export sibna_session_encrypt / sibna_session_decrypt.
+  // FIX: Phase 4.1 — the previous binding declared a 6-argument signature
+  // (context, session_id, session_id_len, plaintext, plaintext_len,
+  // ciphertext_out). The native Rust function
+  // core::ffi::sibna_session_encrypt actually has 8 arguments: the two
+  // AEAD-associated-data arguments (associated_data, ad_len) come between
+  // plaintext_len and ciphertext_out, and any caller passing a non-null
+  // associated_data buffer would corrupt the stack and crash the host
+  // process. The new binding matches the native ABI exactly.
   late final sibna_session_encrypt = _lib
       .lookup<NativeFunction<
           Int32 Function(Pointer<Void>, Pointer<Uint8>, Size,
-              Pointer<Uint8>, Size, Pointer<_ByteBuffer>)>>(
-          'sibna_session_encrypt')
+              Pointer<Uint8>, Size, Pointer<Uint8>, Size,
+              Pointer<_ByteBuffer>)>>('sibna_session_encrypt')
       .asFunction<
           int Function(Pointer<Void>, Pointer<Uint8>, int,
-              Pointer<Uint8>, int, Pointer<_ByteBuffer>)>();
+              Pointer<Uint8>, int, Pointer<Uint8>, int,
+              Pointer<_ByteBuffer>)>();
 
   late final sibna_session_decrypt = _lib
       .lookup<NativeFunction<
           Int32 Function(Pointer<Void>, Pointer<Uint8>, Size,
-              Pointer<Uint8>, Size, Pointer<_ByteBuffer>)>>(
-          'sibna_session_decrypt')
+              Pointer<Uint8>, Size, Pointer<Uint8>, Size,
+              Pointer<_ByteBuffer>)>>('sibna_session_decrypt')
       .asFunction<
           int Function(Pointer<Void>, Pointer<Uint8>, int,
-              Pointer<Uint8>, int, Pointer<_ByteBuffer>)>();
+              Pointer<Uint8>, int, Pointer<Uint8>, int,
+              Pointer<_ByteBuffer>)>();
 
   // ── Group session ─────────────────────────────────────────
   // FIX: sibna_group_create was missing — group.dart threw UnimplementedError.

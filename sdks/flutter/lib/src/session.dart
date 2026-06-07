@@ -1,13 +1,22 @@
 part of '../sibna_flutter.dart';
 
 class SibnaSession {
+  // FIX: Phase 4.2 — the session now also keeps a strong reference to
+  // the parent context. ``sibna_session_encrypt`` and
+  // ``sibna_session_decrypt`` both take ``*mut SibnaContext`` as their
+  // first argument (the SecureContext that owns the session table),
+  // not the session handle itself. The previous code passed the
+  // session handle as the context pointer, which on every call would
+  // either be misinterpreted as a different ``SecureContext`` (UB) or
+  // crash the host process.
+  final Pointer<Void> _context;
   final Pointer<Void> _handle;
   final Uint8List peerId;
   bool _disposed = false;
   int _messagesSent = 0;
   int _messagesReceived = 0;
 
-  SibnaSession._(this._handle, this.peerId);
+  SibnaSession._(this._context, this._handle, this.peerId);
 
   /// Encrypt [plaintext] for this session.
   ///
@@ -18,10 +27,11 @@ class SibnaSession {
     Uint8List? associatedData,
   }) async {
     _ensureNotDisposed();
-    // For session-based E2E, key derivation happens inside the native layer.
-    _ensureNotDisposed();
-    if (_handle == null || _handle == nullptr) {
+    if (_handle == nullptr) {
       throw SibnaError(SibnaErrorCode.invalidState, 'Session not initialised — call via SibnaContext.createSession()');
+    }
+    if (plaintext.isEmpty) {
+      throw SibnaValidationError('plaintext', 'Plaintext must not be empty');
     }
 
     final keyPtr  = SibnaCrypto._copyToNative(plaintext);
@@ -30,7 +40,8 @@ class SibnaSession {
     try {
       SibnaCrypto._checkResult(
         SibnaFlutter.bindings.sibna_session_encrypt(
-          _handle!, keyPtr, plaintext.length,
+          _context, _handle, peerId.length,
+          keyPtr, plaintext.length,
           adPtr, associatedData?.length ?? 0, outBuf,
         ),
         op: 'session_encrypt',
@@ -51,8 +62,11 @@ class SibnaSession {
     Uint8List? associatedData,
   }) async {
     _ensureNotDisposed();
-    if (_handle == null || _handle == nullptr) {
+    if (_handle == nullptr) {
       throw SibnaError(SibnaErrorCode.invalidState, 'Session not initialised');
+    }
+    if (ciphertext.isEmpty) {
+      throw SibnaValidationError('ciphertext', 'Ciphertext must not be empty');
     }
 
     final ctPtr  = SibnaCrypto._copyToNative(ciphertext);
@@ -61,7 +75,8 @@ class SibnaSession {
     try {
       SibnaCrypto._checkResult(
         SibnaFlutter.bindings.sibna_session_decrypt(
-          _handle!, ctPtr, ciphertext.length,
+          _context, _handle, peerId.length,
+          ctPtr, ciphertext.length,
           adPtr, associatedData?.length ?? 0, outBuf,
         ),
         op: 'session_decrypt',

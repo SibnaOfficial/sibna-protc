@@ -126,10 +126,78 @@ class SibnaBindings {
     )
   >();
 
+  // FIX: Phase 4.3 — session_encrypt/decrypt were missing from Dart
+  // bindings. These have 8 arguments matching the Rust core:
+  // (context, session_id, session_id_len, plaintext/ciphertext,
+  //  plaintext_len/ciphertext_len, associated_data, ad_len, out_buf).
+  late final _sibna_session_encrypt_ptr = _lib.lookup<NativeFunction<
+    Int32 Function(
+      Pointer<Void>, Pointer<Uint8>, Size,
+      Pointer<Uint8>, Size,
+      Pointer<Uint8>, Size,
+      Pointer<_ByteBuffer>,
+    )
+  >>('sibna_session_encrypt');
+  late final sibna_session_encrypt = _sibna_session_encrypt_ptr.asFunction<
+    int Function(
+      Pointer<Void>, Pointer<Uint8>, int,
+      Pointer<Uint8>, int,
+      Pointer<Uint8>, int,
+      Pointer<_ByteBuffer>,
+    )
+  >();
+
+  late final _sibna_session_decrypt_ptr = _lib.lookup<NativeFunction<
+    Int32 Function(
+      Pointer<Void>, Pointer<Uint8>, Size,
+      Pointer<Uint8>, Size,
+      Pointer<Uint8>, Size,
+      Pointer<_ByteBuffer>,
+    )
+  >>('sibna_session_decrypt');
+  late final sibna_session_decrypt = _sibna_session_decrypt_ptr.asFunction<
+    int Function(
+      Pointer<Void>, Pointer<Uint8>, int,
+      Pointer<Uint8>, int,
+      Pointer<Uint8>, int,
+      Pointer<_ByteBuffer>,
+    )
+  >();
+
   late final _sibna_session_destroy_ptr = _lib.lookup<NativeFunction<Void Function(Pointer<Void>)>>(
     'sibna_session_destroy',
   );
   late final sibna_session_destroy = _sibna_session_destroy_ptr.asFunction<
+    void Function(Pointer<Void>)
+  >();
+
+  // FIX: Phase 4.3 — group session functions were missing.
+  late final _sibna_group_create_ptr = _lib.lookup<NativeFunction<
+    Int32 Function(Pointer<Uint8>, Size, Pointer<Pointer<Void>>)
+  >>('sibna_group_create');
+  late final sibna_group_create = _sibna_group_create_ptr.asFunction<
+    int Function(Pointer<Uint8>, int, Pointer<Pointer<Void>>)
+  >();
+
+  late final _sibna_group_destroy_ptr = _lib.lookup<NativeFunction<Void Function(Pointer<Void>)>>(
+    'sibna_group_destroy',
+  );
+  late final sibna_group_destroy = _sibna_group_destroy_ptr.asFunction<
+    void Function(Pointer<Void>)
+  >();
+
+  // FIX: Phase 4.3 — identity generation was missing.
+  late final _sibna_identity_generate_ptr = _lib.lookup<NativeFunction<
+    Int32 Function(Pointer<Uint8>, Pointer<Uint8>, Pointer<Pointer<Void>>)
+  >>('sibna_identity_generate');
+  late final sibna_identity_generate = _sibna_identity_generate_ptr.asFunction<
+    int Function(Pointer<Uint8>, Pointer<Uint8>, Pointer<Pointer<Void>>)
+  >();
+
+  late final _sibna_identity_destroy_ptr = _lib.lookup<NativeFunction<Void Function(Pointer<Void>)>>(
+    'sibna_identity_destroy',
+  );
+  late final sibna_identity_destroy = _sibna_identity_destroy_ptr.asFunction<
     void Function(Pointer<Void>)
   >();
 }

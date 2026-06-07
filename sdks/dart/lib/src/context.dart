@@ -109,13 +109,30 @@ class SibnaContext {
   Future<IdentityKeyPair> generateIdentity() async {
     _ensureNotDisposed();
 
-    // FIX: Old code generated random bytes as "placeholder keys" — these are
-    // not real Ed25519/X25519 keys and would cause protocol failures during
-    // X3DH handshake. Throw until FFI bindings provide sibna_identity_generate().
-    throw UnimplementedError(
-      'generateIdentity() requires FFI native library (sibna_identity_generate). '
-      'See sdks/dart/lib/src/bindings.dart for the FFI binding to implement.'
-    );
+    final ed25519PubPtr = calloc<Uint8>(32);
+    final x25519PubPtr  = calloc<Uint8>(32);
+    final identityPtr   = calloc<Pointer<Void>>();
+
+    try {
+      final rc = _bindings.sibna_identity_generate(
+        ed25519PubPtr, x25519PubPtr, identityPtr,
+      );
+      if (rc != SibnaErrorCode.ok.code) {
+        throw SibnaError(SibnaErrorCode.fromCode(rc), 'identity_generate failed');
+      }
+
+      final ed25519Pub = Uint8List.fromList(ed25519PubPtr.asTypedList(32));
+      final x25519Pub  = Uint8List.fromList(x25519PubPtr.asTypedList(32));
+
+      // The native function also returns an identity handle in identityPtr.
+      // Store it if needed for future sign/verify operations.
+      // For now, we create the IdentityKeyPair from the public keys.
+      return IdentityKeyPair.fromPublicKeys(ed25519Pub, x25519Pub);
+    } finally {
+      calloc.free(ed25519PubPtr);
+      calloc.free(x25519PubPtr);
+      calloc.free(identityPtr);
+    }
   }
 
   /// Create a new session with a peer
@@ -144,7 +161,9 @@ class SibnaContext {
       );
       checkResult(result, operation: 'createSession');
 
-      return SibnaSession._(sessionPtr.value, peerId);
+      // FIX: Phase 4.4 — pass the parent context so encrypt/decrypt
+      // can use it as the first argument (native ABI requires it).
+      return SibnaSession._(handle, sessionPtr.value, peerId);
     } finally {
       calloc.free(sessionPtr);
       calloc.free(peerIdPtr);

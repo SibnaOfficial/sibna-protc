@@ -12,30 +12,28 @@ void main() {
       sharedSecret = Uint8List.fromList(List.generate(32, (i) => i));
     });
 
-    test('Session encrypt and decrypt roundtrip', () {
+    test('Session encrypt throws on uninitialized handle', () {
+      // fromSharedSecret creates a session with null handles
       final s1 = SibnaSession.fromSharedSecret(
         sharedSecret, 'local_a', 'remote_b', config, HandshakeRole.initiator
       );
+
+      final plaintext = Uint8List.fromList('Hello Dart!'.codeUnits);
+
+      // FIX: Phase 4.4 — encrypt now validates handle and throws SibnaError
+      // (invalidState) instead of UnimplementedError.
+      expect(() async => await s1.encrypt(plaintext), throwsA(isA<SibnaError>()));
+    });
+
+    test('Session decrypt throws on uninitialized handle', () {
       final s2 = SibnaSession.fromSharedSecret(
         sharedSecret, 'local_b', 'remote_a', config, HandshakeRole.responder
       );
 
-      final plaintext = Uint8List.fromList('Hello Dart!'.codeUnits);
-      final ad = Uint8List.fromList('aad'.codeUnits);
+      final ct = Uint8List.fromList([0x01, 0x02]);
 
-      // In a real environment, we'd call the native FFI.
-      // For unit tests of the wrapper, we verify the flow.
-      expect(() async => await s1.encrypt(plaintext, associatedData: ad), throwsA(isA<UnimplementedError>()));
-    });
-
-    test('Session replay protection', () {
-      final s1 = SibnaSession.fromSharedSecret(sharedSecret, 'a', 'b', config, HandshakeRole.initiator);
-      final s2 = SibnaSession.fromSharedSecret(sharedSecret, 'b', 'a', config, HandshakeRole.responder);
-
-      final ct = Uint8List.fromList([0x01, 0x02]); // Dummy ciphertext
-      
-      // Verify that decrypt calls the handle
-      expect(() async => await s2.decrypt(ct), throwsA(isA<UnimplementedError>()));
+      // FIX: Phase 4.4 — decrypt now validates handle and throws SibnaError.
+      expect(() async => await s2.decrypt(ct), throwsA(isA<SibnaError>()));
     });
 
     test('Session rejects empty plaintext', () async {

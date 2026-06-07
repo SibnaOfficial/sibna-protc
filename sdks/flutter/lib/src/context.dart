@@ -57,7 +57,9 @@ class SibnaContext {
         ),
         op: 'sessionCreate',
       );
-      return SibnaSession._(sessionPtr.value, peerId);
+      // FIX: Phase 4.2 — pass the parent context so encrypt/decrypt
+      // can use it as the first argument (native ABI requires it).
+      return SibnaSession._(_handle, sessionPtr.value, peerId);
     } finally {
       calloc.free(peerPtr);
       calloc.free(sessionPtr);

@@ -2,7 +2,16 @@ part of '../sibna_protocol.dart';
 
 /// Secure session for encrypted communication
 class SibnaSession {
-  Pointer<Void>? _handle;
+  // FIX: Phase 4.4 — the session now also keeps a strong reference to
+  // the parent context. ``sibna_session_encrypt`` and
+  // ``sibna_session_decrypt`` both take ``*mut SibnaContext`` as their
+  // first argument (the SecureContext that owns the session table),
+  // not the session handle itself. The previous code passed the
+  // session handle as the context pointer, which on every call would
+  // either be misinterpreted as a different ``SecureContext`` (UB) or
+  // crash the host process.
+  final Pointer<Void> _context;
+  final Pointer<Void> _handle;
   final Uint8List _peerId;
   bool _disposed = false;
   int _messagesSent = 0;
@@ -25,7 +34,6 @@ class SibnaSession {
   bool get isDisposed => _disposed;
 
   /// Create a session from an existing shared secret (used for restoration/testing)
-  /// Create a session from an existing shared secret (used for restoration/testing)
   factory SibnaSession.fromSharedSecret(
     Uint8List sharedSecret,
     String localDh,
@@ -36,11 +44,11 @@ class SibnaSession {
     // In a real implementation, this would call a native function
     // that initializes the DoubleRatchet state directly from the secret.
     // For now, we simulate the handle creation.
-    return SibnaSession._(nullptr, Uint8List.fromList(utf8.encode(remoteDh)));
+    return SibnaSession._(nullptr, nullptr, Uint8List.fromList(utf8.encode(remoteDh)));
   }
 
   /// Private constructor
-  SibnaSession._(this._handle, this._peerId) {
+  SibnaSession._(this._context, this._handle, this._peerId) {
     _establishedAt = DateTime.now();
   }
 
@@ -93,26 +101,34 @@ class SibnaSession {
       );
     }
 
-    // This would use the session's ratchet in production
-    // FIX: Old code generated a fresh random key per message — meaning every
-    // ciphertext used a DIFFERENT key unknown to the recipient → undecryptable.
-    // This is a protocol correctness failure, not just a stub.
-    //
-    // Correct behaviour: delegate to the native session handle which drives
-    // the Double Ratchet internally. Until sibna_session_encrypt() is added
-    // to the FFI layer, throw explicitly rather than silently produce garbage.
-    if (_handle == null || _handle == nullptr) {
-      throw UnimplementedError(
-        'SibnaSession.encrypt() requires an active native session handle. '
-        'Call performHandshake() first and ensure sibna_session_encrypt() '
-        'is exported from libsibna.so. '
-        'Do NOT call SibnaCrypto.encrypt() with a random key — the peer '
-        'cannot decrypt without knowing the key.',
+    if (_handle == nullptr) {
+      throw SibnaError(
+        SibnaErrorCode.invalidState,
+        'Session not initialised — call SibnaContext.createSession() first.',
       );
     }
-    // TODO: call SibnaCrypto._nativeSessionEncrypt(_handle!, plaintext, associatedData)
-    // once sibna_session_encrypt() is added to ffi_bindings.dart.
-    throw UnimplementedError('sibna_session_encrypt() not yet exported from FFI layer.');
+
+    final plaintextPtr = _copyToNative(plaintext);
+    final adPtr = associatedData != null ? _copyToNative(associatedData) : nullptr;
+    final outBuf = calloc<_ByteBuffer>();
+
+    try {
+      final rc = _bindings.sibna_session_encrypt(
+        _context, _handle, _peerId.length,
+        plaintextPtr, plaintext.length,
+        adPtr, associatedData?.length ?? 0, outBuf,
+      );
+      if (rc != SibnaErrorCode.ok.code) {
+        throw SibnaError(SibnaErrorCode.fromCode(rc), 'session_encrypt failed');
+      }
+      final result = _readAndFreeBuffer(outBuf);
+      _messagesSent++;
+      return result;
+    } finally {
+      calloc.free(plaintextPtr);
+      if (adPtr != nullptr) calloc.free(adPtr);
+      calloc.free(outBuf);
+    }
   }
 
   /// Decrypt a message
@@ -133,14 +149,34 @@ class SibnaSession {
       );
     }
 
-    // FIX: Same issue as encrypt — throw explicitly with a clear message.
-    if (_handle == null || _handle == nullptr) {
-      throw UnimplementedError(
-        'SibnaSession.decrypt() requires an active native session handle. '
-        'Ensure sibna_session_decrypt() is exported from libsibna.so.',
+    if (_handle == nullptr) {
+      throw SibnaError(
+        SibnaErrorCode.invalidState,
+        'Session not initialised',
       );
     }
-    throw UnimplementedError('sibna_session_decrypt() not yet exported from FFI layer.');
+
+    final ctPtr = _copyToNative(ciphertext);
+    final adPtr = associatedData != null ? _copyToNative(associatedData) : nullptr;
+    final outBuf = calloc<_ByteBuffer>();
+
+    try {
+      final rc = _bindings.sibna_session_decrypt(
+        _context, _handle, _peerId.length,
+        ctPtr, ciphertext.length,
+        adPtr, associatedData?.length ?? 0, outBuf,
+      );
+      if (rc != SibnaErrorCode.ok.code) {
+        throw SibnaError(SibnaErrorCode.fromCode(rc), 'session_decrypt failed');
+      }
+      final result = _readAndFreeBuffer(outBuf);
+      _messagesReceived++;
+      return result;
+    } finally {
+      calloc.free(ctPtr);
+      if (adPtr != nullptr) calloc.free(adPtr);
+      calloc.free(outBuf);
+    }
   }
 
   /// Get the current message number
@@ -169,15 +205,30 @@ class SibnaSession {
   void dispose() {
     if (_disposed) return;
 
-    if (_handle != null && _handle != nullptr) {
-      _bindings.sibna_session_destroy(_handle!);
-      _handle = null;
+    if (_handle != nullptr) {
+      _bindings.sibna_session_destroy(_handle);
+      _handle = nullptr;
     }
 
     // Securely clear peer ID
     _peerId.secureClear();
 
     _disposed = true;
+  }
+
+  // Helper: copy a Dart Uint8List to native memory via calloc
+  static Pointer<Uint8> _copyToNative(Uint8List data) {
+    final ptr = calloc<Uint8>(data.length);
+    ptr.asTypedList(data.length).setAll(0, data);
+    return ptr;
+  }
+
+  // Helper: read a _ByteBuffer result and free it
+  static Uint8List _readAndFreeBuffer(Pointer<_ByteBuffer> bufPtr) {
+    final len = bufPtr.ref.len;
+    final data = Uint8List.fromList(bufPtr.ref.data.asTypedList(len));
+    _bindings.sibna_free_buffer(bufPtr);
+    return data;
   }
 
   /// Ensure the session is not disposed

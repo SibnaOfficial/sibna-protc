@@ -282,9 +282,10 @@ Result<bool> PreKeyBundle::verify_signature(
     IdentityKeyPair temp_id(identity_public_key, {});
     
     // Must include domain separator to match Rust core (lib.rs:554-555)
+    static constexpr const char* DOMAIN = "SibnaSignedPreKey_v3";
     bytes signed_data;
     signed_data.reserve(20 + 32);
-    signed_data.insert(signed_data.end(), b"SibnaSignedPreKey_v3", b"SibnaSignedPreKey_v3" + 20);
+    signed_data.insert(signed_data.end(), DOMAIN, DOMAIN + 20);
     signed_data.insert(signed_data.end(), signed_prekey_.begin(), signed_prekey_.end());
     
     return temp_id.verify(signed_data, signature_);

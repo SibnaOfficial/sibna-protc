@@ -9,7 +9,6 @@ namespace sibna {
 Session::Session(bytes peer_id, void* native_handle)
     : peer_id_(std::move(peer_id))
     , native_handle_(native_handle)
-    , established_at_(std::chrono::system_clock::now())
     , session_key_(Utils::random_bytes<KEY_LENGTH>())
 {}
 

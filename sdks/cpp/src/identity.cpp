@@ -50,9 +50,9 @@ Result<IdentityKeyPair> IdentityKeyPair::generate() {
             "Failed to extract Ed25519 public key");
     }
 
-    // Extract private key (64 bytes for Ed25519: seed + public)
-    bytes ed25519_priv(64);
-    size_t priv_len = 64;
+    // Extract private key seed (32 bytes for Ed25519)
+    bytes ed25519_priv(32);
+    size_t priv_len = 32;
     if (EVP_PKEY_get_raw_private_key(pkey, ed25519_priv.data(), &priv_len) != 1) {
         EVP_PKEY_free(pkey);
         return Result<IdentityKeyPair>(ResultCode::INTERNAL_ERROR, 

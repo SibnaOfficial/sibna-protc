@@ -248,4 +248,110 @@ Result<bytes> Crypto::hmac_sha256(const key& key, const bytes& data) {
     return result;
 }
 
+// ── Message Padding ───────────────────────────────────────────────────────────
+//
+// FIX: Phase 5.2 — Crypto::pad/unpad were called by test_crypto.cpp but
+// never implemented. The implementation matches the Rust core
+// core/src/crypto/padding.rs pad_message/unpad_message exactly.
+//
+// Format: [ prefix_len(1) | prefix_noise(1..8) | plaintext | padding | pad_len(2, LE) ]
+// Total output is a multiple of 1024 bytes. extra_blocks ∈ [0, 7] per SIBNA-2026-018.
+
+static constexpr size_t PADDING_BLOCK = 1024;
+static constexpr size_t MAX_EXTRA_BLOCKS = 7;
+static constexpr size_t MAX_PADDING_BYTES = 65535;
+static constexpr size_t MIN_PREFIX_LEN = 1;
+static constexpr size_t MAX_PREFIX_LEN = 8;
+
+Result<bytes> Crypto::pad(const bytes& plaintext) {
+    // 1. Random prefix_len in [1, 8]
+    std::array<byte, 1> prefix_len_buf;
+    if (RAND_bytes(prefix_len_buf.data(), 1) != 1) {
+        return Result<bytes>(ResultCode::INTERNAL_ERROR, "RAND_bytes failed");
+    }
+    size_t prefix_len = (prefix_len_buf[0] % 8) + 1;
+
+    bytes prefix_noise(prefix_len);
+    if (RAND_bytes(prefix_noise.data(), static_cast<int>(prefix_len)) != 1) {
+        return Result<bytes>(ResultCode::INTERNAL_ERROR, "RAND_bytes failed");
+    }
+
+    // 2. Compute minimum total and min_pad_len
+    size_t min_total = 1 + prefix_len + plaintext.size() + 2;
+    size_t remainder = min_total % PADDING_BLOCK;
+    size_t min_pad_len = (remainder == 0) ? 0 : PADDING_BLOCK - remainder;
+
+    // 3. SIBNA-2026-018: randomize extra blocks
+    size_t max_blocks_for_budget = (min_pad_len > MAX_PADDING_BYTES) ? 0 :
+        (MAX_PADDING_BYTES - min_pad_len) / PADDING_BLOCK;
+    size_t cap_blocks = std::min(MAX_EXTRA_BLOCKS, max_blocks_for_budget);
+
+    std::array<byte, 1> extra_buf;
+    if (RAND_bytes(extra_buf.data(), 1) != 1) {
+        return Result<bytes>(ResultCode::INTERNAL_ERROR, "RAND_bytes failed");
+    }
+    size_t extra_blocks = extra_buf[0] % (cap_blocks + 1);
+    size_t pad_len = min_pad_len + extra_blocks * PADDING_BLOCK;
+
+    if (pad_len > MAX_PADDING_BYTES) {
+        return Result<bytes>(ResultCode::INTERNAL_ERROR, "pad_len exceeds maximum");
+    }
+
+    // 4. Build output: [prefix_len | prefix_noise | plaintext | padding | pad_len(2 LE)]
+    size_t total = min_total + pad_len;
+    bytes out;
+    out.reserve(total);
+
+    out.push_back(static_cast<byte>(prefix_len));
+    out.insert(out.end(), prefix_noise.begin(), prefix_noise.end());
+    out.insert(out.end(), plaintext.begin(), plaintext.end());
+
+    if (pad_len > 0) {
+        bytes rand_pad(pad_len);
+        if (RAND_bytes(rand_pad.data(), static_cast<int>(pad_len)) != 1) {
+            return Result<bytes>(ResultCode::INTERNAL_ERROR, "RAND_bytes failed");
+        }
+        out.insert(out.end(), rand_pad.begin(), rand_pad.end());
+    }
+
+    // 2-byte little-endian pad_len
+    out.push_back(static_cast<byte>(pad_len & 0xFF));
+    out.push_back(static_cast<byte>((pad_len >> 8) & 0xFF));
+
+    return out;
+}
+
+Result<bytes> Crypto::unpad(const bytes& padded) {
+    if (padded.size() < 4) {
+        return Result<bytes>(ResultCode::INVALID_CIPHERTEXT, "Padded payload too short");
+    }
+
+    size_t prefix_len = padded[0];
+    if (prefix_len < MIN_PREFIX_LEN || prefix_len > MAX_PREFIX_LEN) {
+        return Result<bytes>(ResultCode::INVALID_CIPHERTEXT, "Invalid prefix length");
+    }
+
+    if (1 + prefix_len + 2 > padded.size()) {
+        return Result<bytes>(ResultCode::INVALID_CIPHERTEXT, "Padded payload truncated");
+    }
+
+    // Trailing 2-byte little-endian pad_len
+    size_t lo = padded[padded.size() - 2];
+    size_t hi = padded[padded.size() - 1];
+    size_t pad_len = lo | (hi << 8);
+
+    size_t total_overhead = 1 + prefix_len + pad_len + 2;
+    if (total_overhead > padded.size()) {
+        return Result<bytes>(ResultCode::INVALID_CIPHERTEXT, "Invalid padding length");
+    }
+
+    size_t plaintext_len = padded.size() - total_overhead;
+    size_t start = 1 + prefix_len;
+
+    bytes plaintext(plaintext_len);
+    std::copy(padded.begin() + start, padded.begin() + start + plaintext_len, plaintext.begin());
+
+    return plaintext;
+}
+
 } // namespace sibna

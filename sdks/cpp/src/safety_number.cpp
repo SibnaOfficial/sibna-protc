@@ -7,6 +7,20 @@
 namespace sibna {
 
 // ── SafetyNumber ─────────────────────────────────────────────────────────────
+//
+// FIX: Phase 5.1 — the C++ SafetyNumber was completely incompatible with
+// the Rust core. Key differences that broke cross-SDK verification:
+//   1. Missing domain separator "SIBNA_SAFETY_NUMBER_V1" in the hash
+//      (Rust: hasher.update(b"SIBNA_SAFETY_NUMBER_V1") at line 54 of safety.rs)
+//   2. Output format: Rust uses 80 decimal digits (16 groups of 5),
+//      C++ used 60 hex digits (12 groups of 5)
+//   3. Grouping: Rust inserts a space every 3 groups (15 digits),
+//      C++ inserted a space every group (5 hex chars)
+//   4. Fingerprint is the same (first 32 bytes of SHA-512), so verify()
+//      would still work if both sides used the same hash input.
+// The new implementation matches core/src/safety.rs SafetyNumber::calculate.
+
+static constexpr const char* SAFETY_NUMBER_DOMAIN = "SIBNA_SAFETY_NUMBER_V1";
 
 Result<SafetyNumber> SafetyNumber::calculate(
     const std::array<byte, 32>& our_identity,
@@ -21,10 +35,12 @@ Result<SafetyNumber> SafetyNumber::calculate(
         second = &our_identity;
     }
     
-    // Concatenate: version byte + first key + second key
+    // Hash: version(1) + domain separator + first key + second key
+    // Matches Rust: hasher.update(&[VERSION]); hasher.update(DOMAIN); hasher.update(first); hasher.update(second);
     bytes concat;
-    concat.reserve(1 + 32 + 32);
+    concat.reserve(1 + 24 + 32 + 32); // 1 + len("SIBNA_SAFETY_NUMBER_V1") + 32 + 32
     concat.push_back(1); // Version 1
+    concat.insert(concat.end(), SAFETY_NUMBER_DOMAIN, SAFETY_NUMBER_DOMAIN + 24);
     concat.insert(concat.end(), first->begin(), first->end());
     concat.insert(concat.end(), second->begin(), second->end());
     
@@ -57,26 +73,33 @@ Result<SafetyNumber> SafetyNumber::calculate(
     
     EVP_MD_CTX_free(ctx);
     
-    // Use first 30 bytes (60 hex chars) formatted in groups of 5
-    std::string hex_str;
-    for (size_t i = 0; i < 30; ++i) {
-        std::ostringstream oss;
-        oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(hash[i]);
-        hex_str += oss.str();
-    }
-    
-    // Format in groups of 5
-    std::string formatted;
-    for (size_t i = 0; i < hex_str.length(); i += 5) {
-        if (i > 0) formatted += ' ';
-        formatted += hex_str.substr(i, std::min(size_t(5), hex_str.length() - i));
-    }
-    
     // Use first 32 bytes as fingerprint
     std::array<byte, 32> fingerprint;
     std::copy(hash.begin(), hash.begin() + 32, fingerprint.begin());
     
-    return SafetyNumber(formatted, fingerprint, 1);
+    // Convert to 80 decimal digits (16 groups of 5), grouped with space every 3 groups
+    // Matches Rust SafetyNumber::bytes_to_digits:
+    //   for each 2-byte chunk: format as 5 decimal digits (value % 100000)
+    //   insert space every 3 chunks (i.e., every 15 digits)
+    std::string digits_str;
+    digits_str.reserve(80 + 5); // 80 digits + up to 5 spaces
+    
+    for (size_t i = 0; i < 16; ++i) {
+        if (i > 0 && i % 3 == 0) {
+            digits_str += ' ';
+        }
+        
+        // Two bytes -> 16-bit value
+        uint16_t value = (static_cast<uint16_t>(fingerprint[i * 2]) << 8) |
+                         static_cast<uint16_t>(fingerprint[i * 2 + 1]);
+        
+        // Format as 5 decimal digits with leading zeros (mod 100000)
+        char buf[6];
+        std::snprintf(buf, sizeof(buf), "%05u", static_cast<unsigned>(value % 100000));
+        digits_str += buf;
+    }
+    
+    return SafetyNumber(digits_str, fingerprint, 1);
 }
 
 Result<SafetyNumber> SafetyNumber::parse(const std::string& safety_number) {
@@ -85,27 +108,37 @@ Result<SafetyNumber> SafetyNumber::parse(const std::string& safety_number) {
     digits.reserve(safety_number.size());
     
     for (char c : safety_number) {
-        if (std::isxdigit(c)) {
+        if (std::isdigit(c)) {
             digits.push_back(c);
         } else if (c != ' ') {
             return Result<SafetyNumber>(ResultCode::INVALID_ARGUMENT, 
-                "Invalid character in safety number");
+                "Invalid character in safety number (only digits and spaces allowed)");
         }
     }
     
-    if (digits.length() != 60) {
+    if (digits.length() != 80) {
         return Result<SafetyNumber>(ResultCode::INVALID_ARGUMENT, 
-            "Safety number must be 60 hex digits");
+            "Safety number must be 80 decimal digits");
     }
     
-    // Convert to fingerprint
+    // Convert 80 decimal digits back to fingerprint
+    // Each 5 digits = 2 bytes (mod 100000)
     std::array<byte, 32> fingerprint;
-    for (size_t i = 0; i < 32; ++i) {
-        std::string byte_str = digits.substr(i * 2, 2);
-        fingerprint[i] = static_cast<byte>(std::stoi(byte_str, nullptr, 16));
+    for (size_t i = 0; i < 16; ++i) {
+        std::string chunk = digits.substr(i * 5, 5);
+        uint32_t value = std::stoul(chunk);
+        fingerprint[i * 2]     = static_cast<byte>((value >> 8) & 0xFF);
+        fingerprint[i * 2 + 1] = static_cast<byte>(value & 0xFF);
     }
     
-    std::string formatted = Utils::format_safety_number(digits);
+    // Re-format for display (add spaces every 3 groups of 5 digits)
+    std::string formatted;
+    for (size_t i = 0; i < digits.length(); i += 5) {
+        if (i > 0 && (i / 5) % 3 == 0) {
+            formatted += ' ';
+        }
+        formatted += digits.substr(i, 5);
+    }
     
     return SafetyNumber(formatted, fingerprint, 1);
 }
@@ -124,22 +157,28 @@ bool SafetyNumber::verify(const SafetyNumber& other) const {
 }
 
 double SafetyNumber::similarity(const SafetyNumber& other) const {
-    // Calculate similarity based on matching digits
-    std::string hex_a = Utils::bytes_to_hex(bytes(fingerprint_.begin(), fingerprint_.end()));
-    std::string hex_b = Utils::bytes_to_hex(bytes(other.fingerprint_.begin(), other.fingerprint_.end()));
+    // Calculate similarity based on matching decimal digits (80 digits total)
+    // Matches Rust SafetyNumber::similarity which compares the formatted digits
+    std::string digits_a = as_string(); // Already formatted with spaces
+    std::string digits_b = other.as_string();
     
-    // Take only the first 60 chars
-    hex_a = hex_a.substr(0, 60);
-    hex_b = hex_b.substr(0, 60);
+    // Remove spaces for comparison
+    std::string clean_a, clean_b;
+    clean_a.reserve(digits_a.size());
+    clean_b.reserve(digits_b.size());
+    
+    for (char c : digits_a) if (std::isdigit(c)) clean_a += c;
+    for (char c : digits_b) if (std::isdigit(c)) clean_b += c;
     
     int matches = 0;
-    for (size_t i = 0; i < std::min(hex_a.size(), hex_b.size()); ++i) {
-        if (hex_a[i] == hex_b[i]) {
+    size_t len = std::min(clean_a.size(), clean_b.size());
+    for (size_t i = 0; i < len; ++i) {
+        if (clean_a[i] == clean_b[i]) {
             matches++;
         }
     }
     
-    return static_cast<double>(matches) / 60.0;
+    return static_cast<double>(matches) / 80.0;
 }
 
 // ── VerificationQrCode ───────────────────────────────────────────────────────

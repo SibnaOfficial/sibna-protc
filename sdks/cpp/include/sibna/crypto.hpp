@@ -50,6 +50,14 @@ public:
 
     // SHA-512 hash
     static Result<bytes> sha512(const bytes& data);
+
+    // Message padding for metadata resistance
+    // Wire format matches Rust core::crypto::padding::pad_message:
+    // [ 1-byte prefix_len (1..=8) | prefix_noise (1..8 bytes)
+    //   | plaintext | random padding | 2-byte LE padding_len ]
+    // Output is always a multiple of 1024 bytes.
+    static Result<bytes> pad(const bytes& plaintext);
+    static Result<bytes> unpad(const bytes& padded);
 };
 
 // ChaCha20-Poly1305 encryption

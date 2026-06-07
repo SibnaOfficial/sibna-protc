@@ -308,8 +308,8 @@ export async function makeSignedEnvelope(
  */
 export async function verifySignedEnvelope(envelope: SignedEnvelope): Promise<boolean> {
   try {
-    const senderPubKey = hexToBytes(envelope.sender_id);
-    const sigBytes = hexToBytes(envelope.signature_hex);
+    const senderPubKey = fromHex(envelope.sender_id);
+    const sigBytes = fromHex(envelope.signature_hex);
 
     const encoder = new TextEncoder();
     const tsBytes = new Uint8Array(8);

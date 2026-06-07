@@ -193,7 +193,7 @@ class VerificationQrCode {
   /// Verification status
   final bool verified;
 
-  /// MAC key for integrity (caller must provide; not stored in QR data)
+  /// MAC key for integrity (caller must provide for toBytes; not stored in QR data)
   final Uint8List macKey;
 
   /// Create a new verification QR code
@@ -201,10 +201,10 @@ class VerificationQrCode {
     required this.identityKey,
     required this.deviceId,
     required this.safetyFingerprint,
-    required this.macKey,
+    Uint8List? macKey,
     this.verified = false,
     this.version = 1,
-  });
+  }) : macKey = macKey ?? Uint8List(32);
 
   /// Encode to bytes for QR code generation
   Uint8List toBytes() {

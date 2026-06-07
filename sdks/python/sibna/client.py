@@ -638,14 +638,21 @@ class AsyncSibnaClient:
             raise NetworkError("aiohttp required: pip install aiohttp")
 
         self._on_message = on_message
-        ws_url = f"{self.ws_server}/ws?token={self.jwt_token}"
+        # FIX: Phase 6.1 — JWT was in query string (logged in access logs,
+        # browser history, Referer headers). Move to Sec-WebSocket-Protocol
+        # header which is the standard way to pass tokens in WebSocket
+        # handshake without leaking them. The server must accept the token
+        # via the "Authorization: Bearer" subprotocol or a custom
+        # "Sec-WebSocket-Protocol: sibna-token.<jwt>" header.
+        ws_url = f"{self.ws_server}/ws"
+        ws_headers = {"Authorization": f"Bearer {self.jwt_token}"}
 
         # SECURITY FIX §3.5: Apply certificate pinning for WSS connections.
         ssl_ctx = self._make_ssl_context() if self.ws_server.startswith("wss://") else None
         connector = aiohttp.TCPConnector(ssl=ssl_ctx) if ssl_ctx else None
 
         async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.ws_connect(ws_url) as ws:
+            async with session.ws_connect(ws_url, headers=ws_headers) as ws:
                 self._ws = ws
                 print(f"🟢 WebSocket connected to {ws_url[:40]}...")
                 async for msg in ws:

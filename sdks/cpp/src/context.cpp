@@ -75,18 +75,18 @@ Result<IdentityKeyPair> Context::generate_identity() {
     
     auto result = IdentityKeyPair::generate();
     if (result.is_ok()) {
-        impl->identity = result.value();
+        impl->identity.emplace(result.value());
     }
     return result;
 }
 
-Result<std::unique_ptr<Session>> Context::create_session(const bytes& peer_id) {
+Result<Session*> Context::create_session(const bytes& peer_id) {
     ensure_not_disposed();
     auto* impl = static_cast<ContextImpl*>(native_handle_);
     std::lock_guard<std::mutex> lock(impl->mutex);
     
     if (peer_id.empty()) {
-        return Result<std::unique_ptr<Session>>(ResultCode::INVALID_ARGUMENT,
+        return Result<Session*>(ResultCode::INVALID_ARGUMENT,
             "Peer ID cannot be empty");
     }
     
@@ -95,8 +95,7 @@ Result<std::unique_ptr<Session>> Context::create_session(const bytes& peer_id) {
     // Check if session already exists - return existing session
     auto it = impl->sessions.find(peer_id_hex);
     if (it != impl->sessions.end()) {
-        auto* raw_ptr = it->second.get();
-        return std::unique_ptr<Session>(raw_ptr, [](Session*){});
+        return it->second.get();
     }
     
     // Create new session and store it
@@ -104,7 +103,7 @@ Result<std::unique_ptr<Session>> Context::create_session(const bytes& peer_id) {
     auto* session_ptr = session.get();
     impl->sessions[peer_id_hex] = std::move(session);
     
-    return std::unique_ptr<Session>(session_ptr, [](Session*){});
+    return session_ptr;
 }
 
 Result<bytes> Context::encrypt_message(
@@ -145,7 +144,7 @@ Result<bytes> Context::decrypt_message(
     return it->second->decrypt(ciphertext, associated_data);
 }
 
-Result<std::unique_ptr<GroupSession>> Context::create_group(const group_id& id) {
+Result<GroupSession*> Context::create_group(const group_id& id) {
     ensure_not_disposed();
     auto* impl = static_cast<ContextImpl*>(native_handle_);
     std::lock_guard<std::mutex> lock(impl->mutex);
@@ -154,7 +153,7 @@ Result<std::unique_ptr<GroupSession>> Context::create_group(const group_id& id) 
     
     // Check if group already exists
     if (impl->groups.find(group_id_hex) != impl->groups.end()) {
-        return Result<std::unique_ptr<GroupSession>>(ResultCode::INVALID_ARGUMENT,
+        return Result<GroupSession*>(ResultCode::INVALID_ARGUMENT,
             "Group already exists");
     }
     
@@ -162,7 +161,7 @@ Result<std::unique_ptr<GroupSession>> Context::create_group(const group_id& id) 
     auto* group_ptr = group.get();
     impl->groups[group_id_hex] = std::move(group);
     
-    return std::unique_ptr<GroupSession>(group_ptr, [](GroupSession*){});
+    return group_ptr;
 }
 
 Result<Context::Stats> Context::get_stats() const {
@@ -191,9 +190,12 @@ bool Context::is_healthy() const {
     auto now = std::chrono::system_clock::now();
     for (const auto& [id, session] : impl->sessions) {
         if (!session->is_established()) {
-            auto age = session->age();
-            if (age && age.value() > std::chrono::seconds(config_.session_timeout_secs)) {
-                return false; // Session is stale
+            auto age_opt = session->age();
+            if (age_opt) {
+                auto age_seconds = age_opt->count();
+                if (age_seconds > config_.session_timeout_secs) {
+                    return false; // Session is stale
+                }
             }
         }
     }

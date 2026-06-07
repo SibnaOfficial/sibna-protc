@@ -57,11 +57,11 @@ public:
     // Get session statistics
     SessionInfo get_stats() const;
 
-private:
-    // Private constructor - only Context can create sessions
-    Session(bytes peer_id, void* native_handle);
+public:
+    // Constructor - only Context should create sessions directly
+    Session(bytes peer_id, void* native_handle = nullptr);
 
-    friend class Context;
+private:
 
     bytes peer_id_;
     void* native_handle_;

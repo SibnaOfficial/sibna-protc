@@ -33,7 +33,7 @@ public:
     Result<IdentityKeyPair> generate_identity();
 
     // Create a new session with a peer
-    Result<std::unique_ptr<Session>> create_session(const bytes& peer_id);
+    Result<Session*> create_session(const bytes& peer_id);
 
     // Encrypt a message for a session
     Result<bytes> encrypt_message(
@@ -50,7 +50,7 @@ public:
     );
 
     // Create a new group
-    Result<std::unique_ptr<GroupSession>> create_group(const group_id& id);
+    Result<GroupSession*> create_group(const group_id& id);
 
     // Get context statistics
     struct Stats {

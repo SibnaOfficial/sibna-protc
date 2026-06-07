@@ -9,12 +9,14 @@ namespace sibna {
 
 // Group message structure
 struct GroupMessage {
-    group_id group_id;
+    group_id group_id_;
     uint32_t sender_key_id;
     uint32_t message_number;
     bytes ciphertext;
     uint64_t epoch;
     std::chrono::system_clock::time_point timestamp;
+
+    const group_id& group_id() const { return group_id_; }
 
     // Serialize to bytes
     bytes to_bytes() const;

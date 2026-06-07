@@ -178,7 +178,7 @@ Security.addProvider(new BouncyCastleProvider());
 | Dart SDK | ⚠️ جاهز جزئياً | يتطلب libsibna + FFI symbols |
 | Flutter SDK | ⚠️ جاهز جزئياً | يتطلب libsibna + FFI symbols |
 | CI/CD Pipeline | ✅ جاهز | security-checks.yml مُضاف |
-| External Security Audit | ⏳ مُقرر Q3 2026 | مطلوب قبل الإنتاج الكامل |
+| External Security Audit | ⏳ مُقرر ... 2026 | مطلوب قبل الإنتاج الكامل |
 
 **القرار:** المشروع جاهز للإنتاج بعد إتمام المتطلبات الثلاثة في القسم 4.  
 JS و Go و C++ SDKs جاهزة للنشر الفوري.

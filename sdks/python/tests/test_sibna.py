@@ -78,6 +78,47 @@ class TestPadding:
         with pytest.raises(CryptoError):
             unpad_payload(b"")
 
+    # FIX: Phase 3.2 — SIBNA-2026-018 parity with the Rust core.
+    # extra_blocks is drawn uniformly from 0..7, giving 8 possible
+    # on-wire sizes for a fixed plaintext. 64 trials on the same
+    # plaintext must hit at least 2 distinct sizes; with 8 possible
+    # values the probability of all 64 picking the same size is
+    # (1/8)^63, effectively zero.
+    def test_padding_size_distribution_not_constant(self):
+        msg = b"constant-size message"
+        sizes = set()
+        for _ in range(64):
+            padded = pad_payload(msg)
+            assert len(padded) % 1024 == 0
+            sizes.add(len(padded))
+        assert len(sizes) >= 2, (
+            f"SIBNA-2026-018 regression: padded size is constant across "
+            f"64 trials, only saw {sizes}"
+        )
+
+    # FIX: Phase 3.2 — prefix_len must be in [1, 8] on every call.
+    def test_prefix_len_in_range(self):
+        for _ in range(32):
+            padded = pad_payload(b"ping")
+            assert 1 <= padded[0] <= 8
+
+    # FIX: Phase 3.2 — hand-built Rust-shaped buffer must unpad correctly.
+    # Layout: [ prefix_len(1) | prefix_noise(3) | plaintext(5) | padding |
+    #           pad_len(2, LE) ]
+    # Total must be 1024 (one block). For prefix_len=3 and
+    # plaintext="hello" (5 bytes), min_total = 1+3+5+2 = 11, so
+    # min_pad_len = 1024 - 11 = 1013.
+    def test_unpad_wire_format_matches_rust(self):
+        pad_len = 1013
+        buf = bytes(
+            [0x03, 0xAA, 0xBB, 0xCC]
+            + list(b"hello")
+            + [0] * pad_len
+            + [pad_len & 0xFF, (pad_len >> 8) & 0xFF]
+        )
+        assert len(buf) == 1024
+        assert unpad_payload(buf) == b"hello"
+
 
 class TestSignedEnvelope:
     def test_make_verify(self):

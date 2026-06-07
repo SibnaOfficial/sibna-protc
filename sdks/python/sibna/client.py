@@ -165,8 +165,22 @@ class Identity:
 
 
 # ── Message Padding (Metadata Resistance) ─────────────────────────────────────
+#
+# FIX: Phase 3.2 — wire format already matches the Rust core, but the
+# extra_blocks draw was [0, 1] (i.e. 0..1), which kept the on-wire
+# size of a given plaintext nearly constant and undermined
+# SIBNA-2026-018 metadata resistance. The new draw is 0..7 inclusive
+# (matching Rust `MAX_EXTRA_BLOCKS = 7`), giving 8 possible on-wire
+# sizes for any fixed plaintext length.
 
 PADDING_BLOCK = 1024
+
+# Maximum extra full blocks of random padding, per SIBNA-2026-018.
+# Must equal core::crypto::padding::MAX_EXTRA_BLOCKS in the Rust core.
+MAX_EXTRA_BLOCKS = 7
+
+# Maximum value the 2-byte LE trailing length field can hold.
+MAX_PADDING_BYTES = 65535
 
 def pad_payload(data: bytes) -> bytes:
     """
@@ -176,6 +190,12 @@ def pad_payload(data: bytes) -> bytes:
       [ prefix_len(1) | prefix_noise(1-8) | plaintext | random_padding | padding_len(2, LE) ]
 
     Total output is always a multiple of PADDING_BLOCK.
+
+    SIBNA-2026-018 (PATCH 20 parity): extra_blocks is drawn uniformly
+    from [0, MAX_EXTRA_BLOCKS] so two messages of identical plaintext
+    length do not necessarily produce the same on-wire size. The draw
+    is capped so the final pad_len always fits in the 2-byte trailing
+    length field and never exceeds MAX_PADDING_BYTES.
     """
     prefix_len = secrets.randbelow(8) + 1
     prefix_noise = secrets.token_bytes(prefix_len)
@@ -184,8 +204,15 @@ def pad_payload(data: bytes) -> bytes:
     remainder = min_total % PADDING_BLOCK
     min_pad_len = (PADDING_BLOCK - remainder) % PADDING_BLOCK
 
-    extra_blocks = secrets.randbelow(2)
+    # Cap extra_blocks by remaining 2-byte length-field budget, then by MAX_EXTRA_BLOCKS.
+    remaining_budget_blocks = max(0, (MAX_PADDING_BYTES - min_pad_len) // PADDING_BLOCK)
+    cap = min(MAX_EXTRA_BLOCKS, remaining_budget_blocks)
+    extra_blocks = secrets.randbelow(cap + 1)
     pad_len = min_pad_len + extra_blocks * PADDING_BLOCK
+
+    if pad_len > MAX_PADDING_BYTES:
+        # Defensive: this branch should be unreachable given the cap above.
+        raise CryptoError(f"Computed pad_len {pad_len} exceeds max {MAX_PADDING_BYTES}")
 
     return (
         bytes([prefix_len])

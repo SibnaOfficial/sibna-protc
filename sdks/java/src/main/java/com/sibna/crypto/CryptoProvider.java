@@ -17,6 +17,10 @@ import java.util.Arrays;
  * Wraps Java's cryptographic primitives to provide the operations needed.
  */
 public class CryptoProvider {
+    static {
+        Security.addProvider(new org.bouncycastle.jce.provider.BouncyCastleProvider());
+    }
+
     private static final String CHACHA20_POLY1305 = "ChaCha20-Poly1305";
     private static final String HKDF_ALGORITHM = "HmacSHA256";
     private static final int KEY_SIZE = 32;

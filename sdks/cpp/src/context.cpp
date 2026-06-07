@@ -75,7 +75,7 @@ Result<IdentityKeyPair> Context::generate_identity() {
     
     auto result = IdentityKeyPair::generate();
     if (result.is_ok()) {
-        impl->identity.emplace(result.value());
+        impl->identity = std::move(result).value();
     }
     return result;
 }

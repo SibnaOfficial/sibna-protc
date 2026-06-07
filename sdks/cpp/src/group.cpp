@@ -11,7 +11,7 @@ bytes GroupMessage::to_bytes() const {
     result.reserve(32 + 4 + 4 + ciphertext.size() + 8 + 8);
     
     // Group ID
-    result.insert(result.end(), group_id.begin(), group_id.end());
+    result.insert(result.end(), group_id_.begin(), group_id_.end());
     
     // Sender key ID (4 bytes)
     for (int i = 0; i < 4; ++i) {
@@ -56,7 +56,7 @@ Result<GroupMessage> GroupMessage::from_bytes(const bytes& data) {
     GroupMessage msg;
     
     // Group ID
-    std::copy(data.begin() + offset, data.begin() + offset + 32, msg.group_id.begin());
+    std::copy(data.begin() + offset, data.begin() + offset + 32, msg.group_id_.begin());
     offset += 32;
     
     // Sender key ID
@@ -229,7 +229,7 @@ Result<GroupMessage> GroupSession::encrypt(const bytes& plaintext) {
     }
     
     GroupMessage msg;
-    msg.group_id = id_;
+    msg.group_id_ = id_;
     msg.sender_key_id = static_cast<uint32_t>(epoch_);
     msg.message_number = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count());
@@ -251,7 +251,7 @@ Result<bytes> GroupSession::decrypt(
         return Result<bytes>(ResultCode::INVALID_CIPHERTEXT, "Message is expired");
     }
     
-    if (message.group_id != id_) {
+    if (message.group_id_ != id_) {
         return Result<bytes>(ResultCode::INVALID_ARGUMENT, "Message belongs to different group");
     }
     

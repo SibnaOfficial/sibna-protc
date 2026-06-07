@@ -16,7 +16,7 @@ struct GroupMessage {
     uint64_t epoch;
     std::chrono::system_clock::time_point timestamp;
 
-    const group_id& group_id() const { return group_id_; }
+    const group_id& id() const { return group_id_; }
 
     // Serialize to bytes
     bytes to_bytes() const;

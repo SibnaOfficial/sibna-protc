@@ -159,9 +159,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: sdks/javascript/package-lock.json
-      - run: cd sdks/javascript && npm ci && npm test
+      - run: cd sdks/javascript && npm install && npm test
 
   sdk-dart:
     name: Dart SDK Tests
@@ -180,10 +178,8 @@ jobs:
       - run: |
           cd sdks/dart
           dart pub get
-          # Set library path for native library
-          export LD_LIBRARY_PATH="${{ github.workspace }}/native-lib:${LD_LIBRARY_PATH}"
-          # Copy native library to current dir as fallback
-          cp ../native-lib/libsibna_core.so . 2>/dev/null || cp ../native-lib/libsibna_core.dylib . 2>/dev/null || true
+          # Native lib from Rust core is libsibna_core.so; Dart SDK looks for libsibna.so
+          cp ../native-lib/libsibna_core.so ./libsibna.so 2>/dev/null || cp ../native-lib/libsibna_core.dylib ./libsibna.dylib 2>/dev/null || true
           dart test
 
   sdk-cpp:

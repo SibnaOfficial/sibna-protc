@@ -69,7 +69,7 @@ private:
     size_t messages_sent_ = 0;
     size_t messages_received_ = 0;
     std::optional<std::chrono::system_clock::time_point> established_at_;
-    bytes session_key_;  // Session encryption key (32 bytes)
+    key session_key_;  // Session encryption key (32 bytes)
 
     void ensure_not_disposed() const;
 };

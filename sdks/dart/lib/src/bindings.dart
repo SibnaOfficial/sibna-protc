@@ -228,6 +228,7 @@ enum SibnaErrorCode {
   bufferTooSmall(11),
   invalidCiphertext(12),
   authenticationFailed(13),
+  invalidMessage(14),
   libraryNotFound(100),
   notInitialized(101);
 
@@ -271,6 +272,8 @@ enum SibnaErrorCode {
         return 'Invalid ciphertext';
       case authenticationFailed:
         return 'Authentication failed';
+      case invalidMessage:
+        return 'Invalid message';
       case libraryNotFound:
         return 'Native library not found';
       case notInitialized:

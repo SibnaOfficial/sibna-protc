@@ -10,7 +10,7 @@ Session::Session(bytes peer_id, void* native_handle)
     : peer_id_(std::move(peer_id))
     , native_handle_(native_handle)
     , established_at_(std::chrono::system_clock::now())
-    , session_key_(Utils::random_bytes(KEY_LENGTH))
+    , session_key_(Utils::random_bytes<KEY_LENGTH>())
 {}
 
 Session::~Session() {
@@ -79,10 +79,6 @@ Result<bytes> Session::encrypt(const bytes& plaintext, const bytes& associated_d
         return Result<bytes>(ResultCode::INVALID_ARGUMENT, "Plaintext cannot be empty");
     }
     
-    if (session_key_.size() != KEY_LENGTH) {
-        return Result<bytes>(ResultCode::INVALID_STATE, "Session key not initialized");
-    }
-    
     // Encrypt using the session key
     auto encrypt_result = Crypto::encrypt(session_key_, plaintext, associated_data);
     if (encrypt_result.is_err()) {
@@ -99,10 +95,6 @@ Result<bytes> Session::decrypt(const bytes& ciphertext, const bytes& associated_
     
     if (ciphertext.size() < NONCE_LENGTH + TAG_LENGTH + 1) {
         return Result<bytes>(ResultCode::INVALID_CIPHERTEXT, "Ciphertext too short");
-    }
-    
-    if (session_key_.size() != KEY_LENGTH) {
-        return Result<bytes>(ResultCode::INVALID_STATE, "Session key not initialized");
     }
     
     // Decrypt using the session key

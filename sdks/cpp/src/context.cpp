@@ -192,7 +192,7 @@ bool Context::is_healthy() const {
         if (!session->is_established()) {
             auto age_opt = session->age();
             if (age_opt) {
-                auto age_seconds = age_opt->count();
+                auto age_seconds = static_cast<uint64_t>(age_opt->count());
                 if (age_seconds > config_.session_timeout_secs) {
                     return false; // Session is stale
                 }
@@ -200,6 +200,7 @@ bool Context::is_healthy() const {
         }
     }
     
+    (void)now;
     return true;
 }
 

@@ -66,14 +66,13 @@ public class DoubleRatchet implements AutoCloseable {
         if (isInitiator) {
             this.sendingChainKey = Arrays.copyOfRange(kdfResult, 32, 64);
             this.receivingChainKey = Arrays.copyOfRange(kdfResult, 64, 96);
-            // Generate initial DH ratchet key pair
-            this.dhRatchetKeyPair = crypto.generateX25519KeyPair();
         } else {
             this.receivingChainKey = Arrays.copyOfRange(kdfResult, 32, 64);
             this.sendingChainKey = Arrays.copyOfRange(kdfResult, 64, 96);
-            // Wait for initiator's first DH public key
             this.awaitingDHRatchet = true;
         }
+        // Both sides need an initial DH ratchet key pair for performDHRatchet()
+        this.dhRatchetKeyPair = crypto.generateX25519KeyPair();
 
         // Clear KDF result
         Arrays.fill(kdfResult, (byte) 0);

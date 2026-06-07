@@ -13,7 +13,7 @@ struct GroupMessage {
     uint32_t sender_key_id;
     uint32_t message_number;
     bytes ciphertext;
-    uint64_t epoch;
+    uint32_t epoch;
     std::chrono::system_clock::time_point timestamp;
 
     const group_id& id() const { return group_id_; }
@@ -49,7 +49,7 @@ public:
     const group_id& id() const { return id_; }
 
     // Get current epoch
-    uint64_t epoch() const { return epoch_; }
+    uint32_t epoch() const { return epoch_; }
 
     // Get member count
     size_t member_count() const { return members_.size(); }
@@ -88,7 +88,7 @@ private:
     group_id id_;
     std::vector<std::array<byte, 32>> members_;
     std::map<std::string, key> sender_keys_;
-    uint64_t epoch_ = 0;
+    uint32_t epoch_ = 0;
     std::optional<std::chrono::system_clock::time_point> created_at_;
     std::optional<std::chrono::system_clock::time_point> last_activity_;
     bool disposed_ = false;

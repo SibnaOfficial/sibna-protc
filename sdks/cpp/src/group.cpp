@@ -8,7 +8,7 @@ namespace sibna {
 
 bytes GroupMessage::to_bytes() const {
     bytes result;
-    result.reserve(32 + 4 + 4 + ciphertext.size() + 8 + 8);
+    result.reserve(32 + 4 + 4 + ciphertext.size() + 4 + 8);
     
     // Group ID
     result.insert(result.end(), group_id_.begin(), group_id_.end());
@@ -31,8 +31,8 @@ bytes GroupMessage::to_bytes() const {
     // Ciphertext
     result.insert(result.end(), ciphertext.begin(), ciphertext.end());
     
-    // Epoch (8 bytes)
-    for (int i = 0; i < 8; ++i) {
+    // Epoch (4 bytes)
+    for (int i = 0; i < 4; ++i) {
         result.push_back(static_cast<byte>((epoch >> (i * 8)) & 0xFF));
     }
     
@@ -47,7 +47,7 @@ bytes GroupMessage::to_bytes() const {
 }
 
 Result<GroupMessage> GroupMessage::from_bytes(const bytes& data) {
-    if (data.size() < 32 + 4 + 4 + 4 + 8 + 8) {
+    if (data.size() < 32 + 4 + 4 + 4 + 4 + 8) {
         return Result<GroupMessage>(ResultCode::INVALID_ARGUMENT, "GroupMessage data too short");
     }
     
@@ -77,7 +77,7 @@ Result<GroupMessage> GroupMessage::from_bytes(const bytes& data) {
         ciphertext_len |= static_cast<uint32_t>(data[offset++]) << (i * 8);
     }
     
-    if (data.size() < offset + ciphertext_len + 8 + 8) {
+    if (data.size() < offset + ciphertext_len + 4 + 8) {
         return Result<GroupMessage>(ResultCode::INVALID_ARGUMENT, "Invalid ciphertext length");
     }
     
@@ -85,10 +85,10 @@ Result<GroupMessage> GroupMessage::from_bytes(const bytes& data) {
     msg.ciphertext.assign(data.begin() + offset, data.begin() + offset + ciphertext_len);
     offset += ciphertext_len;
     
-    // Epoch
+    // Epoch (4 bytes)
     msg.epoch = 0;
-    for (int i = 0; i < 8; ++i) {
-        msg.epoch |= static_cast<uint64_t>(data[offset++]) << (i * 8);
+    for (int i = 0; i < 4; ++i) {
+        msg.epoch |= static_cast<uint32_t>(data[offset++]) << (i * 8);
     }
     
     // Timestamp

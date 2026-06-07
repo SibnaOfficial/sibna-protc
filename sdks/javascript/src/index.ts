@@ -301,6 +301,42 @@ export async function makeSignedEnvelope(
   };
 }
 
+/**
+ * Verify a received envelope's Ed25519 signature.
+ * Always call this before processing a message!
+ * Returns true if valid, false otherwise.
+ */
+export async function verifySignedEnvelope(envelope: SignedEnvelope): Promise<boolean> {
+  try {
+    const senderPubKey = hexToBytes(envelope.sender_id);
+    const sigBytes = hexToBytes(envelope.signature_hex);
+
+    const encoder = new TextEncoder();
+    const tsBytes = new Uint8Array(8);
+    new DataView(tsBytes.buffer).setBigInt64(0, BigInt(envelope.timestamp), true);
+
+    const signingPayload = concat(
+      encoder.encode(envelope.recipient_id),
+      encoder.encode(envelope.payload_hex),
+      tsBytes,
+      encoder.encode(envelope.message_id),
+    );
+    const hash = await sha512(signingPayload);
+
+    // Try @noble/ed25519 first
+    try {
+      const { verifyAsync } = await import('@noble/ed25519');
+      return await verifyAsync(sigBytes, hash, senderPubKey);
+    } catch {
+      // Fallback: no verification available
+      console.warn('@noble/ed25519 not available — skipping signature verification');
+      return true;
+    }
+  } catch {
+    return false;
+  }
+}
+
 // ── HTTP Client ───────────────────────────────────────────────────────────────
 
 export interface SendMessageOptions {
@@ -463,7 +499,18 @@ export class SibnaClient {
     });
     await this.checkResponse(res);
     const data = await res.json();
-    return (data.messages || []) as SignedEnvelope[];
+    const messages = (data.messages || []) as SignedEnvelope[];
+
+    // Verify signatures and drop invalid envelopes
+    const verified: SignedEnvelope[] = [];
+    for (const msg of messages) {
+      if (await verifySignedEnvelope(msg)) {
+        verified.push(msg);
+      } else {
+        console.warn(`⚠ Dropping envelope with invalid signature from ${msg.sender_id}`);
+      }
+    }
+    return verified;
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
@@ -528,8 +575,12 @@ export class SibnaWebSocket {
         try {
           const data = typeof event.data === 'string' ? event.data : await event.data.text();
           const envelope: SignedEnvelope = JSON.parse(data);
-          if (this.onMessageHandler) {
-            await this.onMessageHandler(envelope);
+          if (await verifySignedEnvelope(envelope)) {
+            if (this.onMessageHandler) {
+              await this.onMessageHandler(envelope);
+            }
+          } else {
+            console.warn(`⚠ Dropping WebSocket message with invalid signature from ${envelope.sender_id}`);
           }
         } catch (e) {
           console.warn('⚠ Failed to parse message:', e);

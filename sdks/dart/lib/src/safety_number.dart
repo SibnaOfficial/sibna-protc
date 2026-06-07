@@ -193,11 +193,15 @@ class VerificationQrCode {
   /// Verification status
   final bool verified;
 
+  /// MAC key for integrity (caller must provide; not stored in QR data)
+  final Uint8List macKey;
+
   /// Create a new verification QR code
   VerificationQrCode({
     required this.identityKey,
     required this.deviceId,
     required this.safetyFingerprint,
+    required this.macKey,
     this.verified = false,
     this.version = 1,
   });
@@ -213,10 +217,7 @@ class VerificationQrCode {
       ..add(safetyFingerprint);
 
     // Add HMAC-SHA256 for integrity
-    final mac = SibnaCrypto.hmacSha256(
-      Uint8List(32)..fillRange(0, 32, 0x42), // Fixed key for demo
-      builder.toBytes(),
-    );
+    final mac = SibnaCrypto.hmacSha256(macKey, builder.toBytes());
     builder.add(mac);
 
     return builder.toBytes();
@@ -280,6 +281,7 @@ class VerificationQrCode {
       identityKey: identityKey,
       deviceId: deviceId,
       safetyFingerprint: safetyFingerprint,
+      macKey: macKey,
       verified: true,
     );
   }

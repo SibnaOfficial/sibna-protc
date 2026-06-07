@@ -49,7 +49,7 @@ Session& Session::operator=(Session&& other) noexcept {
     return *this;
 }
 
-Result<void> Session::perform_handshake(const PreKeyBundle& peer_bundle, bool initiator) {
+Result<void> Session::perform_handshake(const PreKeyBundle& peer_bundle, bool /*initiator*/) {
     ensure_not_disposed();
     
     // Validate the peer bundle

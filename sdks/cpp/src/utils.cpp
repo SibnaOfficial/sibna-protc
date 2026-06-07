@@ -1,6 +1,7 @@
 #include "sibna/utils.hpp"
 #include <openssl/evp.h>
 #include <openssl/buffer.h>
+#include <openssl/sha.h>
 
 namespace sibna {
 

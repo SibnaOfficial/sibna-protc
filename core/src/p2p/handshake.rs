@@ -52,7 +52,12 @@ pub struct P2pHandshakeConfig {
     pub timeout_secs: u64,
     /// Max frame bytes — must match transport
     pub max_frame_bytes: usize,
-    /// Expected peer Ed25519 identity (from P2pConfig). None = warn-only mode.
+    /// Expected peer Ed25519 identity (from P2pConfig).
+    ///
+    /// **Mandatory**: if `None`, the handshake returns `P2pError::Handshake`
+    /// and the connection is **not** established. Callers must pre-exchange
+    /// peer identities (safety number QR codes, directory) and set this field
+    /// before initiating a P2P connection. See SIBNA-2026-020 + PATCH 17.
     pub expected_peer_identity: Option<[u8; 32]>,
 }
 

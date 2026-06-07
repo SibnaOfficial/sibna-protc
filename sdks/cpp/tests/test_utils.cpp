@@ -43,18 +43,27 @@ TEST_CASE("Utils::secure_clear zeros memory", "[utils]") {
     }
 }
 
-TEST_CASE("Utils::constant_time_equal", "[utils]") {
+TEST_CASE("Utils::constant_time_equals", "[utils]") {
     bytes a = {0x01, 0x02, 0x03};
     bytes b = {0x01, 0x02, 0x03};
     bytes c = {0x01, 0x02, 0x04};
 
-    REQUIRE(Utils::constant_time_equal(a, b));
-    REQUIRE_FALSE(Utils::constant_time_equal(a, c));
+    REQUIRE(Utils::constant_time_equals(a, b));
+    REQUIRE_FALSE(Utils::constant_time_equals(a, c));
 }
 
-TEST_CASE("Utils::constant_time_equal rejects different lengths", "[utils]") {
+TEST_CASE("Utils::constant_time_equals rejects different lengths", "[utils]") {
     bytes a = {0x01, 0x02};
     bytes b = {0x01, 0x02, 0x03};
 
-    REQUIRE_FALSE(Utils::constant_time_equal(a, b));
+    REQUIRE_FALSE(Utils::constant_time_equals(a, b));
+}
+
+TEST_CASE("Utils::constant_time_equals with fixed arrays", "[utils]") {
+    std::array<byte, 32> a = Utils::random_bytes<32>();
+    std::array<byte, 32> b = a;
+    std::array<byte, 32> c = Utils::random_bytes<32>();
+
+    REQUIRE(Utils::constant_time_equals(a, b));
+    REQUIRE_FALSE(Utils::constant_time_equals(a, c));
 }

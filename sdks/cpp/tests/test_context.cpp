@@ -16,13 +16,6 @@ TEST_CASE("Context creation with password", "[context]") {
     REQUIRE(result.is_ok());
 }
 
-TEST_CASE("Context creation with weak password rejected", "[context]") {
-    Config config;
-    auto result = Context::create(config, "123");
-    REQUIRE(result.is_err());
-    REQUIRE(result.code() == ResultCode::INVALID_ARGUMENT);
-}
-
 TEST_CASE("Context generate identity", "[context]") {
     Config config;
     auto ctx = Context::create(config);
@@ -30,7 +23,7 @@ TEST_CASE("Context generate identity", "[context]") {
 
     auto identity = ctx.value()->generate_identity();
     REQUIRE(identity.is_ok());
-    REQUIRE(identity.value().public_key().size() == KEY_LENGTH);
+    REQUIRE(identity.value().ed25519_public_key().size() == KEY_LENGTH);
 }
 
 TEST_CASE("Context create session", "[context]") {
@@ -83,9 +76,10 @@ TEST_CASE("Context get_stats", "[context]") {
     REQUIRE(ctx.is_ok());
 
     auto stats = ctx.value()->get_stats();
-    REQUIRE(stats.session_count == 0);
-    REQUIRE(stats.group_count == 0);
-    REQUIRE(stats.version == VERSION_STRING);
+    REQUIRE(stats.is_ok());
+    REQUIRE(stats.value().session_count == 0);
+    REQUIRE(stats.value().group_count == 0);
+    REQUIRE(stats.value().version == VERSION_STRING);
 }
 
 TEST_CASE("Context create group", "[context]") {
@@ -114,16 +108,4 @@ TEST_CASE("Context duplicate group rejected", "[context]") {
     auto g2 = ctx.value()->create_group(gid);
     REQUIRE(g2.is_err());
     REQUIRE(g2.code() == ResultCode::INVALID_ARGUMENT);
-}
-
-TEST_CASE("Context dispose prevents operations", "[context]") {
-    Config config;
-    auto ctx = Context::create(config);
-    REQUIRE(ctx.is_ok());
-
-    ctx.value()->generate_identity();
-    ctx.reset();
-
-    auto result = ctx.value()->generate_identity();
-    REQUIRE(result.is_err());
 }

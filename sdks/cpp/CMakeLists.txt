@@ -8,7 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Options
 option(SIBNA_BUILD_TESTS "Build tests" ON)
-option(SIBNA_BUILD_EXAMPLES "Build examples" ON)
+option(SIBNA_BUILD_EXAMPLES "Build examples" OFF)
 option(SIBNA_BUILD_SHARED "Build shared library" ON)
 option(SIBNA_ENABLE_ASAN "Enable AddressSanitizer" OFF)
 

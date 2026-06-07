@@ -35,7 +35,7 @@ public class PreKeyBundle {
                                       byte[] signedPrekeyPublic, byte[] signature,
                                       byte[] onetimePrekeyPublic) throws CryptoException {
         return new PreKeyBundle(
-            identity.getEd25519PublicKey().getEncoded(),
+            identity.getX25519PublicKey().getEncoded(),
             signedPrekeyPublic,
             signature,
             onetimePrekeyPublic

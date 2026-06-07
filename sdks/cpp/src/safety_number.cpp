@@ -159,8 +159,8 @@ bool SafetyNumber::verify(const SafetyNumber& other) const {
 double SafetyNumber::similarity(const SafetyNumber& other) const {
     // Calculate similarity based on matching decimal digits (80 digits total)
     // Matches Rust SafetyNumber::similarity which compares the formatted digits
-    std::string digits_a = as_string(); // Already formatted with spaces
-    std::string digits_b = other.as_string();
+    std::string digits_a = formatted_number_; // Already formatted with spaces
+    std::string digits_b = other.formatted_number_;
     
     // Remove spaces for comparison
     std::string clean_a, clean_b;

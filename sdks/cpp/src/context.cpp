@@ -52,6 +52,14 @@ Result<std::unique_ptr<Context>> Context::create(
     const std::optional<std::string>& password
 ) {
     try {
+        // Validate password if provided
+        if (password.has_value()) {
+            if (password->length() < 8) {
+                return Result<std::unique_ptr<Context>>(ResultCode::INVALID_ARGUMENT,
+                    "Password must be at least 8 characters");
+            }
+        }
+
         auto* impl = new ContextImpl(config, password);
         
         // Validate config

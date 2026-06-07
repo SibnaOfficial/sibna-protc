@@ -121,9 +121,12 @@ public class DoubleRatchet implements AutoCloseable {
         byte[] ciphertext = Arrays.copyOfRange(message, header.headerLength, message.length);
 
         // Check if this is a DH ratchet step
-        if (header.dhPublicKey != null && !Arrays.equals(header.dhPublicKey, remoteDHRatchetKey)) {
+        if (header.dhPublicKey != null && remoteDHRatchetKey != null && !Arrays.equals(header.dhPublicKey, remoteDHRatchetKey)) {
             // Perform DH ratchet
             performDHRatchet(header.dhPublicKey);
+        } else if (header.dhPublicKey != null && remoteDHRatchetKey == null) {
+            // First message: store remote DH key without ratcheting
+            remoteDHRatchetKey = Arrays.copyOf(header.dhPublicKey, header.dhPublicKey.length);
         }
 
         // Try skipped message keys first

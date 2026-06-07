@@ -11,7 +11,7 @@ class SibnaSession {
   // either be misinterpreted as a different ``SecureContext`` (UB) or
   // crash the host process.
   final Pointer<Void> _context;
-  final Pointer<Void> _handle;
+  Pointer<Void> _handle;
   final Uint8List _peerId;
   bool _disposed = false;
   int _messagesSent = 0;
@@ -108,11 +108,12 @@ class SibnaSession {
 
     final plaintextPtr = _copyToNative(plaintext);
     final adPtr = associatedData != null ? _copyToNative(associatedData) : nullptr;
+    final peerIdPtr = _copyToNative(_peerId);
     final outBuf = calloc<_ByteBuffer>();
 
     try {
       final rc = _bindings.sibna_session_encrypt(
-        _context, _handle, _peerId.length,
+        _context, peerIdPtr, _peerId.length,
         plaintextPtr, plaintext.length,
         adPtr, associatedData?.length ?? 0, outBuf,
       );
@@ -124,6 +125,7 @@ class SibnaSession {
       return result;
     } finally {
       calloc.free(plaintextPtr);
+      calloc.free(peerIdPtr);
       if (adPtr != nullptr) calloc.free(adPtr);
       calloc.free(outBuf);
     }
@@ -156,11 +158,12 @@ class SibnaSession {
 
     final ctPtr = _copyToNative(ciphertext);
     final adPtr = associatedData != null ? _copyToNative(associatedData) : nullptr;
+    final peerIdPtr = _copyToNative(_peerId);
     final outBuf = calloc<_ByteBuffer>();
 
     try {
       final rc = _bindings.sibna_session_decrypt(
-        _context, _handle, _peerId.length,
+        _context, peerIdPtr, _peerId.length,
         ctPtr, ciphertext.length,
         adPtr, associatedData?.length ?? 0, outBuf,
       );
@@ -172,6 +175,7 @@ class SibnaSession {
       return result;
     } finally {
       calloc.free(ctPtr);
+      calloc.free(peerIdPtr);
       if (adPtr != nullptr) calloc.free(adPtr);
       calloc.free(outBuf);
     }

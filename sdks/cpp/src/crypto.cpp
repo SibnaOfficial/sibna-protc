@@ -2,6 +2,7 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/hmac.h>
+#include <openssl/sha.h>
 
 namespace sibna {
 
@@ -245,6 +246,83 @@ Result<bytes> Crypto::hmac_sha256(const key& key, const bytes& data) {
     }
 
     result.resize(result_len);
+    return result;
+}
+
+Result<bytes> Crypto::sha512(const bytes& data) {
+    bytes result(SHA512_DIGEST_LENGTH);
+    
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) {
+        return Result<bytes>(ResultCode::INTERNAL_ERROR, "Failed to create hash context");
+    }
+
+    if (EVP_DigestInit_ex(ctx, EVP_sha512(), nullptr) != 1) {
+        EVP_MD_CTX_free(ctx);
+        return Result<bytes>(ResultCode::INTERNAL_ERROR, "Failed to initialize SHA-512");
+    }
+
+    if (EVP_DigestUpdate(ctx, data.data(), data.size()) != 1) {
+        EVP_MD_CTX_free(ctx);
+        return Result<bytes>(ResultCode::INTERNAL_ERROR, "Failed to update hash");
+    }
+
+    unsigned int result_len;
+    if (EVP_DigestFinal_ex(ctx, result.data(), &result_len) != 1) {
+        EVP_MD_CTX_free(ctx);
+        return Result<bytes>(ResultCode::INTERNAL_ERROR, "Failed to finalize hash");
+    }
+
+    EVP_MD_CTX_free(ctx);
+    result.resize(result_len);
+    return result;
+}
+
+Result<key> Crypto::hkdf(
+    const bytes& ikm,
+    const bytes& salt,
+    const bytes& info
+) {
+    // HKDF-Extract then HKDF-Expand using HMAC-SHA256
+    // Extract: PRK = HMAC-Hash(salt, IKM)
+    
+    // Use salt as key for HMAC (pad with zeros if shorter than KEY_LENGTH)
+    key salt_key{};
+    if (!salt.empty()) {
+        std::copy(salt.begin(), salt.begin() + std::min(salt.size(), size_t(KEY_LENGTH)), salt_key.begin());
+    }
+    
+    // IKM: use actual IKM or zero-filled if empty
+    bytes prk_input = ikm.empty() ? bytes(KEY_LENGTH, 0) : ikm;
+    auto prk = hmac_sha256(salt_key, prk_input);
+    if (prk.is_err()) {
+        return Result<key>(prk.code(), prk.message());
+    }
+    
+    // Expand: OKM = T(1) || T(2) || ... where T(i) = HMAC-Hash(PRK, T(i-1) || info || i)
+    key result;
+    bytes prev;
+    size_t offset = 0;
+    
+    for (uint8_t i = 1; offset < KEY_LENGTH; ++i) {
+        bytes t_input;
+        t_input.insert(t_input.end(), prev.begin(), prev.end());
+        t_input.insert(t_input.end(), info.begin(), info.end());
+        t_input.push_back(i);
+        
+        key prk_key{};
+        std::copy(prk.value().begin(), prk.value().begin() + std::min(prk.value().size(), size_t(KEY_LENGTH)), prk_key.begin());
+        auto t = hmac_sha256(prk_key, t_input);
+        if (t.is_err()) {
+            return Result<key>(t.code(), t.message());
+        }
+        
+        size_t to_copy = std::min(t.value().size(), KEY_LENGTH - offset);
+        std::copy(t.value().begin(), t.value().begin() + to_copy, result.begin() + offset);
+        offset += to_copy;
+        prev = t.value();
+    }
+    
     return result;
 }
 

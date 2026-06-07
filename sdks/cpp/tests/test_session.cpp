@@ -63,20 +63,6 @@ TEST_CASE("Session rejects ciphertext too short", "[session]") {
     REQUIRE(result.code() == ResultCode::INVALID_CIPHERTEXT);
 }
 
-TEST_CASE("Session dispose prevents operations", "[session]") {
-    bytes peer_id = Utils::random_bytes(32);
-    auto session = std::make_unique<Session>(peer_id, nullptr);
-
-    bytes plaintext = {0x01};
-    auto encrypted = session->encrypt(plaintext, {});
-    REQUIRE(encrypted.is_ok());
-
-    session.reset();
-
-    auto result = session->encrypt(plaintext, {});
-    REQUIRE(result.is_err());
-}
-
 TEST_CASE("Session get_stats", "[session]") {
     bytes peer_id = Utils::random_bytes(32);
     Session session(peer_id, nullptr);

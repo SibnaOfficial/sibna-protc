@@ -219,7 +219,7 @@ PreKeyBundle::PreKeyBundle(
 
 bytes PreKeyBundle::to_bytes() const {
     bytes result;
-    result.reserve(32 + 32 + 64 + (onetime_prekey_ ? 32 : 0) + 8);
+    result.reserve(32 + 32 + 64 + (onetime_prekey_ ? 32 : 0) + 1);
     
     result.insert(result.end(), identity_key_.begin(), identity_key_.end());
     result.insert(result.end(), signed_prekey_.begin(), signed_prekey_.end());
@@ -231,18 +231,11 @@ bytes PreKeyBundle::to_bytes() const {
         result.insert(result.end(), onetime_prekey_->begin(), onetime_prekey_->end());
     }
     
-    // Timestamp (8 bytes)
-    auto ts = std::chrono::duration_cast<std::chrono::seconds>(
-        timestamp_.time_since_epoch()).count();
-    for (int i = 0; i < 8; ++i) {
-        result.push_back(static_cast<byte>((ts >> (i * 8)) & 0xFF));
-    }
-    
     return result;
 }
 
 Result<PreKeyBundle> PreKeyBundle::from_bytes(const bytes& data) {
-    if (data.size() < 32 + 32 + 64 + 1 + 8) {
+    if (data.size() < 32 + 32 + 64 + 1) {
         return Result<PreKeyBundle>(ResultCode::INVALID_ARGUMENT, 
             "PreKeyBundle data too short");
     }
@@ -265,7 +258,7 @@ Result<PreKeyBundle> PreKeyBundle::from_bytes(const bytes& data) {
     
     std::optional<std::array<byte, 32>> onetime_prekey;
     if (has_onetime) {
-        if (data.size() < offset + 32 + 8) {
+        if (data.size() < offset + 32) {
             return Result<PreKeyBundle>(ResultCode::INVALID_ARGUMENT, 
                 "PreKeyBundle missing one-time prekey data");
         }
@@ -288,8 +281,11 @@ Result<bool> PreKeyBundle::verify_signature(
     // Create a temporary identity to verify the signature
     IdentityKeyPair temp_id(identity_public_key, {});
     
-    // The signed data should be the signed_prekey bytes
-    bytes signed_data(signed_prekey_.begin(), signed_prekey_.end());
+    // Must include domain separator to match Rust core (lib.rs:554-555)
+    bytes signed_data;
+    signed_data.reserve(20 + 32);
+    signed_data.insert(signed_data.end(), b"SibnaSignedPreKey_v3", b"SibnaSignedPreKey_v3" + 20);
+    signed_data.insert(signed_data.end(), signed_prekey_.begin(), signed_prekey_.end());
     
     return temp_id.verify(signed_data, signature_);
 }

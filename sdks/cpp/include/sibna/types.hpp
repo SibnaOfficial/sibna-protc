@@ -23,7 +23,7 @@ constexpr size_t NONCE_LENGTH = 12;
 constexpr size_t TAG_LENGTH = 16;
 constexpr size_t SIGNATURE_LENGTH = 64;
 constexpr size_t MAX_MESSAGE_SIZE = 10 * 1024 * 1024; // 10 MB
-constexpr size_t MAX_GROUP_SIZE = 1000;
+constexpr size_t MAX_GROUP_SIZE = 256;
 
 // Type aliases
 using byte = uint8_t;

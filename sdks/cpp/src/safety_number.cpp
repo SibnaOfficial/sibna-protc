@@ -144,10 +144,12 @@ Result<SafetyNumber> SafetyNumber::parse(const std::string& safety_number) {
 }
 
 bytes SafetyNumber::qr_data() const {
-    // QR code data: version + fingerprint
+    // QR code data: version + "SB1" prefix + fingerprint (36 bytes total)
+    // Matches Rust core SafetyNumber::qr_data and Dart SafetyNumber.qrData
     bytes result;
-    result.reserve(1 + 32);
+    result.reserve(1 + 3 + 32);
     result.push_back(static_cast<byte>(version_));
+    result.insert(result.end(), {'S', 'B', '1'});
     result.insert(result.end(), fingerprint_.begin(), fingerprint_.end());
     return result;
 }

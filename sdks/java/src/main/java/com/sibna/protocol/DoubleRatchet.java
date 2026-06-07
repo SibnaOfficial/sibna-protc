@@ -59,7 +59,9 @@ public class DoubleRatchet implements AutoCloseable {
         };
 
         // Derive root key and initial chain keys from shared secret
-        byte[] kdfResult = crypto.hkdf(null, sharedSecret, "SibnaProtocol_DoubleRatchet".getBytes(), 96);
+        // Matches Rust: Hkdf::new(Some(b"SibnaSession_v3"), shared_secret)
+        //               .expand(b"SibnaRootAndChainKey_v3", &mut okm)
+        byte[] kdfResult = crypto.hkdf("SibnaSession_v3".getBytes(), sharedSecret, "SibnaRootAndChainKey_v3".getBytes(), 96);
 
         this.rootChainKey = Arrays.copyOfRange(kdfResult, 0, 32);
 
@@ -185,13 +187,17 @@ public class DoubleRatchet implements AutoCloseable {
     }
 
     private byte[][] kdfRatchetStep(byte[] chainKey) throws CryptoException {
-        byte[] messageKey = crypto.hkdf(null, chainKey, new byte[]{1}, 32);
-        byte[] newChainKey = crypto.hkdf(null, chainKey, new byte[]{2}, 32);
+        // Symmetric ratchet: HMAC-SHA256(chainKey, seed)
+        // Matches Rust chain.rs: Hmac::<Sha256>::new_from_slice(&self.key); h.update(&[seed])
+        byte[] messageKey = crypto.hmacSha256(chainKey, new byte[]{1});
+        byte[] newChainKey = crypto.hmacSha256(chainKey, new byte[]{2});
         return new byte[][]{messageKey, newChainKey};
     }
 
-    private byte[][] kdfRatchetStep(byte[] chainKey, byte[] dhOutput) throws CryptoException {
-        byte[] kdfResult = crypto.hkdf(null, concat(chainKey, dhOutput), "SibnaProtocol_RootChain".getBytes(), 64);
+    private byte[][] kdfRatchetStep(byte[] rootKey, byte[] dhOutput) throws CryptoException {
+        // DH ratchet: HKDF(salt=rootKey, ikm=dhOutput, info="SibnaRatchet_v3", L=64)
+        // Matches Rust kdf.rs: Hkdf::new(Some(root_key), dh_out).expand(b"SibnaRatchet_v3", &mut okm)
+        byte[] kdfResult = crypto.hkdf(rootKey, dhOutput, "SibnaRatchet_v3".getBytes(), 64);
         return new byte[][]{Arrays.copyOfRange(kdfResult, 0, 32), Arrays.copyOfRange(kdfResult, 32, 64)};
     }
 

@@ -291,7 +291,7 @@ public:
         const std::array<byte, 32>& their_identity);
     static Result<SafetyNumber> parse(const std::string& safety_number);
 
-    const std::string& formatted_number() const;   // 12 groups of 5 hex chars
+    const std::string& formatted_number() const;   // 16 groups of 5 decimal digits (80 digits total)
     const std::array<byte, 32>& fingerprint() const;
     bytes qr_data() const;                          // version(1) ‖ fingerprint(32)
     bool verify(const SafetyNumber& other) const;   // constant-time
@@ -303,10 +303,10 @@ public:
 `SafetyNumber::calculate` is **order-independent** — the two identities are sorted lexicographically before hashing. The algorithm is:
 
 1. Sort the two 32-byte keys lexicographically.
-2. `SHA-512( 0x01 ‖ first ‖ second )`.
-3. Use the first 32 bytes of the digest as the fingerprint, formatted as 12 groups of 5 hex characters (60 hex chars total).
+2. `SHA-512( 0x01 ‖ "SIBNA_SAFETY_NUMBER_V1" ‖ first ‖ second )`.
+3. Use the first 32 bytes of the digest as the fingerprint, formatted as 16 groups of 5 decimal digits (80 decimal digits total, with a space every 3 groups).
 
-`SafetyNumber::parse` accepts the same 60-hex-char string (with optional spaces) and re-builds the fingerprint.
+`SafetyNumber::parse` accepts the same 80-digit decimal string (with optional spaces) and re-builds the fingerprint.
 
 `VerificationQrCode` carries:
 

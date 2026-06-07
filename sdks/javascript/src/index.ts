@@ -457,8 +457,10 @@ export class SibnaClient {
     if (!this.identity || !this.jwtToken) {
       throw new AuthError('Must authenticate before fetching inbox.');
     }
-    const url = `${this.baseUrl}/v1/messages/inbox?identity_key_hex=${this.identityHex}&token=${this.jwtToken}`;
-    const res = await fetch(url);
+    const url = `${this.baseUrl}/v1/messages/inbox?identity_key_hex=${this.identityHex}`;
+    const res = await this.fetchFn(url, {
+      headers: { 'Authorization': `Bearer ${this.jwtToken}` },
+    });
     await this.checkResponse(res);
     const data = await res.json();
     return (data.messages || []) as SignedEnvelope[];
@@ -512,10 +514,10 @@ export class SibnaWebSocket {
   /** Connect to the WebSocket relay */
   connect(onMessage?: MessageHandler): Promise<void> {
     this.onMessageHandler = onMessage || null;
-    const wsUrl = `${this.serverUrl.replace('http://', 'ws://').replace('https://', 'wss://')}/ws?token=${this.token}`;
+    const wsUrl = `${this.serverUrl.replace('http://', 'ws://').replace('https://', 'wss://')}/ws`;
 
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(wsUrl);
+      this.ws = new WebSocket(wsUrl, [this.token]);
 
       this.ws.onopen = () => {
         console.log('🟢 Sibna WebSocket connected');

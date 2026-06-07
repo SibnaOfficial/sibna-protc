@@ -172,7 +172,7 @@ padded, err := sibna.PadPayload(data)
 orig,  err := sibna.UnpadPayload(padded)
 ```
 
-> **Wire-format note:** the Go SDK uses a different padding layout than the Python and JavaScript SDKs. The first byte is an 8-bit indicator, and the next two bytes are a big-endian padding length. Total output is always a multiple of `PaddingBlock` (1024). If you are exchanging padded payloads between Go and another SDK, pad and unpad in the **same** language. The Go layout is **not** identical to the layout in `core/`, which uses a 1-byte prefix length followed by random prefix noise.
+> **Wire-format note:** the Go SDK uses a different padding layout than the Rust core, Python SDK, and JavaScript SDK. The Go layout uses an 8-bit indicator byte followed by a big-endian 2-byte padding length, whereas the core/Python/JavaScript layout uses a 1-byte prefix length, random prefix noise, and a trailing 2-byte little-endian padding length. Total output is always a multiple of `PaddingBlock` (1024). If you are exchanging padded payloads between Go and another SDK, pad and unpad in the **same** language.
 
 ### `func MakeSignedEnvelope` and `func VerifySignedEnvelope`
 

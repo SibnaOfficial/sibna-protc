@@ -15,7 +15,7 @@ use std::fmt;
 /// provides a way to detect MITM attacks during initial key exchange.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SafetyNumber {
-    /// The 60-digit safety number (displayed in groups of 5)
+    /// The 80-digit safety number (displayed in groups of 5)
     digits: String,
     /// The raw 32-byte fingerprint
     fingerprint: [u8; 32],

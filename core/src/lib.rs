@@ -119,7 +119,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const VERSION_NUMBER: u32 = 10;
 
 /// Minimum compatible version
-pub const MIN_COMPATIBLE_VERSION: u32 = 1;
+pub const MIN_COMPATIBLE_VERSION: u32 = 9;
 
 /// Main System Context for secure communication
 ///

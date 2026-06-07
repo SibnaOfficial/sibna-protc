@@ -14,7 +14,7 @@ import {
 } from '../src/index';
 
 describe('VERSION', () => {
-  it('should be 3.0.0', () => {
+  it('should be 3.0.1', () => {
     expect(VERSION).toBe('3.0.1');
   });
 });

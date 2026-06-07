@@ -5,7 +5,7 @@ part of '../sibna_protocol.dart';
 /// The safety number is derived from both parties' identity keys and
 /// provides a way to detect MITM attacks during initial key exchange.
 class SafetyNumber {
-  /// The formatted safety number (60 digits in groups of 5)
+  /// The formatted safety number (80 digits in groups of 5)
   final String formattedNumber;
 
   /// The raw fingerprint bytes
@@ -55,17 +55,17 @@ class SafetyNumber {
       ? theirIdentity
       : ourIdentity;
 
-    // Hash both keys together with version
-    final hmac = Hmac(sha512, utf8.encode('SIBNA_SAFETY_NUMBER_V1'));
+    // Hash both keys together with version (plain SHA-512, matching Rust core)
     final data = BytesBuilder()
       ..addByte(currentVersion)
+      ..add(utf8.encode('SIBNA_SAFETY_NUMBER_V1'))
       ..add(first)
       ..add(second);
 
-    final result = hmac.convert(data.toBytes());
-    final fingerprint = Uint8List.fromList(result.bytes.sublist(0, 32));
+    final hash = sha512.convert(data.toBytes());
+    final fingerprint = Uint8List.fromList(hash.bytes.sublist(0, 32));
 
-    // Convert to 60 decimal digits
+    // Convert to 80 decimal digits
     final formattedNumber = _bytesToDigits(fingerprint);
 
     return SafetyNumber._(
@@ -79,10 +79,10 @@ class SafetyNumber {
   factory SafetyNumber.parse(String safetyNumber) {
     final digits = safetyNumber.replaceAll(RegExp(r'\D'), '');
 
-    if (digits.length != 60) {
+    if (digits.length != 80) {
       throw ValidationError(
         SibnaErrorCode.invalidArgument,
-        'Safety number must be 60 digits',
+        'Safety number must be 80 digits',
         field: 'safetyNumber',
       );
     }
@@ -133,7 +133,7 @@ class SafetyNumber {
       }
     }
 
-    return matches / 60.0;
+    return matches / 80.0;
   }
 
   /// Compare two byte arrays lexicographically
@@ -147,7 +147,7 @@ class SafetyNumber {
     return a.length - b.length;
   }
 
-  /// Convert 32 bytes to 60 decimal digits
+  /// Convert 32 bytes to 80 decimal digits
   static String _bytesToDigits(Uint8List bytes) {
     final groups = <String>[];
 

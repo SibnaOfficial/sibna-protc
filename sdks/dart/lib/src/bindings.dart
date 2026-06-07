@@ -228,9 +228,9 @@ enum SibnaErrorCode {
   bufferTooSmall(11),
   invalidCiphertext(12),
   authenticationFailed(13),
-  invalidMessage(14),
+  notInitialized(14),
   libraryNotFound(100),
-  notInitialized(101);
+  invalidMessage(101);
 
   final int code;
   const SibnaErrorCode(this.code);
@@ -272,6 +272,8 @@ enum SibnaErrorCode {
         return 'Invalid ciphertext';
       case authenticationFailed:
         return 'Authentication failed';
+      case notInitialized:
+        return 'SDK not initialized';
       case invalidMessage:
         return 'Invalid message';
       case libraryNotFound:

@@ -269,8 +269,8 @@ public class DoubleRatchet implements AutoCloseable {
      */
     public byte[] serialize() throws CryptoException {
         ensureOpen();
-        // Format: version(4) || root(32) || sendKey(32) || sendIdx(4) || recvKey(32) || recvIdx(4) || remoteDH(32) || prevCounter(4)
-        int size = 4 + 32 + 32 + 4 + 32 + 4 + 32 + 4;
+        // Format: version(4) || root(32) || sendKey(32) || sendIdx(4) || recvKey(32) || recvIdx(4) || hasRemoteDH(1) || remoteDH(32) || prevCounter(4)
+        int size = 4 + 32 + 32 + 4 + 32 + 4 + 1 + 32 + 4;
         byte[] out = new byte[size];
         int offset = 0;
 
@@ -293,6 +293,8 @@ public class DoubleRatchet implements AutoCloseable {
         out[offset++] = (byte)receivingMessageNumber;
         
         byte[] remoteDH = (remoteDHRatchetKey != null) ? remoteDHRatchetKey : new byte[32];
+        // Write flag byte: 1 if remote key is set, 0 if null
+        out[offset++] = (remoteDHRatchetKey != null) ? (byte) 1 : (byte) 0;
         System.arraycopy(remoteDH, 0, out, offset, 32); offset += 32;
         
         // Placeholder for previous counter
@@ -305,7 +307,7 @@ public class DoubleRatchet implements AutoCloseable {
      * Restore state from bytes.
      */
     public static DoubleRatchet deserialize(CryptoProvider crypto, byte[] data) throws CryptoException {
-        if (data.length < 128) throw new CryptoException("Serialized state too short");
+        if (data.length < 129) throw new CryptoException("Serialized state too short");
         
         int offset = 4; // skip version
         byte[] root = Arrays.copyOfRange(data, offset, offset + 32); offset += 32;
@@ -315,7 +317,10 @@ public class DoubleRatchet implements AutoCloseable {
         byte[] recvKey = Arrays.copyOfRange(data, offset, offset + 32); offset += 32;
         int recvIdx = ((data[offset] & 0xFF) << 24) | ((data[offset+1] & 0xFF) << 16) | ((data[offset+2] & 0xFF) << 8) | (data[offset+3] & 0xFF);
         offset += 4;
-        byte[] remoteDH = Arrays.copyOfRange(data, offset, offset + 32);
+        // Read flag byte: 1 if remote key was set, 0 if null
+        boolean hasRemoteDH = data[offset] == 1;
+        offset += 1;
+        byte[] remoteDH = hasRemoteDH ? Arrays.copyOfRange(data, offset, offset + 32) : null;
         
         DoubleRatchet dr = new DoubleRatchet(crypto, new byte[32], true); // Dummy init
         dr.rootChainKey = root;

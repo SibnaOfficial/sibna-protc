@@ -57,7 +57,7 @@ TEST_CASE("Crypto::decrypt fails with tampered ciphertext", "[crypto]") {
     REQUIRE(decrypted.is_err());
 }
 
-TEST_CASE("Crypto::encrypt rejects empty key", "[crypto]") {
+TEST_CASE("Crypto::encrypt accepts zero-filled key", "[crypto]") {
     key k{};
     bytes plaintext = {0x01};
 

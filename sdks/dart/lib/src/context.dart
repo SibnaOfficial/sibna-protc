@@ -163,7 +163,12 @@ class SibnaContext {
 
       // FIX: Phase 4.4 — pass the parent context so encrypt/decrypt
       // can use it as the first argument (native ABI requires it).
-      return SibnaSession._(handle, sessionPtr.value, peerId);
+      final session = SibnaSession._(handle, sessionPtr.value, peerId);
+
+      // Store session in cache so decryptMessage() can find it
+      _sessions[String.fromCharCodes(peerId)] = session;
+
+      return session;
     } finally {
       calloc.free(sessionPtr);
       calloc.free(peerIdPtr);

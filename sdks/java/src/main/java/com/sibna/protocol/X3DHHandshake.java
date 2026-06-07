@@ -167,7 +167,7 @@ public class X3DHHandshake {
         // Simplified - in production, use proper X509 encoding
         try {
             java.security.spec.X509EncodedKeySpec spec = new java.security.spec.X509EncodedKeySpec(keyBytes);
-            java.security.KeyFactory kf = java.security.KeyFactory.getInstance("X25519");
+            java.security.KeyFactory kf = java.security.KeyFactory.getInstance("X25519", "BC");
             return kf.generatePublic(spec);
         } catch (Exception e) {
             throw new CryptoException("Failed to decode public key", e);

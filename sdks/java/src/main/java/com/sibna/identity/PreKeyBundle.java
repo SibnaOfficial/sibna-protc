@@ -34,8 +34,17 @@ public class PreKeyBundle {
     public static PreKeyBundle create(CryptoProvider crypto, IdentityKeyPair identity,
                                       byte[] signedPrekeyPublic, byte[] signature,
                                       byte[] onetimePrekeyPublic) throws CryptoException {
+        // Extract raw 32-byte key from X.509 encoded format
+        byte[] x509Bytes = identity.getX25519PublicKey().getEncoded();
+        byte[] rawKey;
+        if (x509Bytes.length == 32) {
+            rawKey = x509Bytes;
+        } else {
+            // Strip X.509 prefix (12 bytes for X25519: 30 2a 30 05 06 03 2b 65 6e 03 21 00)
+            rawKey = Arrays.copyOfRange(x509Bytes, 12, 12 + 32);
+        }
         return new PreKeyBundle(
-            identity.getX25519PublicKey().getEncoded(),
+            rawKey,
             signedPrekeyPublic,
             signature,
             onetimePrekeyPublic

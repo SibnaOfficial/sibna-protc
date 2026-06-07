@@ -40,7 +40,7 @@ private:
     std::array<byte, 32> ed25519_public_key_;
     std::array<byte, 32> x25519_public_key_;
     std::string fingerprint_;
-    SecureBuffer ed25519_private_key_;  // Ed25519 private key (64 bytes: seed + public)
+    SecureBuffer ed25519_private_key_;  // Ed25519 private key seed (32 bytes)
     SecureBuffer x25519_private_key_;   // X25519 private key (32 bytes)
 };
 

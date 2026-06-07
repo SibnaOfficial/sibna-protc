@@ -667,7 +667,7 @@ func (ws *WebSocketClient) Connect(onMessage func(*SignedEnvelope)) error {
 	} else if strings.HasPrefix(wsURL, "http://") {
 		wsURL = "ws" + wsURL[4:]
 	}
-	wsURL = wsURL + "/ws?token=" + ws.token
+	wsURL = wsURL + "/ws"
 
 	ws.onMessage = onMessage
 
@@ -677,7 +677,9 @@ func (ws *WebSocketClient) Connect(onMessage func(*SignedEnvelope)) error {
 		dialer.TLSClientConfig = ws.tlsConfig
 	}
 
-	conn, _, err := dialer.Dial(wsURL, nil)
+	conn, _, err := dialer.Dial(wsURL, http.Header{
+		"Authorization": {"Bearer " + ws.token},
+	})
 	if err != nil {
 		return fmt.Errorf("%w: WebSocket dial failed: %v", ErrNetworkError, err)
 	}

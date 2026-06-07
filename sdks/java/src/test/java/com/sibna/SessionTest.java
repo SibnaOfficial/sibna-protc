@@ -59,7 +59,7 @@ public class SessionTest {
     }
 
     @Test
-    public void testSessionInvalidPlaintext() {
+    public void testSessionInvalidPlaintext() throws CryptoException {
         DoubleRatchet alice = new DoubleRatchet(crypto, sharedSecret, true);
         
         // Assuming empty plaintext should fail (C++ test does this)
@@ -69,7 +69,7 @@ public class SessionTest {
     }
 
     @Test
-    public void testSessionShortCiphertext() {
+    public void testSessionShortCiphertext() throws CryptoException {
         DoubleRatchet bob = new DoubleRatchet(crypto, sharedSecret, false);
         byte[] shortCt = {0x01, 0x02};
         

@@ -145,10 +145,10 @@ install(EXPORT sibna_protocol-targets
 # )
 
 # install(FILES
-    ${CMAKE_CURRENT_BINARY_DIR}/sibna_protocol-config.cmake
-    ${CMAKE_CURRENT_BINARY_DIR}/sibna_protocol-config-version.cmake
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/sibna_protocol
-)
+#     ${CMAKE_CURRENT_BINARY_DIR}/sibna_protocol-config.cmake
+#     ${CMAKE_CURRENT_BINARY_DIR}/sibna_protocol-config-version.cmake
+#     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/sibna_protocol
+# )
 
 # Print configuration
 message(STATUS "Sibna Protocol v${PROJECT_VERSION}")

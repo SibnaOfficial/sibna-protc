@@ -1,22 +1,30 @@
 package com.sibna;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import static org.junit.jupiter.api.Assertions.*;
 import com.sibna.identity.IdentityKeyPair;
+import com.sibna.crypto.CryptoProvider;
 
 public class IdentityTest {
+    private CryptoProvider crypto;
+
+    @BeforeEach
+    public void setUp() {
+        crypto = new CryptoProvider();
+    }
 
     @Test
     public void testGenerateIdentity() {
-        IdentityKeyPair identity = IdentityKeyPair.generate();
+        IdentityKeyPair identity = IdentityKeyPair.generate(crypto);
         assertNotNull(identity);
-        assertNotNull(identity.getPublicKey());
-        assertEquals(32, identity.getPublicKey().length);
+        assertNotNull(identity.getX25519PublicKey());
+        assertEquals(32, identity.getX25519PublicKey().getEncoded().length);
     }
 
     @Test
     public void testSignAndVerify() {
-        IdentityKeyPair identity = IdentityKeyPair.generate();
+        IdentityKeyPair identity = IdentityKeyPair.generate(crypto);
         byte[] data = "test data".getBytes();
         
         byte[] signature = identity.sign(data);
@@ -36,9 +44,9 @@ public class IdentityTest {
         byte[] seed = new byte[32];
         for(int i=0; i<32; i++) seed[i] = (byte)i;
         
-        IdentityKeyPair identity1 = IdentityKeyPair.fromSeed(seed);
-        IdentityKeyPair identity2 = IdentityKeyPair.fromSeed(seed);
+        IdentityKeyPair identity1 = IdentityKeyPair.fromSeed(crypto, seed);
+        IdentityKeyPair identity2 = IdentityKeyPair.fromSeed(crypto, seed);
         
-        assertArrayEquals(identity1.getPublicKey(), identity2.getPublicKey(), "Identities from same seed must match");
+        assertArrayEquals(identity1.getX25519PublicKey().getEncoded(), identity2.getX25519PublicKey().getEncoded(), "Identities from same seed must match");
     }
 }

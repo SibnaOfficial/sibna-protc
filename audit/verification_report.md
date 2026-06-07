@@ -49,4 +49,25 @@ A formal cryptographic model was created using the **ProVerif** language (`audit
 | Flutter SDK | ✅ Verified | Comprehensive tests implemented. |
 | Formal Model | ✅ Created | Ready for automated verification. |
 
-**Conclusion: The Sibna Protocol v3.0.1 is now production-ready.**
+**Status: v3.0.1 is "hardened and pre-audit ready" — NOT certified production-ready.**
+
+This report documents the v3.0.1 stabilisation pass. It is **not** a
+production-readiness certification. The audit verdict in
+[`audit/EXECUTIVE_BRIEF.md`](EXECUTIVE_BRIEF.md) is the authoritative
+assessment and identifies residual risk dimensions that this report
+does not address:
+
+- **At-rest storage** — `manifest` deletion defeats rollback protection;
+  `device_id` is wiped on `load_from_disk`; lock file leaks on panic
+  (see `AUDIT_REPORT.md` § At-rest storage table).
+- **Network metadata** — mDNS broadcasts random session tokens in
+  cleartext on LAN (P2P path only); only outgoing connections can be
+  SOCKS5-routed.
+- **Build hygiene** — `fips203 0.4.3` final-FIPS-203 alignment is
+  unverified.
+- **External review** — No independent third-party cryptographic audit
+  has been performed. The EXECUTIVE_BRIEF targets Q3–Q4 2026 contingent
+  on integration tests passing in CI.
+
+See `EXECUTIVE_BRIEF.md` § "Final word" for the full recommendation
+(verbatim: "Block production deployment").

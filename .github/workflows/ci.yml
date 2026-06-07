@@ -116,6 +116,56 @@ jobs:
           go-version: '1.21'
       - run: cd sdks/go && go test -v ./...
 
+  sdk-java:
+    name: Java SDK Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - run: cd sdks/java && mvn test -B
+
+  sdk-javascript:
+    name: JavaScript SDK Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdks/javascript/package-lock.json
+      - run: cd sdks/javascript && npm ci && npm test
+
+  sdk-dart:
+    name: Dart SDK Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.19'
+          channel: 'stable'
+      - run: cd sdks/dart && dart pub get && dart test
+
+  sdk-cpp:
+    name: C++ SDK Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libssl-dev catch2
+      - run: |
+          cd sdks/cpp
+          mkdir build && cd build
+          cmake .. -DSIBNA_BUILD_TESTS=ON
+          cmake --build . --config Release
+          ctest --output-on-failure
+
   # === HEAVY CHECKS (weekly schedule only) ===
   test-offensive:
     name: Offensive Tests

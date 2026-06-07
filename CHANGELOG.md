@@ -5,6 +5,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
+## [Unreleased] — Documentation Transparency Pass
+
+### Fixed
+- `core/src/p2p/handshake.rs:55` — corrected stale "warn-only mode" doc-comment on `P2pHandshakeConfig::expected_peer_identity` that contradicted the post-PATCH-17 behaviour (the field is now mandatory; `None` rejects the connection). A reader relying on the old comment would have assumed they could leave the field unset and merely receive a warning.
+- `audit/README.md:58` — reconciled the `fips203` version note: the actually pinned version is `0.4.3` (per `Cargo.toml:53` and `audit/VERIFICATION.md:152`); the `0.5.0` reference in `audit/AUDIT_REPORT.md:168,273` is a target upgrade that was never applied.
+- `audit/verification_report.md:52` — replaced the unqualified "production-ready" conclusion with a "hardened and pre-audit ready" status that cites `audit/EXECUTIVE_BRIEF.md` as the authoritative verdict and lists the four residual risk dimensions the EXECUTIVE_BRIEF names.
+
+### Added
+- `README.md` — new "Network anonymity features" section listing Tor (SOCKS5) and Cover Traffic with explicit limitations (mDNS cleartext on LAN, requires the `p2p` feature flag, only the Rust core exposes SOCKS5 configuration, etc.). Makes the threat model in `docs/THREAT_MODEL.md` discoverable from the README's table of contents.
+- `core/src/ffi/mod.rs:100` — `ByteBuffer::to_vec` now takes `&mut self` and nulls the inner pointer after transferring ownership to a `Vec<u8>`. The previous `&self` signature was a latent double-free: any caller doing `vec = buf.to_vec(); buf.free();` would crash with `STATUS_HEAP_CORRUPTION` on Windows. All FFI tests now pass (202/202 Rust tests green).
+- `core/src/ffi/mod.rs:999` — `test_byte_buffer` now declares `mut buffer` so the test compiles. The previous `let buffer = ...` failed `cargo test` with `E0596`.
+
+---
+
 ## [3.0.1] — 2026-06-04 (Security Hardening)
 
 ### Fixed

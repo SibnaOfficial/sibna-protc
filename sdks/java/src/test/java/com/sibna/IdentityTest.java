@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import static org.junit.jupiter.api.Assertions.*;
 import com.sibna.identity.IdentityKeyPair;
 import com.sibna.crypto.CryptoProvider;
+import com.sibna.exceptions.CryptoException;
 
 public class IdentityTest {
     private CryptoProvider crypto;
@@ -15,7 +16,7 @@ public class IdentityTest {
     }
 
     @Test
-    public void testGenerateIdentity() {
+    public void testGenerateIdentity() throws CryptoException {
         IdentityKeyPair identity = IdentityKeyPair.generate(crypto);
         assertNotNull(identity);
         assertNotNull(identity.getX25519PublicKey());
@@ -23,7 +24,7 @@ public class IdentityTest {
     }
 
     @Test
-    public void testSignAndVerify() {
+    public void testSignAndVerify() throws CryptoException {
         IdentityKeyPair identity = IdentityKeyPair.generate(crypto);
         byte[] data = "test data".getBytes();
         
@@ -40,7 +41,7 @@ public class IdentityTest {
     }
 
     @Test
-    public void testIdentityFromSeed() {
+    public void testIdentityFromSeed() throws CryptoException {
         byte[] seed = new byte[32];
         for(int i=0; i<32; i++) seed[i] = (byte)i;
         

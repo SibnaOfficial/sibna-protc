@@ -7,6 +7,8 @@
 #include <memory>
 #include <optional>
 #include <functional>
+#include <stdexcept>
+#include <chrono>
 
 namespace sibna {
 

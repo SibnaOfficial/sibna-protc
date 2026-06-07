@@ -45,6 +45,7 @@ endif()
 
 # Find dependencies
 find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 # Library type
 if(SIBNA_BUILD_SHARED)
@@ -90,6 +91,7 @@ target_include_directories(sibna_protocol
 target_link_libraries(sibna_protocol
     PUBLIC
         Threads::Threads
+        OpenSSL::Crypto
 )
 
 # Set library version

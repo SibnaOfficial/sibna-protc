@@ -3,8 +3,8 @@
 //! Run with: cargo test --test proptest_properties -- --nocapture
 
 use proptest::prelude::*;
-use sibna_core::crypto::{CryptoHandler, KeyGenerator, pad_message, unpad_message, PaddingMode};
-use sibna_core::{Config, HandshakeRole, ratchet::DoubleRatchetSession};
+use sibna_core::crypto::{pad_message, unpad_message, CryptoHandler, KeyGenerator, PaddingMode};
+use sibna_core::{ratchet::DoubleRatchetSession, Config, HandshakeRole};
 use x25519_dalek::{PublicKey, StaticSecret};
 
 proptest! {

@@ -132,7 +132,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-audit
-      - run: cargo audit --deny warnings
+      - run: cargo audit --deny warnings --config audit.toml
 
   dependency-check:
     name: Outdated Dependencies

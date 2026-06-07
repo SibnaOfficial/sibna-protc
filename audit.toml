@@ -1,0 +1,15 @@
+# cargo-audit configuration
+# Run: cargo audit --deny warnings
+# https://github.com/rustsec/rustsec/blob/main/cargo-audit/audit.toml.example
+
+[advisories]
+ignore = [
+    # bincode 2.0.1 is used. The 1.x line is unmaintained (RUSTSEC-2025-0141).
+    # We use the actively maintained 2.x version. This advisory targets 1.x only.
+    "RUSTSEC-2025-0141",
+    # fxhash is a transitive dep via redb/protobuf/etc. No replacement available yet.
+    # Tracked in PATCH 24 — will be resolved when redb releases a fix.
+    "RUSTSEC-2025-0057",
+    # `instant` is a transitive dep. Tracked for removal when upstream updates.
+    "RUSTSEC-2024-0384",
+]

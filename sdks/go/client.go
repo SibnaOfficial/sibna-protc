@@ -34,8 +34,29 @@ import (
 )
 
 const (
-	Version      = "3.0.1"
+	Version = "3.0.1"
+	// PaddingBlock is the default block size used by PadPayload.
+	// Matches PaddingMode::Standard in the Rust core.
 	PaddingBlock = 1024
+
+	// PaddingMaxExtraBlocks is the maximum number of *additional* full
+	// blocks of random padding that may be appended on top of the minimum
+	// needed to reach the next block boundary. With cap = 7, the on-wire
+	// size of a given plaintext can occupy any of 8 distinct padded sizes.
+	//
+	// FIX: Phase 3.1 — SIBNA-2026-018 parity with the Rust core. The
+	// previous Go implementation always produced a deterministic block
+	// size, defeating the metadata-resistance property of the format.
+	PaddingMaxExtraBlocks = 7
+
+	// PaddingMaxBytes is the maximum value that can be encoded in the
+	// 2-byte LE trailing length field.
+	PaddingMaxBytes = 65535
+
+	// PaddingMinOverhead is the minimum non-plaintext bytes in the padded
+	// format: 1 (prefix_len) + 1 (min prefix noise) + 2 (trailing LE
+	// pad_len).
+	PaddingMinOverhead = 4
 )
 
 // Errors
@@ -90,49 +111,136 @@ func (id *Identity) SignHex(data []byte) string {
 }
 
 // ── Message Padding ──────────────────────────────────────────────────────────
+//
+// FIX: Phase 3.1 — the on-wire padding format used to be a 3-byte
+// front-loaded header `[indicator(1)|pad_len(2,BE)|plaintext|padding]`
+// and always produced a single deterministic block size. The Rust core
+// uses a different shape that is also wire-incompatible with itself
+// across SDKs (Go, Python, JavaScript all used their own ad-hoc
+// variants), so a Go client could not interoperate with the Rust
+// relay or any other SDK.
+//
+// The new format matches the Rust core's `core/src/crypto/padding.rs`
+// `pad_message` exactly:
+//
+//	[ 1-byte prefix_len (1..=8) | prefix_noise (prefix_len bytes)
+//	  | plaintext | random padding (pad_len bytes)
+//	  | 2-byte LE padding_len ]
+//
+// Properties (mirroring SIBNA-2026-018 in the Rust core):
+//   - prefix_len and prefix_noise randomise the visible length within
+//     the same block, defeating range inference.
+//   - extra_blocks is drawn uniformly from 0..=PaddingMaxExtraBlocks
+//     so two messages of identical plaintext length do not necessarily
+//     produce the same on-wire size.
 
-// PadPayload adds metadata resistance padding to a payload
+// PadPayload adds metadata-resistance padding to data.
+//
+// The result is a multiple of PaddingBlock bytes. An empty plaintext
+// is allowed (it is the carrier for cover / dummy traffic in the
+// privacy modes).
 func PadPayload(data []byte) ([]byte, error) {
-	unpaddedLen := len(data) + 3 // 2 bytes for padding length + 1 byte for indicator (kept for compat)
-	remainder := unpaddedLen % PaddingBlock
-	paddingNeeded := PaddingBlock - remainder
-	if paddingNeeded == 0 {
-		paddingNeeded = PaddingBlock
+	// 1. Random prefix_len in [1, 8].
+	var prefixLenByte [1]byte
+	if _, err := rand.Read(prefixLenByte[:]); err != nil {
+		return nil, fmt.Errorf("%w: rand.Read failed: %v", ErrCryptoError, err)
+	}
+	prefixLen := int(prefixLenByte[0]%8) + 1
+
+	prefixNoise := make([]byte, prefixLen)
+	if _, err := rand.Read(prefixNoise); err != nil {
+		return nil, fmt.Errorf("%w: rand.Read failed: %v", ErrCryptoError, err)
 	}
 
-	// Store padding length in 2 bytes (big-endian) at positions 1-2
-	// Position 0 is kept as indicator for backward compatibility (lower 8 bits of paddingNeeded)
-	indicator := byte(paddingNeeded % 256)
-	padding := make([]byte, paddingNeeded)
-	if _, err := rand.Read(padding); err != nil {
-		return nil, err
+	// 2. Compute the minimum trailing bytes to reach the next block boundary.
+	minTotal := 1 + prefixLen + len(data) + 2
+	remainder := minTotal % PaddingBlock
+	minPadLen := PaddingBlock - remainder
+	if remainder == 0 {
+		minPadLen = 0
 	}
 
-	out := make([]byte, 3+len(data)+paddingNeeded)
-	out[0] = indicator
-	out[1] = byte(paddingNeeded >> 8)
-	out[2] = byte(paddingNeeded & 0xFF)
-	copy(out[3:], data)
-	copy(out[3+len(data):], padding)
+	// 3. SIBNA-2026-018: randomise the per-block suffix length.
+	//    extra_blocks ∈ [0, min(MAX_EXTRA_BLOCKS, max_blocks_for_budget)]
+	maxBlocksForBudget := (PaddingMaxBytes - minPadLen) / PaddingBlock
+	if maxBlocksForBudget < 0 {
+		maxBlocksForBudget = 0
+	}
+	capBlocks := maxBlocksForBudget
+	if capBlocks > PaddingMaxExtraBlocks {
+		capBlocks = PaddingMaxExtraBlocks
+	}
 
+	var extraByte [1]byte
+	if _, err := rand.Read(extraByte[:]); err != nil {
+		return nil, fmt.Errorf("%w: rand.Read failed: %v", ErrCryptoError, err)
+	}
+	extraBlocks := int(extraByte[0]) % (capBlocks + 1)
+	padLen := minPadLen + extraBlocks*PaddingBlock
+
+	if padLen > PaddingMaxBytes {
+		return nil, fmt.Errorf("%w: computed pad_len %d exceeds maximum %d", ErrCryptoError, padLen, PaddingMaxBytes)
+	}
+
+	// 4. Build the output: [prefix_len | prefix_noise | data | padding | pad_len(2 LE)].
+	total := minTotal + padLen
+	out := make([]byte, total)
+	pos := 0
+	out[pos] = byte(prefixLen)
+	pos++
+	copy(out[pos:], prefixNoise)
+	pos += prefixLen
+	copy(out[pos:], data)
+	pos += len(data)
+	if padLen > 0 {
+		padding := make([]byte, padLen)
+		if _, err := rand.Read(padding); err != nil {
+			return nil, fmt.Errorf("%w: rand.Read failed: %v", ErrCryptoError, err)
+		}
+		copy(out[pos:], padding)
+		pos += padLen
+	}
+	// Trailing 2-byte little-endian pad_len.
+	binary.LittleEndian.PutUint16(out[pos:], uint16(padLen))
+	pos += 2
+
+	if pos != total {
+		// Defensive: this should be unreachable.
+		return nil, fmt.Errorf("%w: internal padding size mismatch (pos=%d, total=%d)", ErrCryptoError, pos, total)
+	}
 	return out, nil
 }
 
-// UnpadPayload removes padding from a received payload
+// UnpadPayload removes metadata-resistance padding from padded.
+//
+// Returns the original plaintext. Any malformed input produces an
+// error rather than a silently-wrong result.
 func UnpadPayload(padded []byte) ([]byte, error) {
-	if len(padded) < 3 {
+	if len(padded) < PaddingMinOverhead {
 		return nil, errors.New("padded payload too short")
 	}
 
-	// Read padding length from bytes 1-2 (big-endian)
-	paddingNeeded := int(padded[1])<<8 | int(padded[2])
-
-	// Validate: padded data must have at least 3 header bytes + padding
-	if paddingNeeded > len(padded)-3 {
-		return nil, errors.New("invalid padding")
+	prefixLen := int(padded[0])
+	if prefixLen < 1 || prefixLen > 8 {
+		return nil, fmt.Errorf("invalid prefix_len: %d", prefixLen)
+	}
+	if 1+prefixLen+2 > len(padded) {
+		return nil, errors.New("padded payload truncated before plaintext")
 	}
 
-	return padded[3 : len(padded)-paddingNeeded], nil
+	// Trailing 2-byte little-endian pad_len.
+	lo := uint16(padded[len(padded)-2])
+	hi := uint16(padded[len(padded)-1])
+	padLen := int(lo | (hi << 8))
+
+	totalOverhead := 1 + prefixLen + padLen + 2
+	if totalOverhead > len(padded) {
+		return nil, errors.New("invalid padding length")
+	}
+
+	plaintextLen := len(padded) - totalOverhead
+	start := 1 + prefixLen
+	return padded[start : start+plaintextLen], nil
 }
 
 // ── Signed Envelope ──────────────────────────────────────────────────────────

@@ -7,7 +7,12 @@ A high-security Rust implementation of the X3DH and Double Ratchet protocol — 
 
 ---
 
-> [!IMPORTANT] > Sibna v3.0.1 is an architectural implementation designed with high-assurance security invariants. It has been engineered to mitigate common side-channel vulnerabilities and evaluated through internal statistical benchmarks. A formal independent security audit is planned and will be conducted when the project reaches the required maturity and an appropriate third-party reviewer is selected.
+> [!IMPORTANT]
+> Sibna v3.0.1 is an architectural implementation designed with high-assurance security invariants.
+> The protocol has been engineered to mitigate common side-channel vulnerabilities and has undergone internal testing and statistical evaluation.
+>
+> While extensive internal validation has been performed, a formal independent third-party security audit has not yet been completed.
+> An external audit is planned and will be conducted once the project reaches the appropriate level of maturity and a qualified reviewer is selected.
 
 ---
 

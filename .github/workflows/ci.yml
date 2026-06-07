@@ -113,7 +113,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sibna-native-lib
-          path: target/release/libsibna*
+          path: |
+            target/release/libsibna*.so
+            target/release/libsibna*.dylib
           retention-days: 1
 
   # === SDK TESTS ===
@@ -178,8 +180,10 @@ jobs:
       - run: |
           cd sdks/dart
           dart pub get
-          # Copy native library to where Dart SDK expects it
-          cp ../native-lib/libsibna.so . || cp ../native-lib/libsibna.dylib . || true
+          # Set library path for native library
+          export LD_LIBRARY_PATH="${{ github.workspace }}/native-lib:${LD_LIBRARY_PATH}"
+          # Copy native library to current dir as fallback
+          cp ../native-lib/libsibna_core.so . 2>/dev/null || cp ../native-lib/libsibna_core.dylib . 2>/dev/null || true
           dart test
 
   sdk-cpp:
@@ -199,7 +203,7 @@ jobs:
       - run: |
           cd sdks/cpp
           mkdir build && cd build
-          cmake .. -DSIBNA_BUILD_TESTS=ON -DSIBNA_BUILD_EXAMPLES=OFF -DCMAKE_PREFIX_PATH=${{ github.workspace }}/native-lib
+          cmake .. -DSIBNA_BUILD_TESTS=ON -DSIBNA_BUILD_EXAMPLES=OFF -DCMAKE_LIBRARY_PATH=${{ github.workspace }}/native-lib
           cmake --build . --config Release
           ctest --output-on-failure
 

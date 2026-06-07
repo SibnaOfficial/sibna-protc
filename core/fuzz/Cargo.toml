@@ -1,0 +1,74 @@
+[package]
+name = "sibna-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1.3", features = ["derive"] }
+
+[dependencies.sibna-core]
+path = ".."
+features = ["pqc", "argon2", "std"]
+
+[[bin]]
+name = "fuzz_crypto_encrypt"
+path = "fuzz_targets/fuzz_crypto_encrypt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_crypto_handler_new"
+path = "fuzz_targets/fuzz_crypto_handler_new.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ratchet_encrypt"
+path = "fuzz_targets/fuzz_ratchet_encrypt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ratchet_decrypt"
+path = "fuzz_targets/fuzz_ratchet_decrypt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ratchet_serialize"
+path = "fuzz_targets/fuzz_ratchet_serialize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_handshake_x3dh"
+path = "fuzz_targets/fuzz_handshake_x3dh.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ratchet_message"
+path = "fuzz_targets/fuzz_ratchet_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_padding"
+path = "fuzz_targets/fuzz_padding.rs"
+test = false
+doc = false
+bench = false

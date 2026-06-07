@@ -1,0 +1,12 @@
+[package]
+name = "sibna-core-kani"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+kani = "0.67.0"
+sibna-core = { path = "..", features = ["pqc", "argon2", "std"] }
+x25519-dalek = { workspace = true }

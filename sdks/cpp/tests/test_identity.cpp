@@ -8,7 +8,7 @@ TEST_CASE("IdentityKeyPair::generate produces valid keys", "[identity]") {
     auto result = IdentityKeyPair::generate();
     REQUIRE(result.is_ok());
 
-    auto identity = result.value();
+    auto identity = std::move(result).value();
     REQUIRE(identity.ed25519_public_key().size() == KEY_LENGTH);
     REQUIRE(identity.x25519_public_key().size() == KEY_LENGTH);
 }
@@ -25,7 +25,7 @@ TEST_CASE("IdentityKeyPair::generate produces unique keys", "[identity]") {
 TEST_CASE("IdentityKeyPair sign and verify", "[identity]") {
     auto result = IdentityKeyPair::generate();
     REQUIRE(result.is_ok());
-    auto identity = result.value();
+    auto identity = std::move(result).value();
 
     bytes data = {0x01, 0x02, 0x03, 0x04, 0x05};
     auto sig = identity.sign(data);
@@ -40,7 +40,7 @@ TEST_CASE("IdentityKeyPair sign and verify", "[identity]") {
 TEST_CASE("IdentityKeyPair verify rejects tampered signature", "[identity]") {
     auto result = IdentityKeyPair::generate();
     REQUIRE(result.is_ok());
-    auto identity = result.value();
+    auto identity = std::move(result).value();
 
     bytes data = {0x01, 0x02, 0x03, 0x04, 0x05};
     auto sig = identity.sign(data);
@@ -56,7 +56,7 @@ TEST_CASE("IdentityKeyPair verify rejects tampered signature", "[identity]") {
 TEST_CASE("IdentityKeyPair verify rejects wrong data", "[identity]") {
     auto result = IdentityKeyPair::generate();
     REQUIRE(result.is_ok());
-    auto identity = result.value();
+    auto identity = std::move(result).value();
 
     bytes data = {0x01, 0x02, 0x03};
     bytes wrong_data = {0x04, 0x05, 0x06};

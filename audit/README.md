@@ -55,7 +55,12 @@
 
 1. Fix the 4-5 integration test failures documented in `VERIFICATION.md` § "Outstanding integration test failures". These are real bugs (SIBNA-2026-013, -014, -020).
 2. Address the 9 MEDIUM findings (SIBNA-2026-012, -013, -014, -016, -017, -018, -020, -029, -030).
-3. Address the 4 remaining dependency findings (SIBNA-2026-032, -034, -035, -036) — `fips203 0.5.0`, `zmij 1.0.21` (unverified), `axum` minor-version spread, missing `Cargo.lock` vendor. ~~SIBNA-2026-033 (sled)~~ **RESOLVED**.
+3. Address the 4 remaining dependency findings:
+   - **SIBNA-2026-032 — `fips203`**: the **pinned** version in `Cargo.toml:53` is **`0.4.3`** (per `VERIFICATION.md:152` and `FINDING_CATALOG.md:824-830`). The `0.5.0` reference in `AUDIT_REPORT.md:168,273` is a *target* upgrade that was never applied. The status of `0.4.3` against the final FIPS 203 standard (released August 2024) is unverified; the upgrade should be re-evaluated before any release.
+   - **SIBNA-2026-034** — `axum` minor-version spread — **RESOLVED** (unified at v0.7.9).
+   - **SIBNA-2026-035** — `zmij 1.0.21` is a legitimate dtolnay crate (false positive) — **RESOLVED**.
+   - **SIBNA-2026-036** — `Cargo.lock` not vendored — N/A (correctly gitignored for library crates via `**/Cargo.lock`).
+   - ~~SIBNA-2026-033 (sled)~~ — **RESOLVED** (replaced with `redb`).
 4. Run `cargo audit` and `cargo deny` as a pre-merge requirement.
 5. Conduct a follow-up audit focused on the P2P module and the FFI surface (current audit was line-by-line on the lower layers; P2P and FFI were reviewed at a higher level).
 

@@ -1,0 +1,50 @@
+{
+  "format": "sibna_padding_v1",
+  "description": "Cross-SDK padding test vectors. All SDKs (Rust, Go, Python, JS, C++, Dart, Flutter) MUST produce/consume these padded payloads correctly.",
+  "block_size": 1024,
+  "vectors": [
+    {
+      "name": "empty_plaintext",
+      "plaintext_hex": "",
+      "description": "Empty plaintext (cover traffic carrier)",
+      "note": "prefix_len=1, min_pad_len=1021, extra_blocks=0 -> pad_len=1021, total=1024"
+    },
+    {
+      "name": "hello_world",
+      "plaintext_hex": "48656c6c6f2c20576f726c6421",
+      "description": "\"Hello, World!\" (13 bytes)",
+      "note": "min_total=1+1+13+2=17, remainder=17, min_pad_len=1007, total=1024"
+    },
+    {
+      "name": "one_block_minus_overhead",
+      "plaintext_hex": "00",
+      "repeat": 1011,
+      "description": "1011 zero bytes (fits in one block with min prefix)",
+      "note": "min_total=1+1+1011+2=1015, remainder=1015, min_pad_len=9, total=1024"
+    },
+    {
+      "name": "exactly_one_block",
+      "plaintext_hex": "00",
+      "repeat": 1015,
+      "description": "1015 bytes (exactly fills one block after prefix+overhead)",
+      "note": "min_total=1+1+1015+2=1019, remainder=1019, min_pad_len=5, total=1024"
+    },
+    {
+      "name": "two_blocks",
+      "plaintext_hex": "00",
+      "repeat": 1500,
+      "description": "1500 bytes (requires two blocks)",
+      "note": "min_total=1+1+1500+2=1504, remainder=480, min_pad_len=544, total=2048"
+    }
+  ],
+  "cross_sdk_tests": [
+    {
+      "name": "roundtrip_all_sdks",
+      "description": "Each SDK pads plaintext, all other SDKs unpad and recover original"
+    },
+    {
+      "name": "size_distribution",
+      "description": "64 trials on fixed plaintext must yield >= 2 distinct sizes (SIBNA-2026-018)"
+    }
+  ]
+}

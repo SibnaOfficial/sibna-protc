@@ -154,14 +154,15 @@ func TestVersion(t *testing.T) {
 // as the Rust core. The fixture is a hand-built byte string with the
 // canonical layout:
 //
-//	[ 0x03 | 0xAA 0xBB 0xCC | "hello" | (1024 - 12) zero bytes | 0x10 0x00 ]
+//	[ 0x03 | 0xAA 0xBB 0xCC | "hello" | 1013 zero bytes | 0xF5 0x03 ]
 //
-// Where 0x10 0x00 is the little-endian 16-bit pad_len (16 = 0x10).
+// Where 0xF5 0x03 is the little-endian 16-bit pad_len (1013 = 0x03F5).
+// Total = 1 + 3 + 5 + 1013 + 2 = 1024 (one block).
 // UnpadPayload must recover "hello".
 func TestUnpadPayload_WireFormatMatchesRust(t *testing.T) {
 	const want = "hello"
 	const prefixLen = 3
-	const padLen = 16
+	const padLen = 1013 // 1024 - (1 + 3 + 5 + 2) = 1013
 
 	// Build the canonical Rust wire format.
 	buf := make([]byte, 0, PaddingBlock)

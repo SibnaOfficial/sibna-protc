@@ -72,6 +72,10 @@ function concat(...arrays: Uint8Array[]): Uint8Array {
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const PADDING_BLOCK = 1024;
+// SIBNA-2026-018 parity with core::crypto::padding::MAX_EXTRA_BLOCKS
+const MAX_EXTRA_BLOCKS = 7;
+// Maximum value the 2-byte LE trailing length field can hold.
+const MAX_PADDING_BYTES = 65535;
 
 // ── Message Padding ───────────────────────────────────────────────────────────
 
@@ -82,10 +86,20 @@ const PADDING_BLOCK = 1024;
  *   [ prefix_len(1) | prefix_noise(1-8) | plaintext | random_padding | padding_len(2, LE) ]
  *
  * Total output is always a multiple of PADDING_BLOCK.
+ *
+ * FIX: Phase 3.3 — the previous implementation used ``Math.random()``
+ * (a non-cryptographic PRNG) to draw both ``prefixLen`` and
+ * ``extraBlocks``. An attacker observing the on-wire size could
+ * correlate the two non-crypto draws with timing or other side
+ * channels, and the prefix_len could be predicted from the first
+ * byte of the buffer. The fix uses ``crypto.getRandomValues`` for
+ * both draws and the SIBNA-2026-018 cap of 0..7 extra blocks.
  */
 export function padPayload(data: Uint8Array): Uint8Array {
-  // 1. Random prefix noise (1-8 bytes) for length-hiding
-  const prefixLen = 1 + Math.floor(Math.random() * 8);
+  // 1. Random prefix noise (1-8 bytes) for length-hiding.
+  //    Use a CSPRNG — Math.random is not cryptographically secure.
+  const prefixLenByte = crypto.getRandomValues(new Uint8Array(1))[0];
+  const prefixLen = (prefixLenByte % 8) + 1;
   const prefixNoise = crypto.getRandomValues(new Uint8Array(prefixLen));
 
   const block = PADDING_BLOCK;
@@ -93,9 +107,18 @@ export function padPayload(data: Uint8Array): Uint8Array {
   const remainder = minTotal % block;
   const minPadLen = remainder === 0 ? 0 : block - remainder;
 
-  // 2. Add 0..1 extra blocks of random padding for size indistinguishability
-  const extraBlocks = Math.floor(Math.random() * 2);
+  // 2. SIBNA-2026-018: extra_blocks ∈ [0, min(MAX_EXTRA_BLOCKS, max_blocks_for_budget)].
+  //    Was 0..1 (Math.random() * 2) before the fix — same as Python/Go Phase 3.2/3.1.
+  const maxBlocksForBudget = Math.max(0, Math.floor((MAX_PADDING_BYTES - minPadLen) / block));
+  const capBlocks = Math.min(MAX_EXTRA_BLOCKS, maxBlocksForBudget);
+  const extraBlocksByte = crypto.getRandomValues(new Uint8Array(1))[0];
+  const extraBlocks = extraBlocksByte % (capBlocks + 1);
   const padLen = minPadLen + extraBlocks * block;
+
+  if (padLen > MAX_PADDING_BYTES) {
+    // Defensive: this branch is unreachable given the cap above.
+    throw new CryptoError(`Computed pad_len ${padLen} exceeds max ${MAX_PADDING_BYTES}`);
+  }
 
   const total = minTotal + padLen;
   const out = new Uint8Array(total);

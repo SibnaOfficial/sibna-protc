@@ -42,7 +42,7 @@ public class IdentityKeyPair {
      * (random), making the method non-deterministic. The seed was silently ignored.
      * Now the derived seeds are actually passed to the key factories.
      */
-    public static IdentityKeyPair fromSeed(CryptoProvider crypto, byte[] seed) throws CryptoException {
+    public static IdentityKeyPair fromSeed(CryptoProvider crypto, byte[] seed) throws CryptoException, com.sibna.exceptions.InvalidArgumentException {
         if (seed == null || seed.length != 32) {
             throw new com.sibna.exceptions.InvalidArgumentException("Seed must be exactly 32 bytes");
         }

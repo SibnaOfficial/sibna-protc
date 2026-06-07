@@ -162,7 +162,7 @@ jobs:
       - run: |
           cd sdks/cpp
           mkdir build && cd build
-          cmake .. -DSIBNA_BUILD_TESTS=ON
+          cmake .. -DSIBNA_BUILD_TESTS=ON -DSIBNA_BUILD_EXAMPLES=OFF
           cmake --build . --config Release
           ctest --output-on-failure
 

@@ -42,7 +42,7 @@ public final class PreKeyPair {
      * Deterministically derive a signed prekey pair from a 32-byte seed.
      * Intended for tests that need reproducible keys.
      */
-    public static PreKeyPair fromSeed(CryptoProvider crypto, byte[] seed) throws CryptoException {
+    public static PreKeyPair fromSeed(CryptoProvider crypto, byte[] seed) throws CryptoException, com.sibna.exceptions.InvalidArgumentException {
         if (seed == null || seed.length != 32) {
             throw new com.sibna.exceptions.InvalidArgumentException("Seed must be exactly 32 bytes");
         }

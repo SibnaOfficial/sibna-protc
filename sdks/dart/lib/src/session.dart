@@ -38,8 +38,6 @@ class SibnaSession {
     Uint8List sharedSecret,
     String localDh,
     String remoteDh,
-    Config config,
-    HandshakeRole role,
   ) {
     // In a real implementation, this would call a native function
     // that initializes the DoubleRatchet state directly from the secret.

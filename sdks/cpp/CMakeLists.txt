@@ -131,22 +131,20 @@ install(EXPORT sibna_protocol-targets
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/sibna_protocol
 )
 
-# Package configuration
-include(CMakePackageConfigHelpers)
+# Package configuration (disabled - cmake/sibna_protocol-config.cmake.in not present)
+# include(CMakePackageConfigHelpers)
+# configure_package_config_file(
+#     ${CMAKE_CURRENT_SOURCE_DIR}/cmake/sibna_protocol-config.cmake.in
+#     ${CMAKE_CURRENT_BINARY_DIR}/sibna_protocol-config.cmake
+#     INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/sibna_protocol
+# )
+# write_basic_package_version_file(
+#     ${CMAKE_CURRENT_BINARY_DIR}/sibna_protocol-config-version.cmake
+#     VERSION ${PROJECT_VERSION}
+#     COMPATIBILITY SameMajorVersion
+# )
 
-configure_package_config_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/sibna_protocol-config.cmake.in
-    ${CMAKE_CURRENT_BINARY_DIR}/sibna_protocol-config.cmake
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/sibna_protocol
-)
-
-write_basic_package_version_file(
-    ${CMAKE_CURRENT_BINARY_DIR}/sibna_protocol-config-version.cmake
-    VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMajorVersion
-)
-
-install(FILES
+# install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/sibna_protocol-config.cmake
     ${CMAKE_CURRENT_BINARY_DIR}/sibna_protocol-config-version.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/sibna_protocol

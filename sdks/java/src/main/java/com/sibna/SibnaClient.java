@@ -3,6 +3,7 @@ package com.sibna;
 import com.sibna.crypto.CryptoProvider;
 import com.sibna.identity.IdentityKeyPair;
 import com.sibna.identity.PreKeyBundle;
+import com.sibna.identity.PreKeyPair;
 import com.sibna.protocol.DoubleRatchet;
 import com.sibna.protocol.X3DHHandshake;
 import com.sibna.transport.HttpTransport;
@@ -123,16 +124,25 @@ public class SibnaClient implements AutoCloseable {
 
     /**
      * Accept an incoming session request.
+     *
+     * <p>FIX: Phase 2.1 — The previous signature did not accept the
+     * local signed prekey, so the X3DH responder silently derived a
+     * different shared secret from the initiator&apos;s. The local
+     * signed prekey is now a required parameter.
      */
     public DoubleRatchet acceptSession(String peerId, byte[] ephemeralPublicKey,
-                                        byte[] identityPublicKey, byte[] prekey) throws SibnaException {
+                                        byte[] identityPublicKey, byte[] prekey,
+                                        PreKeyPair localSignedPrekey) throws SibnaException {
         ensureOpen();
         if (identity == null) {
             throw new AuthException("No identity loaded");
         }
+        if (localSignedPrekey == null) {
+            throw new AuthException("Local signed prekey is required for acceptSession()");
+        }
 
         // Perform X3DH handshake as responder
-        X3DHHandshake handshake = new X3DHHandshake(crypto, identity);
+        X3DHHandshake handshake = new X3DHHandshake(crypto, identity, localSignedPrekey);
         byte[] sharedSecret = handshake.respond(ephemeralPublicKey, identityPublicKey, prekey);
 
         // Initialize Double Ratchet

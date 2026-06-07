@@ -148,7 +148,7 @@ public class SibnaClient implements AutoCloseable
 | `getIdentity() → Optional<IdentityKeyPair>` | Currently loaded identity, if any. |
 | `authenticate() → String` | Ed25519 challenge-response → JWT. Throws `AuthException` on 401, `NetworkException` on transport failure. |
 | `createSession(String peerId, PreKeyBundle peerBundle) → DoubleRatchet` | Performs X3DH `initiate`, then returns a `DoubleRatchet` initialised as the initiator. The session is stored in the client and can be retrieved with `getSession`. |
-| `acceptSession(String peerId, byte[] ephemeralPublicKey, byte[] identityPublicKey, byte[] prekey) → DoubleRatchet` | Performs X3DH `respond` (for the receiver of an initial message). |
+| `acceptSession(String peerId, byte[] ephemeralPublicKey, byte[] identityPublicKey, byte[] prekey, PreKeyPair localSignedPrekey) → DoubleRatchet` | Performs X3DH `respond` (for the receiver of an initial message). The local signed prekey is now a **required** argument: without it, the responder would silently fall back to the identity key for every DH operation and derive a different shared secret than the initiator (Phase 2.1 fix). |
 | `encryptMessage(String peerId, byte[] plaintext) → byte[]` | Routes through the stored `DoubleRatchet` for that peer. Throws `SessionException` if no session exists. |
 | `decryptMessage(String peerId, byte[] ciphertext) → byte[]` | Routes through the stored `DoubleRatchet` for that peer. |
 | `sendMessage(String recipientId, byte[] ciphertext)` | `POST /v1/messages/send` (requires a JWT in the client — currently the `authenticate()` JWT is **not** persisted on the client; you may need to extend the client or call `HttpTransport.sendMessage` directly with the token). |

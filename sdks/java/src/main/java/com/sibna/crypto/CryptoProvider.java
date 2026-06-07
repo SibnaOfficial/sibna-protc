@@ -188,6 +188,21 @@ public class CryptoProvider {
     }
 
     /**
+     * Generate a fresh X25519 key pair from a CSPRNG seed.
+     * FIX: Phase 2.1 — this no-arg variant was missing; X3DHHandshake.initiate(),
+     * DoubleRatchet key ratchets, and IdentityKeyPair.generate() all call it.
+     */
+    public KeyPair generateX25519KeyPair() throws CryptoException {
+        byte[] seed = new byte[32];
+        try {
+            new java.security.SecureRandom().nextBytes(seed);
+            return generateX25519KeyPairFromSeed(seed);
+        } finally {
+            java.util.Arrays.fill(seed, (byte) 0);
+        }
+    }
+
+    /**
      * Generate a deterministic X25519 key pair from a 32-byte seed.
      * FIX: Uses BouncyCastle for portable seed-to-keypair derivation.
      */

@@ -182,7 +182,7 @@ class SibnaCrypto {
     while (result.length < length) {
       counter++;
       final hmac2 = Hmac(sha256, prk.bytes);
-      final data = [...previous, ...(info ?? []), counter];
+      final data = [...previous, ...(info ?? <int>[]), counter];
       final okm = hmac2.convert(data);
       result.addAll(okm.bytes);
       previous = okm.bytes;

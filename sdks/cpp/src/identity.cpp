@@ -1,7 +1,6 @@
 #include "sibna/identity.hpp"
 #include "sibna/crypto.hpp"
 #include <openssl/evp.h>
-#include <openssl/x25519.h>
 #include <openssl/rand.h>
 
 namespace sibna {

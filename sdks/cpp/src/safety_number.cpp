@@ -185,11 +185,11 @@ double SafetyNumber::similarity(const SafetyNumber& other) const {
 
 VerificationQrCode::VerificationQrCode(
     std::array<byte, 32> identity_key,
-    device_id device_id,
+    std::array<byte, 16> dev_id,
     std::array<byte, 32> safety_fingerprint,
     bool verified
 ) : identity_key_(std::move(identity_key))
-  , device_id_(std::move(device_id))
+  , device_id_(std::move(dev_id))
   , safety_fingerprint_(std::move(safety_fingerprint))
   , verified_(verified)
 {}
@@ -225,7 +225,7 @@ Result<VerificationQrCode> VerificationQrCode::from_bytes(const bytes& data) {
     std::copy(data.begin() + offset, data.begin() + offset + 32, identity_key.begin());
     offset += 32;
     
-    device_id dev_id;
+    std::array<byte, 16> dev_id;
     std::copy(data.begin() + offset, data.begin() + offset + 16, dev_id.begin());
     offset += 16;
     

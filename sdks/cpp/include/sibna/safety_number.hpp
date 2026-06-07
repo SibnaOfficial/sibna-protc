@@ -52,7 +52,7 @@ class VerificationQrCode {
 public:
     VerificationQrCode(
         std::array<byte, 32> identity_key,
-        device_id device_id,
+        std::array<byte, 16> dev_id,
         std::array<byte, 32> safety_fingerprint,
         bool verified = false
     );
@@ -73,7 +73,7 @@ public:
     const std::array<byte, 32>& identity_key() const { return identity_key_; }
 
     // Get device ID
-    const device_id& device_id() const { return device_id_; }
+    const std::array<byte, 16>& id() const { return device_id_; }
 
     // Get safety fingerprint
     const std::array<byte, 32>& safety_fingerprint() const { return safety_fingerprint_; }

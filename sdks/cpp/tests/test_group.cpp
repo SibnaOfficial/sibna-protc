@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <sibna/group.hpp>
+#include <sibna/crypto.hpp>
 #include <sibna/types.hpp>
 
 using namespace sibna;

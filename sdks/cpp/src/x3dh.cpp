@@ -193,8 +193,9 @@ Result<X3dhResult> x3dh_responder(
 
     // DH4: Our one-time prekey + peer's ephemeral (if available)
     std::optional<key> dh4;
+    std::optional<key> our_opk_pub;
     if (our_onetime_prekey_private.has_value()) {
-        key our_opk_pub = x25519_public(*our_onetime_prekey_private);
+        our_opk_pub = x25519_public(*our_onetime_prekey_private);
         dh4 = x25519_dh(*our_onetime_prekey_private, peer_ephemeral_public);
         dh_results.push_back(*dh4);
     }
@@ -208,8 +209,7 @@ Result<X3dhResult> x3dh_responder(
     transcript_input.insert(transcript_input.end(), our_identity_pub.begin(), our_identity_pub.end());
     transcript_input.insert(transcript_input.end(), our_spk_pub.begin(), our_spk_pub.end());
     if (our_onetime_prekey_private.has_value()) {
-        key our_opk_pub = x25519_public(*our_onetime_prekey_private);
-        transcript_input.insert(transcript_input.end(), our_opk_pub.begin(), our_opk_pub.end());
+        transcript_input.insert(transcript_input.end(), our_opk_pub->begin(), our_opk_pub->end());
     }
     transcript_input.insert(transcript_input.end(), peer_device_id.begin(), peer_device_id.end());
     transcript_input.insert(transcript_input.end(), our_device_id.begin(), our_device_id.end());

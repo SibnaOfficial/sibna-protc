@@ -7,6 +7,7 @@ import com.sibna.protocol.DoubleRatchet;
 import com.sibna.protocol.DoubleRatchet.Stats;
 import com.sibna.protocol.X3DHHandshake;
 import com.sibna.identity.IdentityKeyPair;
+import com.sibna.identity.PreKeyBundle;
 import com.sibna.identity.PreKeyPair;
 import com.sibna.crypto.CryptoProvider;
 import com.sibna.exceptions.CryptoException;

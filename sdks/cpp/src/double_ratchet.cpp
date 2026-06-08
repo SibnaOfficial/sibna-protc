@@ -6,6 +6,19 @@
 
 namespace sibna {
 
+/// Convert bytes to key (array). Copies up to KEY_LENGTH bytes, zero-pads.
+static key bytes_to_key(const bytes& b) {
+    key result{};
+    size_t len = std::min(b.size(), size_t(KEY_LENGTH));
+    std::copy(b.begin(), b.begin() + len, result.begin());
+    return result;
+}
+
+/// Convert key to bytes vector
+static bytes key_to_bytes(const key& k) {
+    return bytes(k.begin(), k.end());
+}
+
 // ── ChainKey ─────────────────────────────────────────────────────────────────
 
 ChainKey::ChainKey() {
@@ -36,13 +49,13 @@ std::optional<std::pair<key, ChainKey>> ChainKey::next_message_key() {
     bytes mk_seed = {MESSAGE_KEY_SEED};
     auto mk_result = Crypto::hmac_sha256(chain_key, mk_seed);
     if (mk_result.is_err()) return std::nullopt;
-    key message_key = mk_result.value();
+    key message_key = bytes_to_key(mk_result.value());
 
     // Next chain key = HMAC-SHA256(chain_key, 0x02)
     bytes ck_seed = {CHAIN_KEY_SEED};
     auto ck_result = Crypto::hmac_sha256(chain_key, ck_seed);
     if (ck_result.is_err()) return std::nullopt;
-    key next_ck = ck_result.value();
+    key next_ck = bytes_to_key(ck_result.value());
 
     ChainKey next(next_ck, index + 1);
     next.created_at = created_at;
@@ -55,7 +68,7 @@ key ChainKey::derive_header_key() const {
     bytes seed = {HEADER_KEY_SEED};
     auto result = Crypto::hmac_sha256(chain_key, seed);
     if (result.is_err()) return key{};
-    return result.value();
+    return bytes_to_key(result.value());
 }
 
 uint64_t ChainKey::remaining_messages() const {
@@ -141,7 +154,7 @@ DoubleRatchet DoubleRatchet::from_shared_secret(
     // HKDF-Extract
     key salt_key{};
     std::copy(salt.begin(), salt.end(), salt_key.begin());
-    auto prk = Crypto::hmac_sha256(salt_key, shared_secret);
+    auto prk = Crypto::hmac_sha256(salt_key, key_to_bytes(shared_secret));
 
     // HKDF-Expand to 64 bytes
     bytes prev;
@@ -152,7 +165,7 @@ DoubleRatchet DoubleRatchet::from_shared_secret(
     t1_in.insert(t1_in.end(), prev.begin(), prev.end());
     t1_in.insert(t1_in.end(), info.begin(), info.end());
     t1_in.push_back(1);
-    auto t1 = Crypto::hmac_sha256(prk.value(), t1_in);
+    auto t1 = Crypto::hmac_sha256(bytes_to_key(prk.value()), t1_in);
     std::copy(t1.value().begin(), t1.value().begin() + 32, okm.begin());
     prev = t1.value();
 
@@ -161,7 +174,7 @@ DoubleRatchet DoubleRatchet::from_shared_secret(
     t2_in.insert(t2_in.end(), prev.begin(), prev.end());
     t2_in.insert(t2_in.end(), info.begin(), info.end());
     t2_in.push_back(2);
-    auto t2 = Crypto::hmac_sha256(prk.value(), t2_in);
+    auto t2 = Crypto::hmac_sha256(bytes_to_key(prk.value()), t2_in);
     std::copy(t2.value().begin(), t2.value().begin() + 32, okm.begin() + 32);
 
     std::copy(okm.begin(), okm.begin() + 32, dr.root_key.begin());
@@ -191,7 +204,7 @@ std::pair<key, key> DoubleRatchet::kdf_rk(const key& dh_out) {
     bytes info = {'S','i','b','n','a','R','a','t','c','h','e','t','_','v','3'};
 
     // HKDF-Extract: PRK = HMAC-Hash(root_key, dh_out)
-    auto prk = Crypto::hmac_sha256(root_key, dh_out);
+    auto prk = Crypto::hmac_sha256(root_key, key_to_bytes(dh_out));
 
     // HKDF-Expand to 64 bytes
     bytes prev;
@@ -201,7 +214,7 @@ std::pair<key, key> DoubleRatchet::kdf_rk(const key& dh_out) {
     t1_in.insert(t1_in.end(), prev.begin(), prev.end());
     t1_in.insert(t1_in.end(), info.begin(), info.end());
     t1_in.push_back(1);
-    auto t1 = Crypto::hmac_sha256(prk.value(), t1_in);
+    auto t1 = Crypto::hmac_sha256(bytes_to_key(prk.value()), t1_in);
     std::copy(t1.value().begin(), t1.value().begin() + 32, okm.begin());
     prev = t1.value();
 
@@ -209,7 +222,7 @@ std::pair<key, key> DoubleRatchet::kdf_rk(const key& dh_out) {
     t2_in.insert(t2_in.end(), prev.begin(), prev.end());
     t2_in.insert(t2_in.end(), info.begin(), info.end());
     t2_in.push_back(2);
-    auto t2 = Crypto::hmac_sha256(prk.value(), t2_in);
+    auto t2 = Crypto::hmac_sha256(bytes_to_key(prk.value()), t2_in);
     std::copy(t2.value().begin(), t2.value().begin() + 32, okm.begin() + 32);
 
     key new_rk, new_ck;

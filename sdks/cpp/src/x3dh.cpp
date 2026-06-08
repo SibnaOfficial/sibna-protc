@@ -14,6 +14,14 @@ namespace sibna {
 //   - DH computation order: initiator and responder perspectives
 //   - X25519 identity key for DH, Ed25519 identity key for signing
 
+/// Convert bytes to key (array). Copies up to KEY_LENGTH bytes, zero-pads.
+static key bytes_to_key(const bytes& b) {
+    key result{};
+    size_t len = std::min(b.size(), size_t(KEY_LENGTH));
+    std::copy(b.begin(), b.begin() + len, result.begin());
+    return result;
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// SHA-256 fallback for blake3 transcript hash.
@@ -43,7 +51,7 @@ static key transcript_bind(
     if (prk_result.is_err()) {
         return key{};
     }
-    key prk = prk_result.value();
+    key prk = bytes_to_key(prk_result.value());
 
     // HKDF-Expand(PRK, info="SibnaX3DH_TranscriptBind_v3", len=32)
     bytes info = {'S','i','b','n','a','X','3','D','H','_','T','r','a','n','s','c','r','i','p','t','B','i','n','d','_','v','3'};
@@ -54,7 +62,7 @@ static key transcript_bind(
     if (t.is_err()) {
         return key{};
     }
-    return key(t.value().begin(), t.value().begin() + 32);
+    return bytes_to_key(t.value());
 }
 
 /// Derive X3DH shared secret from DH results + transcript hash
@@ -241,7 +249,8 @@ Result<std::pair<key, key>> x3dh_derive_session_keys(const key& shared_secret) {
     bytes t1_input;
     t1_input.insert(t1_input.end(), info.begin(), info.end());
     t1_input.push_back(1);
-    auto t1 = Crypto::hmac_sha256(prk.value(), t1_input);
+    key prk_key = bytes_to_key(prk.value());
+    auto t1 = Crypto::hmac_sha256(prk_key, t1_input);
     if (t1.is_err()) {
         return Result<std::pair<key, key>>(t1.code(), t1.message());
     }
@@ -253,7 +262,7 @@ Result<std::pair<key, key>> x3dh_derive_session_keys(const key& shared_secret) {
     t2_input.insert(t2_input.end(), prev.begin(), prev.end());
     t2_input.insert(t2_input.end(), info.begin(), info.end());
     t2_input.push_back(2);
-    auto t2 = Crypto::hmac_sha256(prk.value(), t2_input);
+    auto t2 = Crypto::hmac_sha256(prk_key, t2_input);
     if (t2.is_err()) {
         return Result<std::pair<key, key>>(t2.code(), t2.message());
     }

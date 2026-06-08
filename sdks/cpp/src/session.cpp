@@ -8,9 +8,9 @@ namespace sibna {
 // ── Session ──────────────────────────────────────────────────────────────────
 
 Session::Session(bytes peer_id, void* native_handle)
-    : peer_id_(std::move(peer_id))
+    : session_key_(Utils::random_bytes<KEY_LENGTH>())
+    , peer_id_(std::move(peer_id))
     , native_handle_(native_handle)
-    , session_key_(Utils::random_bytes<KEY_LENGTH>())
 {}
 
 Session::~Session() {
@@ -20,15 +20,16 @@ Session::~Session() {
 }
 
 Session::Session(Session&& other) noexcept
-    : peer_id_(std::move(other.peer_id_))
+    : session_key_(std::move(other.session_key_))
+    , ratchet_(std::move(other.ratchet_))
+    , ratchet_initialized_(other.ratchet_initialized_)
+    , peer_id_(std::move(other.peer_id_))
     , native_handle_(other.native_handle_)
     , disposed_(other.disposed_)
     , messages_sent_(other.messages_sent_)
     , messages_received_(other.messages_received_)
     , established_at_(other.established_at_)
-    , session_key_(std::move(other.session_key_))
-    , ratchet_(std::move(other.ratchet_))
-    , ratchet_initialized_(other.ratchet_initialized_) {
+{
     other.native_handle_ = nullptr;
     other.disposed_ = true;
 }
@@ -52,7 +53,7 @@ Session& Session::operator=(Session&& other) noexcept {
     return *this;
 }
 
-Result<void> Session::perform_handshake(const PreKeyBundle& peer_bundle, bool initiator) {
+Result<void> Session::perform_handshake(const PreKeyBundle& peer_bundle, bool /* initiator */) {
     ensure_not_disposed();
 
     // Validate the peer bundle

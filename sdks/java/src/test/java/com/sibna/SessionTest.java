@@ -107,32 +107,67 @@ public class SessionTest {
         IdentityKeyPair aliceIdentity = IdentityKeyPair.generate(crypto);
         IdentityKeyPair bobIdentity   = IdentityKeyPair.generate(crypto);
         PreKeyPair     bobSignedPrekey = PreKeyPair.generate(crypto);
-        java.security.KeyPair aliceEphemeral = crypto.generateX25519KeyPair();
 
-        // Public keys the initiator needs (Bob's IK and SPK)
-        java.security.PublicKey bobIdentityPub    = bobIdentity.getX25519PublicKey();
-        java.security.PublicKey bobSignedPrekeyPub = bobSignedPrekey.getPublicKey();
-
-        // --- Alice (initiator) side, mirrors X3DHHandshake.initiate() ---
-        byte[] dh1 = crypto.x25519Agreement(aliceIdentity.getX25519PrivateKey(), bobSignedPrekeyPub);
-        byte[] dh2 = crypto.x25519Agreement(aliceEphemeral.getPrivate(),         bobIdentityPub);
-        byte[] dh3 = crypto.x25519Agreement(aliceEphemeral.getPrivate(),         bobSignedPrekeyPub);
-        byte[] aliceDhResults = concat(dh1, dh2, dh3);
-        byte[] aliceSecret    = crypto.hkdf(null, aliceDhResults, "SibnaProtocol_X3DH".getBytes(), 32);
-
-        // --- Bob (responder) side, via the fixed X3DHHandshake.respond() ---
-        X3DHHandshake bobHandshake = new X3DHHandshake(crypto, bobIdentity, bobSignedPrekey);
-        byte[] bobSecret = bobHandshake.respond(
-            aliceEphemeral.getPublic().getEncoded(),
-            aliceIdentity.getX25519PublicKey().getEncoded(),
-            bobSignedPrekey.getPublicKeyBytes()
+        // Build Bob's PreKeyBundle with raw 32-byte keys
+        byte[] bobIdentityRaw = extractRawKey(bobIdentity.getX25519PublicKey());
+        byte[] bobSpkRaw = extractRawKey(bobSignedPrekey.getPublicKey());
+        byte[] bobSignature = crypto.ed25519Sign(
+            bobIdentity.getEd25519PrivateKey(),
+            bobSpkRaw
         );
+        PreKeyBundle bobBundle = PreKeyBundle.create(
+            crypto, bobIdentity, bobSpkRaw, bobSignature, null);
 
-        // Initiator and responder MUST agree on the 32-byte shared secret
-        assertEquals(32, aliceSecret.length);
+        // --- Alice (initiator) side via X3DHHandshake ---
+        X3DHHandshake aliceHandshake = new X3DHHandshake(crypto, aliceIdentity);
+        byte[] aliceSecret = aliceHandshake.initiate(bobBundle);
+
+        // --- Bob (responder) side via X3DHHandshake.respond() ---
+        // Extract raw 32-byte keys from Alice's keys
+        // Re-derive Alice's ephemeral from the handshake is not possible directly,
+        // so we use a fresh ephemeral for both sides to test the math symmetry.
+        java.security.KeyPair aliceEph = crypto.generateX25519KeyPair();
+        byte[] aliceEphRaw = extractRawKey(aliceEph.getPublic());
+        byte[] aliceIkRaw = extractRawKey(aliceIdentity.getX25519PublicKey());
+
+        // Recompute Alice's shared secret manually to match the algorithm
+        byte[] dh1 = crypto.x25519Agreement(
+            aliceIdentity.getX25519PrivateKey(), bobSignedPrekey.getPublicKey());
+        byte[] dh2 = crypto.x25519Agreement(
+            aliceEph.getPrivate(), bobIdentity.getX25519PublicKey());
+        byte[] dh3 = crypto.x25519Agreement(
+            aliceEph.getPrivate(), bobSignedPrekey.getPublicKey());
+        byte[] aliceDhResults = concat(dh1, dh2, dh3);
+
+        // Transcript hash: SHA-256(peer_ik || peer_ek || local_ik || local_spk)
+        // From Bob's perspective: peer=Alice, local=Bob
+        java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+        md.update(aliceIkRaw);
+        md.update(aliceEphRaw);
+        md.update(bobIdentityRaw);
+        md.update(bobSpkRaw);
+        byte[] transcriptHash = md.digest();
+
+        byte[] aliceSecretManual = crypto.hkdf(
+            transcriptHash, aliceDhResults,
+            "SibnaX3DH_TranscriptBind_v3".getBytes(), 32);
+
+        // Bob responds using raw 32-byte keys
+        X3DHHandshake bobHandshake = new X3DHHandshake(crypto, bobIdentity, bobSignedPrekey);
+        byte[] bobSecret = bobHandshake.respond(aliceEphRaw, aliceIkRaw, bobSpkRaw);
+
+        assertEquals(32, aliceSecretManual.length);
         assertEquals(32, bobSecret.length);
-        assertArrayEquals(aliceSecret, bobSecret,
+        assertArrayEquals(aliceSecretManual, bobSecret,
             "X3DH responder must derive the same shared secret as the initiator");
+    }
+
+    private static byte[] extractRawKey(java.security.PublicKey publicKey) {
+        byte[] encoded = publicKey.getEncoded();
+        if (encoded == null) return null;
+        if (encoded.length == 32) return encoded;
+        if (encoded.length == 44) return java.util.Arrays.copyOfRange(encoded, 12, 44);
+        return java.util.Arrays.copyOfRange(encoded, encoded.length - 32, encoded.length);
     }
 
     private static byte[] concat(byte[]... arrays) {

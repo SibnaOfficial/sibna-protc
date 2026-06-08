@@ -127,6 +127,7 @@ public class DoubleRatchet implements AutoCloseable {
     public byte[] encrypt(byte[] plaintext) throws CryptoException {
         ensureOpen();
         if (plaintext == null) throw new CryptoException("Plaintext cannot be null");
+        if (plaintext.length == 0) throw new CryptoException("Plaintext cannot be empty");
 
         // If no sending chain, perform send-side DH ratchet
         if (sendingChainKey == null) {
@@ -210,14 +211,19 @@ public class DoubleRatchet implements AutoCloseable {
         }
 
         if (needsRatchet) {
-            // Save previous sending chain length for header
-            previousCounter = (sendingChainKey != null) ? sendingChainIndex : 0;
+            if (dhRemotePub == null) {
+                // First message: just save remote key, use existing receiving chain
+                dhRemotePub = Arrays.copyOf(remoteDhPub, 32);
+            } else {
+                // Save previous sending chain length for header
+                previousCounter = (sendingChainKey != null) ? sendingChainIndex : 0;
 
-            // Skip message keys on receiving chain up to previous chain length
-            skipMessageKeysUntil(receivingChainKey, receivingChainIndex, prevChainLen);
+                // Skip message keys on receiving chain up to previous chain length
+                skipMessageKeysUntil(receivingChainKey, receivingChainIndex, prevChainLen);
 
-            // Perform full DH ratchet
-            dhRatchetStep(remoteDhPub);
+                // Perform full DH ratchet
+                dhRatchetStep(remoteDhPub);
+            }
         }
 
         // Skip message keys up to msg_num on receiving chain

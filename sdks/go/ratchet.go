@@ -31,7 +31,7 @@ func NewChainKey(key []byte) *ChainKey {
 	return &ChainKey{
 		Key:         append([]byte{}, key...),
 		Index:       0,
-		CreatedAt:   time.Now().Unix(),
+		CreatedAt:   float64(time.Now().Unix()),
 		MaxMessages: MaxChainMessages,
 	}
 }
@@ -99,8 +99,8 @@ func NewDoubleRatchet(
 		SkippedKeys:      make(map[string][]byte),
 		MessagesSent:     0,
 		MessagesReceived: 0,
-		CreatedAt:        time.Now().Unix(),
-		LastActivity:     time.Now().Unix(),
+		CreatedAt:        float64(time.Now().Unix()),
+		LastActivity:     float64(time.Now().Unix()),
 	}
 }
 
@@ -174,7 +174,7 @@ func (dr *DoubleRatchet) dhRatchetStep() error {
 	if err != nil {
 		return fmt.Errorf("DH recv: %w", err)
 	}
-	dr.RootKey, recvChainKey := dr.kdfRK(dhOutRecv)
+	dr.RootKey, recvChainKey = dr.kdfRK(dhOutRecv)
 	dr.ReceivingChain = NewChainKey(recvChainKey)
 
 	// Send step: generate new key pair
@@ -188,7 +188,7 @@ func (dr *DoubleRatchet) dhRatchetStep() error {
 	if err != nil {
 		return fmt.Errorf("DH send: %w", err)
 	}
-	dr.RootKey, sendChainKey := dr.kdfRK(dhOutSend)
+	dr.RootKey, sendChainKey = dr.kdfRK(dhOutSend)
 	dr.SendingChain = NewChainKey(sendChainKey)
 
 	return nil
@@ -215,11 +215,10 @@ func (dr *DoubleRatchet) skipMessageKeys(until int) error {
 		return nil
 	}
 	for dr.ReceivingChain.Index < until {
-		result, err := dr.ReceivingChain.NextMessageKey()
+		mk, nextCk, err := dr.ReceivingChain.NextMessageKey()
 		if err != nil {
 			break
 		}
-		mk, nextCk := result
 		id := skippedKeyID(dr.DHRemotePublic, dr.ReceivingChain.Index)
 		dr.SkippedKeys[id] = mk
 		if len(dr.SkippedKeys) > dr.MaxSkip {
@@ -258,11 +257,10 @@ func (dr *DoubleRatchet) RatchetEncrypt(plaintext, associatedData []byte) ([]byt
 	// Capture message number BEFORE advancing the chain
 	msgNum := dr.SendingChain.Index
 
-	result, err := dr.SendingChain.NextMessageKey()
+	messageKey, nextCk, err := dr.SendingChain.NextMessageKey()
 	if err != nil {
 		return nil, fmt.Errorf("chain exhausted: %w", err)
 	}
-	messageKey, nextCk := result
 	dr.SendingChain = nextCk
 
 	dr.MessagesSent++
@@ -333,11 +331,10 @@ func (dr *DoubleRatchet) RatchetDecrypt(ciphertext, associatedData []byte) ([]by
 		if err := dr.skipMessageKeys(msgNum); err != nil {
 			return nil, fmt.Errorf("skip keys: %w", err)
 		}
-		result, err := dr.ReceivingChain.NextMessageKey()
+		mk, _, err := dr.ReceivingChain.NextMessageKey()
 		if err != nil {
 			return nil, fmt.Errorf("receiving chain exhausted: %w", err)
 		}
-		mk, _ = result
 	}
 
 	// Build header for AD verification

@@ -28,8 +28,8 @@ func SenderKeyGenerate(keyID int) *SenderKey {
 		ChainKey:      chainKey,
 		MessageNumber: 0,
 		KeyID:         keyID,
-		CreatedAt:     time.Now().Unix(),
-		Expiration:    time.Now().Unix() + DefaultKeyExpirationSecs,
+		CreatedAt:     float64(time.Now().Unix()),
+		Expiration:    float64(time.Now().Unix() + DefaultKeyExpirationSecs),
 	}
 }
 
@@ -57,7 +57,7 @@ func (sk *SenderKey) IsExpired() bool {
 }
 
 func (sk *SenderKey) AgeSecs() float64 {
-	return time.Now().Unix() - int64(sk.CreatedAt)
+	return float64(time.Now().Unix() - int64(sk.CreatedAt))
 }
 
 func (sk *SenderKey) NeedsRotation() bool {
@@ -338,7 +338,9 @@ func (gs *GroupSession) Decrypt(ciphertext []byte, senderPublicKey []byte) ([]by
 	binary.LittleEndian.PutUint32(msgNumBytes, uint32(msgNumber))
 	ad = append(ad, msgNumBytes...)
 
-	return ChaCha20Poly1305Decrypt(mk, actualCT, ad, nonce)
+	// ChaCha20Poly1305Decrypt expects data = nonce || ciphertext || tag
+	data := append(nonce, actualCT...)
+	return ChaCha20Poly1305Decrypt(mk, data, ad)
 }
 
 func (gs *GroupSession) RotateSenderKey() *SenderKey {

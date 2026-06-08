@@ -3,20 +3,32 @@
 #include "types.hpp"
 #include "error.hpp"
 #include "utils.hpp"
+#include "crypto.hpp"
 #include <map>
 
 namespace sibna {
 
-// Group message structure
+// ── GroupMessage ─────────────────────────────────────────────────────────────
+
 struct GroupMessage {
     group_id group_id_;
     uint32_t sender_key_id;
     uint32_t message_number;
     bytes ciphertext;
-    uint32_t epoch;
+    uint32_t epoch;  // uint32_t per CRITICAL requirement #4
     std::chrono::system_clock::time_point timestamp;
+    signature msg_signature;  // Ed25519 signature
 
     const group_id& id() const { return group_id_; }
+
+    // Compute signable bytes with domain separator
+    bytes signable_bytes() const;
+
+    // Sign the message
+    Result<void> sign(const key& ed25519_private_key);
+
+    // Verify the signature
+    Result<bool> verify(const key& ed25519_public_key) const;
 
     // Serialize to bytes
     bytes to_bytes() const;
@@ -28,7 +40,8 @@ struct GroupMessage {
     bool is_expired() const;
 };
 
-// Group session for group messaging
+// ── GroupSession ─────────────────────────────────────────────────────────────
+
 class GroupSession {
 public:
     // Create a new group session
@@ -48,7 +61,7 @@ public:
     // Get group ID
     const group_id& id() const { return id_; }
 
-    // Get current epoch
+    // Get current epoch (uint32_t)
     uint32_t epoch() const { return epoch_; }
 
     // Get member count

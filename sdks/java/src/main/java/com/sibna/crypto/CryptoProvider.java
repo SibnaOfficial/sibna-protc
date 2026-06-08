@@ -345,6 +345,107 @@ public class CryptoProvider {
         }
     }
 
+    /**
+     * Validate an X25519 public key against the 8 known low-order points.
+     * Rejects keys that would produce a zero DH output (small subgroup attack).
+     */
+    public boolean validatePublicKey(byte[] pubKey) throws CryptoException {
+        if (pubKey == null || pubKey.length != 32) {
+            return false;
+        }
+        // 8 known low-order points for Curve25519
+        byte[][] lowOrderPoints = {
+            {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+             0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+            {0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+             0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+            {(byte)0xe0,(byte)0xeb,0x7a,0x7c,0x3b,0x41,(byte)0xb8,0x01,(byte)0xf1,(byte)0xda,
+             0x56,0x75,0x47,0x11,(byte)0x85,0x12,0x1a,(byte)0x9f,0x17,0x60,(byte)0xe7,0x61,
+             0x19,(byte)0x90,0x3f,0x52,0x49,0x22,(byte)0xfe,(byte)0x80,0x5a,0x5f},
+            {0x5f,(byte)0x9c,(byte)0x95,(byte)0xbc,(byte)0xa3,0x50,(byte)0x8c,0x24,(byte)0xb1,
+             (byte)0xd0,(byte)0xb1,(byte)0xa5,(byte)0x99,(byte)0x83,0x17,0x0c,0x64,(byte)0x81,
+             0x41,(byte)0xb2,0x39,0x52,(byte)0x80,0x24,(byte)0xed,0x54,(byte)0x8f,0x61,0x6c,
+             0x7e,0x48,(byte)0x8a},
+            {(byte)0xed,(byte)0xce,(byte)0x84,0x43,(byte)0xbc,(byte)0xaf,0x73,0x1d,0x0e,0x25,
+             (byte)0xd4,0x7f,0x3d,0x1b,(byte)0xba,(byte)0x8a,(byte)0xb6,(byte)0xb0,0x5b,0x69,
+             (byte)0x80,0x45,0x29,(byte)0xed,0x7f,0x72,0x1d,(byte)0x97,(byte)0xa3,0x31,(byte)0xa3,
+             (byte)0xec},
+            {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+             0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,(byte)0x80},
+            {0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+             0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,(byte)0x81},
+            {(byte)0xe0,(byte)0xeb,0x7a,0x7c,0x3b,0x41,(byte)0xb8,0x01,(byte)0xf1,(byte)0xda,
+             0x56,0x75,0x47,0x11,(byte)0x85,0x12,0x1a,(byte)0x9f,0x17,0x60,(byte)0xe7,0x61,
+             0x19,(byte)0x90,0x3f,0x52,0x49,0x22,(byte)0xfe,(byte)0x80,0x5a,(byte)0xdf}
+        };
+
+        for (byte[] point : lowOrderPoints) {
+            if (java.util.Arrays.equals(pubKey, point)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * ChaCha20-Poly1305 encrypt with structured nonce: random(8) || msg_num_le(4).
+     * The nonce is 12 bytes total: 8 random bytes + 4-byte LE message number.
+     * Returns: nonce(12) || ciphertext || tag(16)
+     */
+    public byte[] encryptWithNonceCounter(byte[] key, byte[] plaintext, byte[] associatedData,
+                                          int msgNum) throws CryptoException {
+        try {
+            byte[] randomPart = randomBytes(8);
+            byte[] nonce = new byte[12];
+            System.arraycopy(randomPart, 0, nonce, 0, 8);
+            nonce[8]  = (byte)(msgNum);
+            nonce[9]  = (byte)(msgNum >>> 8);
+            nonce[10] = (byte)(msgNum >>> 16);
+            nonce[11] = (byte)(msgNum >>> 24);
+
+            Cipher cipher = Cipher.getInstance(CHACHA20_POLY1305);
+            GCMParameterSpec gcmSpec = new GCMParameterSpec(TAG_SIZE * 8, nonce);
+            SecretKeySpec keySpec = new SecretKeySpec(key, "ChaCha20");
+            cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmSpec);
+            if (associatedData != null && associatedData.length > 0) {
+                cipher.updateAAD(associatedData);
+            }
+            byte[] ciphertext = cipher.doFinal(plaintext);
+
+            byte[] result = new byte[NONCE_SIZE + ciphertext.length];
+            System.arraycopy(nonce, 0, result, 0, NONCE_SIZE);
+            System.arraycopy(ciphertext, 0, result, NONCE_SIZE, ciphertext.length);
+            return result;
+        } catch (Exception e) {
+            throw new CryptoException("Encryption failed", e);
+        }
+    }
+
+    /**
+     * ChaCha20-Poly1305 decrypt with structured nonce: random(8) || msg_num_le(4).
+     * Input: nonce(12) || ciphertext || tag(16)
+     */
+    public byte[] decryptWithNonceCounter(byte[] key, byte[] ciphertextWithNonce, byte[] associatedData) throws CryptoException {
+        if (ciphertextWithNonce.length < NONCE_SIZE + TAG_SIZE) {
+            throw new CryptoException("Ciphertext too short");
+        }
+        try {
+            byte[] nonce = Arrays.copyOfRange(ciphertextWithNonce, 0, NONCE_SIZE);
+            byte[] encrypted = Arrays.copyOfRange(ciphertextWithNonce, NONCE_SIZE, ciphertextWithNonce.length);
+
+            Cipher cipher = Cipher.getInstance(CHACHA20_POLY1305);
+            GCMParameterSpec gcmSpec = new GCMParameterSpec(TAG_SIZE * 8, nonce);
+            SecretKeySpec keySpec = new SecretKeySpec(key, "ChaCha20");
+            cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec);
+            if (associatedData != null && associatedData.length > 0) {
+                cipher.updateAAD(associatedData);
+            }
+            return cipher.doFinal(encrypted);
+        } catch (Exception e) {
+            throw new CryptoException("Decryption failed", e);
+        }
+    }
+
     public int getKeySize() { return KEY_SIZE; }
     public int getNonceSize() { return NONCE_SIZE; }
     public int getTagSize() { return TAG_SIZE; }

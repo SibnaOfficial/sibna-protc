@@ -1,322 +1,215 @@
-part of '../sibna_protocol.dart';
+/// Sibna Protocol v3.0.1 — Safety Numbers
+///
+/// 80-digit human-readable fingerprints for identity verification.
+/// Matches the Rust core's SafetyNumber implementation exactly:
+///   - SHA-512(0x01 || "SIBNA_SAFETY_NUMBER_V1" || first_key || second_key)
+///   - First 32 bytes of hash → 80 decimal digits (16 groups of 5)
+///   - QR format: version(1) + "SB1"(3) + fingerprint(32) = 36 bytes
+import 'dart:convert';
+import 'dart:typed_data';
 
-/// Safety number for identity verification
+import 'crypto.dart';
+
+/// Safety number for identity verification.
 ///
 /// The safety number is derived from both parties' identity keys and
 /// provides a way to detect MITM attacks during initial key exchange.
 class SafetyNumber {
-  /// The formatted safety number (80 digits in groups of 5)
-  final String formattedNumber;
+  /// The 80-digit string (16 groups of 5 digits, no separators).
+  final String digits;
 
-  /// The raw fingerprint bytes
+  /// The raw 32-byte fingerprint.
   final Uint8List fingerprint;
 
-  /// Version byte
+  /// Version byte.
   final int version;
 
-  /// Private constructor
-  SafetyNumber._({
-    required this.formattedNumber,
-    required this.fingerprint,
-    required this.version,
-  });
-
-  /// Current version
+  /// Current version.
   static const int currentVersion = 1;
 
-  /// Calculate safety number from two identity keys
+  SafetyNumber._({
+    required this.digits,
+    required this.fingerprint,
+    this.version = currentVersion,
+  });
+
+  /// Calculate safety number from two X25519 public keys.
   ///
-  /// [ourIdentity] is our X25519 public key (32 bytes)
-  /// [theirIdentity] is their X25519 public key (32 bytes)
+  /// Keys are sorted lexicographically for consistent ordering.
   factory SafetyNumber.calculate(
     Uint8List ourIdentity,
     Uint8List theirIdentity,
   ) {
     if (ourIdentity.length != 32) {
-      throw ValidationError(
-        SibnaErrorCode.invalidKey,
-        'Identity key must be 32 bytes',
-        field: 'ourIdentity',
-      );
+      throw ArgumentError('Identity key must be 32 bytes');
     }
     if (theirIdentity.length != 32) {
-      throw ValidationError(
-        SibnaErrorCode.invalidKey,
-        'Identity key must be 32 bytes',
-        field: 'theirIdentity',
-      );
+      throw ArgumentError('Identity key must be 32 bytes');
     }
 
-    // Sort keys lexicographically for consistent ordering
-    final first = _compareBytes(ourIdentity, theirIdentity) < 0
-      ? ourIdentity
-      : theirIdentity;
-    final second = _compareBytes(ourIdentity, theirIdentity) < 0
-      ? theirIdentity
-      : ourIdentity;
+    final first = constantTimeEquals(ourIdentity, theirIdentity)
+        ? ourIdentity
+        : (_bytesLessThan(ourIdentity, theirIdentity)
+            ? ourIdentity
+            : theirIdentity);
+    final second = constantTimeEquals(ourIdentity, theirIdentity)
+        ? theirIdentity
+        : (_bytesLessThan(ourIdentity, theirIdentity)
+            ? theirIdentity
+            : ourIdentity);
 
-    // Hash both keys together with version (plain SHA-512, matching Rust core)
-    final data = BytesBuilder()
-      ..addByte(currentVersion)
-      ..add(utf8.encode('SIBNA_SAFETY_NUMBER_V1'))
-      ..add(first)
-      ..add(second);
+    final data = Uint8List.fromList([
+      currentVersion,
+      ...utf8.encode('SIBNA_SAFETY_NUMBER_V1'),
+      ...first,
+      ...second,
+    ]);
 
-    final hash = sha512.convert(data.toBytes());
-    final fingerprint = Uint8List.fromList(hash.bytes.sublist(0, 32));
-
-    // Convert to 80 decimal digits
-    final formattedNumber = _bytesToDigits(fingerprint);
+    final hash = sha512Hash(data);
+    final fp = Uint8List.fromList(hash.sublist(0, 32));
+    final d = _bytesToDigits(fp);
 
     return SafetyNumber._(
-      formattedNumber: formattedNumber,
-      fingerprint: fingerprint,
-      version: currentVersion,
+      digits: d,
+      fingerprint: fp,
     );
   }
 
-  /// Parse safety number from string
-  factory SafetyNumber.parse(String safetyNumber) {
-    final digits = safetyNumber.replaceAll(RegExp(r'\D'), '');
-
-    if (digits.length != 80) {
-      throw ValidationError(
-        SibnaErrorCode.invalidArgument,
-        'Safety number must be 80 digits',
-        field: 'safetyNumber',
-      );
+  /// Calculate safety number with additional data (e.g. for group verification).
+  factory SafetyNumber.calculateWithExtra(
+    Uint8List ourIdentity,
+    Uint8List theirIdentity,
+    Uint8List extraData,
+  ) {
+    if (ourIdentity.length != 32) {
+      throw ArgumentError('Identity key must be 32 bytes');
+    }
+    if (theirIdentity.length != 32) {
+      throw ArgumentError('Identity key must be 32 bytes');
     }
 
-    // Reverse the digit-to-bytes conversion
-    final fingerprint = Uint8List(32);
-    for (int i = 0; i < 16; i++) {
-      final chunk = digits.substring(i * 5, (i + 1) * 5);
-      final value = int.parse(chunk);
-      fingerprint[i * 2] = (value >> 8) & 0xFF;
-      fingerprint[i * 2 + 1] = value & 0xFF;
-    }
+    final first = _bytesLessThan(ourIdentity, theirIdentity)
+        ? ourIdentity
+        : theirIdentity;
+    final second = _bytesLessThan(ourIdentity, theirIdentity)
+        ? theirIdentity
+        : ourIdentity;
+
+    final data = Uint8List.fromList([
+      currentVersion,
+      ...utf8.encode('SIBNA_SAFETY_NUMBER_V1_EXTRA'),
+      ...first,
+      ...second,
+      ...extraData,
+    ]);
+
+    final hash = sha512Hash(data);
+    final fp = Uint8List.fromList(hash.sublist(0, 32));
+    final d = _bytesToDigits(fp);
 
     return SafetyNumber._(
-      formattedNumber: _bytesToDigits(fingerprint),
-      fingerprint: fingerprint,
-      version: currentVersion,
+      digits: d,
+      fingerprint: fp,
     );
   }
 
-  /// Get the safety number as a formatted string
-  String get displayString => formattedNumber;
-
-  /// Get QR code data
-  Uint8List get qrData {
-    final builder = BytesBuilder()
-      ..addByte(version)
-      ..add(utf8.encode('SB1'))
-      ..add(fingerprint);
-    return builder.toBytes();
-  }
-
-  /// Verify if another safety number matches (constant-time)
-  bool verify(SafetyNumber other) {
-    return SibnaUtils.constantTimeEquals(fingerprint, other.fingerprint);
-  }
-
-  /// Calculate similarity score with another safety number
-  /// (for detecting typos during manual verification)
-  double similarity(SafetyNumber other) {
-    final aDigits = formattedNumber.replaceAll(' ', '');
-    final bDigits = other.formattedNumber.replaceAll(' ', '');
-
-    int matches = 0;
-    for (int i = 0; i < aDigits.length && i < bDigits.length; i++) {
-      if (aDigits[i] == bDigits[i]) {
-        matches++;
-      }
+  /// Parse safety number from its string representation.
+  factory SafetyNumber.fromString(String s) {
+    final digitsStr = s.replaceAll(RegExp(r'\D'), '');
+    if (digitsStr.length != 80) {
+      throw ArgumentError('Expected 80 digits, got ${digitsStr.length}');
     }
-
-    return matches / 80.0;
+    final fp = _digitsToBytes(digitsStr);
+    return SafetyNumber._(
+      digits: digitsStr,
+      fingerprint: fp,
+    );
   }
 
-  /// Compare two byte arrays lexicographically
-  static int _compareBytes(Uint8List a, Uint8List b) {
-    final minLen = a.length < b.length ? a.length : b.length;
-    for (int i = 0; i < minLen; i++) {
-      if (a[i] != b[i]) {
-        return a[i] - b[i];
-      }
-    }
-    return a.length - b.length;
-  }
+  /// Return the 80-digit string (no separators).
+  String asString() => digits;
 
-  /// Convert 32 bytes to 80 decimal digits
-  static String _bytesToDigits(Uint8List bytes) {
+  /// Return the safety number formatted for display.
+  ///
+  /// [groupSize]: digits per group (default 5)
+  /// [groupsPerLine]: groups per line (default 8)
+  String formatted({int groupSize = 5, int groupsPerLine = 8}) {
     final groups = <String>[];
-
-    for (int i = 0; i < bytes.length; i += 2) {
-      if (i > 0 && (i ~/ 2) % 3 == 0) {
-        groups.add(' ');
-      }
-
-      final value = ((bytes[i] << 8) | bytes[i + 1]) % 100000;
-      groups.add(value.toString().padLeft(5, '0'));
+    for (int i = 0; i < digits.length; i += groupSize) {
+      final end = (i + groupSize < digits.length) ? i + groupSize : digits.length;
+      groups.add(digits.substring(i, end));
     }
 
-    return groups.join('');
+    final lines = <String>[];
+    for (int i = 0; i < groups.length; i += groupsPerLine) {
+      final end = (i + groupsPerLine < groups.length)
+          ? i + groupsPerLine
+          : groups.length;
+      lines.add(groups.sublist(i, end).join(' '));
+    }
+    return lines.join('\n');
+  }
+
+  /// QR code data: version(1) + "SB1"(3) + fingerprint(32) = 36 bytes.
+  Uint8List qrData() {
+    return Uint8List.fromList([
+      version,
+      ...utf8.encode('SB1'),
+      ...fingerprint,
+    ]);
+  }
+
+  /// Constant-time comparison with another safety number.
+  bool verify(SafetyNumber other) {
+    return constantTimeEquals(fingerprint, other.fingerprint);
   }
 
   @override
-  String toString() => 'SafetyNumber($formattedNumber)';
+  String toString() => formatted();
 
   @override
   bool operator ==(Object other) {
     if (identical(this, other)) return true;
-    return other is SafetyNumber && verify(other);
+    if (other is! SafetyNumber) return false;
+    return verify(other);
   }
 
   @override
-  int get hashCode => fingerprint.toHex().hashCode;
-}
+  int get hashCode => fingerprint.hashCode;
 
-/// QR Code data for identity verification
-class VerificationQrCode {
-  /// Version byte
-  final int version;
+  // ── Internal helpers ────────────────────────────────────────────────
 
-  /// Identity key
-  final Uint8List identityKey;
-
-  /// Device ID
-  final Uint8List deviceId;
-
-  /// Safety number fingerprint
-  final Uint8List safetyFingerprint;
-
-  /// Verification status
-  final bool verified;
-
-  /// MAC key for integrity (caller must provide for toBytes; not stored in QR data)
-  final Uint8List macKey;
-
-  /// Create a new verification QR code
-  VerificationQrCode({
-    required this.identityKey,
-    required this.deviceId,
-    required this.safetyFingerprint,
-    Uint8List? macKey,
-    this.verified = false,
-    this.version = 1,
-  }) : macKey = macKey ?? Uint8List(32);
-
-  /// Encode to bytes for QR code generation
-  Uint8List toBytes() {
-    final builder = BytesBuilder()
-      ..addByte(version)
-      ..add(utf8.encode('SIBNA'))
-      ..addByte(verified ? 1 : 0)
-      ..add(identityKey)
-      ..add(deviceId)
-      ..add(safetyFingerprint);
-
-    // Add HMAC-SHA256 for integrity
-    final mac = SibnaCrypto.hmacSha256(macKey, builder.toBytes());
-    builder.add(mac);
-
-    return builder.toBytes();
-  }
-
-  /// Parse from bytes
-  factory VerificationQrCode.fromBytes(Uint8List data) {
-    if (data.length < 83) {
-      throw ValidationError(
-        SibnaErrorCode.invalidMessage,
-        'Invalid QR code data length',
-        field: 'data',
-      );
+  /// Convert 32 bytes to 80 decimal digits (16 chunks × 5 digits).
+  static String _bytesToDigits(Uint8List data) {
+    final parts = <String>[];
+    for (int i = 0; i < 32; i += 2) {
+      final value = (data[i] << 8) | data[i + 1];
+      parts.add('${value % 100000}'.padLeft(5, '0'));
     }
+    return parts.join('');
+  }
 
-    var offset = 0;
-
-    final version = data[offset];
-    offset += 1;
-
-    // Verify magic bytes
-    final magic = utf8.decode(data.sublist(offset, offset + 5));
-    if (magic != 'SIBNA') {
-      throw ValidationError(
-        SibnaErrorCode.invalidMessage,
-        'Invalid QR code magic bytes',
-        field: 'data',
-      );
+  /// Convert 80 digits back to 32 bytes.
+  static Uint8List _digitsToBytes(String digits) {
+    final result = Uint8List(32);
+    var byteIdx = 0;
+    for (int i = 0; i < 80; i += 5) {
+      final chunk = digits.substring(i, i + 5);
+      final value = int.parse(chunk);
+      result[byteIdx] = (value >> 8) & 0xFF;
+      result[byteIdx + 1] = value & 0xFF;
+      byteIdx += 2;
     }
-    offset += 5;
-
-    final verified = data[offset] != 0;
-    offset += 1;
-
-    final identityKey = data.sublist(offset, offset + 32);
-    offset += 32;
-
-    final deviceId = data.sublist(offset, offset + 16);
-    offset += 16;
-
-    final safetyFingerprint = data.sublist(offset, offset + 32);
-    offset += 32;
-
-    // Verify MAC
-    final mac = data.sublist(offset);
-    // In production, verify the MAC here
-
-    return VerificationQrCode(
-      version: version,
-      identityKey: identityKey,
-      deviceId: deviceId,
-      safetyFingerprint: safetyFingerprint,
-      verified: verified,
-    );
+    return result;
   }
 
-  /// Mark as verified
-  VerificationQrCode markVerified() {
-    return VerificationQrCode(
-      version: version,
-      identityKey: identityKey,
-      deviceId: deviceId,
-      safetyFingerprint: safetyFingerprint,
-      macKey: macKey,
-      verified: true,
-    );
+  /// Lexicographic byte comparison.
+  static bool _bytesLessThan(Uint8List a, Uint8List b) {
+    final minLen = a.length < b.length ? a.length : b.length;
+    for (int i = 0; i < minLen; i++) {
+      if (a[i] < b[i]) return true;
+      if (a[i] > b[i]) return false;
+    }
+    return a.length < b.length;
   }
-
-  @override
-  String toString() =>
-    'VerificationQrCode(verified: $verified, version: $version)';
-}
-
-/// Safety number comparison result
-enum SafetyNumberComparison {
-  /// Numbers match exactly
-  match,
-
-  /// Numbers are similar (possible typo)
-  similar,
-
-  /// Numbers don't match
-  mismatch,
-}
-
-/// Compare two safety numbers
-SafetyNumberComparison compareSafetyNumbers(
-  SafetyNumber a,
-  SafetyNumber b, {
-  double similarityThreshold = 0.8,
-}) {
-  if (a.verify(b)) {
-    return SafetyNumberComparison.match;
-  }
-
-  final similarity = a.similarity(b);
-  if (similarity > similarityThreshold) {
-    return SafetyNumberComparison.similar;
-  }
-
-  return SafetyNumberComparison.mismatch;
 }

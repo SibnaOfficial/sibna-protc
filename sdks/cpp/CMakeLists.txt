@@ -64,6 +64,8 @@ set(SIBNA_SOURCES
     src/safety_number.cpp
     src/utils.cpp
     src/error.cpp
+    src/x3dh.cpp
+    src/double_ratchet.cpp
 )
 
 set(SIBNA_HEADERS
@@ -77,6 +79,8 @@ set(SIBNA_HEADERS
     include/sibna/utils.hpp
     include/sibna/error.hpp
     include/sibna/types.hpp
+    include/sibna/x3dh.hpp
+    include/sibna/double_ratchet.hpp
 )
 
 # Create library

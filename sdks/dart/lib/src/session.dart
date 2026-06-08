@@ -1,251 +1,206 @@
-part of '../sibna_protocol.dart';
+/// Sibna Protocol v3.0.1 — Session Management
+///
+/// High-level session that combines X3DH handshake with Double Ratchet
+/// encryption. Matches the Rust core's DoubleRatchetSession API.
+import 'dart:typed_data';
 
-/// Secure session for encrypted communication
-class SibnaSession {
-  // FIX: Phase 4.4 — the session now also keeps a strong reference to
-  // the parent context. ``sibna_session_encrypt`` and
-  // ``sibna_session_decrypt`` both take ``*mut SibnaContext`` as their
-  // first argument (the SecureContext that owns the session table),
-  // not the session handle itself. The previous code passed the
-  // session handle as the context pointer, which on every call would
-  // either be misinterpreted as a different ``SecureContext`` (UB) or
-  // crash the host process.
-  final Pointer<Void> _context;
-  Pointer<Void> _handle;
-  final Uint8List _peerId;
-  bool _disposed = false;
-  int _messagesSent = 0;
-  int _messagesReceived = 0;
+import 'crypto.dart';
+import 'ratchet.dart';
+import 'x3dh.dart';
+
+// ── Session Config ──────────────────────────────────────────────────────────
+
+/// Session configuration.
+class SessionConfig {
+  final int maxSkippedMessages;
+  final int maxChainMessages;
+
+  SessionConfig({
+    int? maxSkippedMessages,
+    int? maxChainMessages,
+  })  : maxSkippedMessages = maxSkippedMessages ?? 2000,
+        maxChainMessages = maxChainMessages ?? 4000;
+}
+
+// ── Session ─────────────────────────────────────────────────────────────────
+
+/// Encrypted session combining X3DH + Double Ratchet.
+class Session {
+  DoubleRatchet? _ratchet;
+  final String _sessionId;
   DateTime? _establishedAt;
+  Uint8List? _peerId;
 
-  /// Get the peer ID
-  Uint8List get peerId => Uint8List.fromList(_peerId);
+  Session({SessionConfig? config}) : _sessionId = _generateSessionId();
 
-  /// Get the number of messages sent
-  int get messagesSent => _messagesSent;
+  /// Unique session identifier.
+  String get sessionId => _sessionId;
 
-  /// Get the number of messages received
-  int get messagesReceived => _messagesReceived;
+  /// Whether the session is established (ratchet initialized).
+  bool get isEstablished => _ratchet != null;
 
-  /// Get the session establishment time
+  /// When the session was established.
   DateTime? get establishedAt => _establishedAt;
 
-  /// Check if the session is disposed
-  bool get isDisposed => _disposed;
+  /// The peer's identity key (Ed25519 public key bytes).
+  Uint8List? get peerId => _peerId;
 
-  /// Create a session from an existing shared secret (used for restoration/testing)
-  factory SibnaSession.fromSharedSecret(
-    Uint8List sharedSecret,
-    String localDh,
-    String remoteDh,
-  ) {
-    // In a real implementation, this would call a native function
-    // that initializes the DoubleRatchet state directly from the secret.
-    // For now, we simulate the handle creation.
-    return SibnaSession._(nullptr, nullptr, Uint8List.fromList(utf8.encode(remoteDh)));
-  }
+  /// Number of messages sent.
+  int get messagesSent => _ratchet?.messagesSent ?? 0;
 
-  /// Private constructor
-  SibnaSession._(this._context, this._handle, this._peerId) {
-    _establishedAt = DateTime.now();
-  }
+  /// Number of messages received.
+  int get messagesReceived => _ratchet?.messagesReceived ?? 0;
 
+  // ── Initiator (who creates the session first) ───────────────────────
 
-  /// Perform X3DH handshake
+  /// Perform X3DH as initiator and initialize the Double Ratchet.
   ///
-  /// [peerBundle] is the peer's prekey bundle
-  /// [initiator] is true if we are the initiator
-  Future<void> performHandshake(
-    PreKeyBundle peerBundle, {
-    required bool initiator,
+  /// Returns the ephemeral public key (sent to responder).
+  Future<Uint8List> initiateAsInitiator({
+    required X25519KeyPair identity,
+    required X25519KeyPair ephemeral,
+    required PreKeyBundle peerBundle,
+    Uint8List? ourDeviceId,
+    Uint8List? peerDeviceId,
   }) async {
-    _ensureNotDisposed();
+    final result = await x3DHInitiator(
+      identityKeypair: identity,
+      ephemeralKeypair: ephemeral,
+      peerBundle: peerBundle,
+      ourDeviceId: ourDeviceId,
+      peerDeviceId: peerDeviceId,
+    );
 
-    if (peerBundle.isExpired) {
-      throw SibnaError(
-        SibnaErrorCode.invalidState,
-        'Peer prekey bundle has expired',
-      );
-    }
+    final ephemeralPrivateBytes = await ephemeral.privateKey;
 
-    // This would call the native library in production
-    // For now, just mark as established
+    _ratchet = await DoubleRatchet.fromSharedSecret(
+      sharedSecret: result.sharedSecret,
+      localDhPrivate: ephemeralPrivateBytes,
+      remoteDhPublic: peerBundle.signedPrekey,
+      roleIsInitiator: true,
+    );
     _establishedAt = DateTime.now();
+    _peerId = peerBundle.identityKey;
+
+    return ephemeral.publicKey;
   }
 
-  /// Encrypt a message
-  ///
-  /// [plaintext] is the message to encrypt
-  /// [associatedData] is optional additional authenticated data
+  // ── Responder (who receives the first message) ──────────────────────
+
+  /// Perform X3DH as responder and initialize the Double Ratchet.
+  Future<void> initiateAsResponder({
+    required X25519KeyPair identity,
+    required X25519KeyPair signedPrekey,
+    X25519KeyPair? onetimePrekey,
+    required Uint8List peerIdentity,
+    required Uint8List peerEphemeral,
+    Uint8List? ourDeviceId,
+    Uint8List? peerDeviceId,
+  }) async {
+    final result = await x3DHResponder(
+      identityKeypair: identity,
+      signedPrekeypair: signedPrekey,
+      onetimePrekeypair: onetimePrekey,
+      peerIdentity: peerIdentity,
+      peerEphemeral: peerEphemeral,
+      ourDeviceId: ourDeviceId,
+      peerDeviceId: peerDeviceId,
+    );
+
+    final signedPrekeyPrivateBytes = await signedPrekey.privateKey;
+
+    _ratchet = await DoubleRatchet.fromSharedSecret(
+      sharedSecret: result.sharedSecret,
+      localDhPrivate: signedPrekeyPrivateBytes,
+      remoteDhPublic: peerEphemeral,
+      roleIsInitiator: false,
+    );
+    _establishedAt = DateTime.now();
+    _peerId = peerIdentity;
+  }
+
+  // ── Restore from known shared secret (testing) ──────────────────────
+
+  /// Restore a session from a known shared secret (for testing).
+  static Future<Session> fromSharedSecret({
+    required Uint8List sharedSecret,
+    required Uint8List localDhPrivate,
+    required Uint8List remoteDhPublic,
+    required bool roleIsInitiator,
+    SessionConfig? config,
+  }) async {
+    final s = Session(config: config);
+    s._ratchet = await DoubleRatchet.fromSharedSecret(
+      sharedSecret: sharedSecret,
+      localDhPrivate: localDhPrivate,
+      remoteDhPublic: remoteDhPublic,
+      roleIsInitiator: roleIsInitiator,
+    );
+    s._establishedAt = DateTime.now();
+    return s;
+  }
+
+  // ── Encrypt / Decrypt ───────────────────────────────────────────────
+
+  /// Encrypt a message.
   Future<Uint8List> encrypt(
     Uint8List plaintext, {
     Uint8List? associatedData,
   }) async {
-    _ensureNotDisposed();
-
-    if (plaintext.isEmpty) {
-      throw ValidationError(
-        SibnaErrorCode.invalidArgument,
-        'Plaintext cannot be empty',
-        field: 'plaintext',
-      );
-    }
-
-    if (plaintext.length > maxMessageSize) {
-      throw ValidationError(
-        SibnaErrorCode.invalidArgument,
-        'Message too large: ${plaintext.length} > $maxMessageSize',
-        field: 'plaintext',
-      );
-    }
-
-    if (_handle == nullptr) {
-      throw SibnaError(
-        SibnaErrorCode.invalidState,
-        'Session not initialised — call SibnaContext.createSession() first.',
-      );
-    }
-
-    final plaintextPtr = _copyToNative(plaintext);
-    final adPtr = associatedData != null ? _copyToNative(associatedData) : nullptr;
-    final peerIdPtr = _copyToNative(_peerId);
-    final outBuf = calloc<_ByteBuffer>();
-
-    try {
-      final rc = _bindings.sibna_session_encrypt(
-        _context, peerIdPtr, _peerId.length,
-        plaintextPtr, plaintext.length,
-        adPtr, associatedData?.length ?? 0, outBuf,
-      );
-      if (rc != SibnaErrorCode.ok.code) {
-        throw SibnaError(SibnaErrorCode.fromCode(rc), 'session_encrypt failed');
-      }
-      final result = _readAndFreeBuffer(outBuf);
-      _messagesSent++;
-      return result;
-    } finally {
-      calloc.free(plaintextPtr);
-      calloc.free(peerIdPtr);
-      if (adPtr != nullptr) calloc.free(adPtr);
-      calloc.free(outBuf);
-    }
+    if (_ratchet == null) throw StateError('Session not established');
+    return _ratchet!.ratchetEncrypt(plaintext, associatedData: associatedData);
   }
 
-  /// Decrypt a message
-  ///
-  /// [ciphertext] is the message to decrypt
-  /// [associatedData] must match the data used during encryption
+  /// Decrypt a message.
   Future<Uint8List> decrypt(
     Uint8List ciphertext, {
     Uint8List? associatedData,
   }) async {
-    _ensureNotDisposed();
-
-    if (ciphertext.isEmpty) {
-      throw ValidationError(
-        SibnaErrorCode.invalidCiphertext,
-        'Ciphertext cannot be empty',
-        field: 'ciphertext',
-      );
-    }
-
-    if (_handle == nullptr) {
-      throw SibnaError(
-        SibnaErrorCode.invalidState,
-        'Session not initialised',
-      );
-    }
-
-    final ctPtr = _copyToNative(ciphertext);
-    final adPtr = associatedData != null ? _copyToNative(associatedData) : nullptr;
-    final peerIdPtr = _copyToNative(_peerId);
-    final outBuf = calloc<_ByteBuffer>();
-
-    try {
-      final rc = _bindings.sibna_session_decrypt(
-        _context, peerIdPtr, _peerId.length,
-        ctPtr, ciphertext.length,
-        adPtr, associatedData?.length ?? 0, outBuf,
-      );
-      if (rc != SibnaErrorCode.ok.code) {
-        throw SibnaError(SibnaErrorCode.fromCode(rc), 'session_decrypt failed');
-      }
-      final result = _readAndFreeBuffer(outBuf);
-      _messagesReceived++;
-      return result;
-    } finally {
-      calloc.free(ctPtr);
-      calloc.free(peerIdPtr);
-      if (adPtr != nullptr) calloc.free(adPtr);
-      calloc.free(outBuf);
-    }
+    if (_ratchet == null) throw StateError('Session not established');
+    return _ratchet!.ratchetDecrypt(ciphertext, associatedData: associatedData);
   }
 
-  /// Get the current message number
-  int get currentMessageNumber => _messagesSent + _messagesReceived;
+  // ── Serialization ───────────────────────────────────────────────────
 
-  /// Check if the session is established
-  bool get isEstablished => _establishedAt != null;
-
-  /// Get session age
-  Duration? get age {
-    if (_establishedAt == null) return null;
-    return DateTime.now().difference(_establishedAt!);
-  }
-
-  /// Get session statistics
-  Map<String, dynamic> get stats => {
-    'peerId': _peerId.toHex(),
-    'messagesSent': _messagesSent,
-    'messagesReceived': _messagesReceived,
-    'establishedAt': _establishedAt?.toIso8601String(),
-    'age': age?.inSeconds,
-    'isEstablished': isEstablished,
-  };
-
-  /// Dispose the session and free resources
-  void dispose() {
-    if (_disposed) return;
-
-    if (_handle != nullptr) {
-      _bindings.sibna_session_destroy(_handle);
-      _handle = nullptr;
-    }
-
-    // Securely clear peer ID
-    _peerId.secureClear();
-
-    _disposed = true;
-  }
-
-  // Helper: copy a Dart Uint8List to native memory via calloc
-  static Pointer<Uint8> _copyToNative(Uint8List data) {
-    final ptr = calloc<Uint8>(data.length);
-    ptr.asTypedList(data.length).setAll(0, data);
-    return ptr;
-  }
-
-  // Helper: read a _ByteBuffer result and free it
-  static Uint8List _readAndFreeBuffer(Pointer<_ByteBuffer> bufPtr) {
-    final len = bufPtr.ref.len;
-    final data = Uint8List.fromList(bufPtr.ref.data.asTypedList(len));
-    _bindings.sibna_free_buffer(bufPtr);
-    return data;
-  }
-
-  /// Ensure the session is not disposed
-  void _ensureNotDisposed() {
-    if (_disposed) {
-      throw SibnaError(
-        SibnaErrorCode.invalidState,
-        'Session has been disposed',
-      );
-    }
+  /// Export session state for persistence.
+  Map<String, dynamic>? exportState() {
+    if (_ratchet == null) return null;
+    final r = _ratchet!;
+    return {
+      'sessionId': _sessionId,
+      'rootKey': bytesToHex(r.rootKey),
+      'dhLocalPrivate':
+          r.dhLocalPrivate != null ? bytesToHex(r.dhLocalPrivate!) : null,
+      'dhLocalPublic':
+          r.dhLocalPublic != null ? bytesToHex(r.dhLocalPublic!) : null,
+      'dhRemotePublic':
+          r.dhRemotePublic != null ? bytesToHex(r.dhRemotePublic!) : null,
+      'sendingChainKey':
+          r.sendingChain != null ? bytesToHex(r.sendingChain!.key) : null,
+      'sendingChainIndex': r.sendingChain?.index ?? 0,
+      'receivingChainKey':
+          r.receivingChain != null ? bytesToHex(r.receivingChain!.key) : null,
+      'receivingChainIndex': r.receivingChain?.index ?? 0,
+      'messagesSent': r.messagesSent,
+      'messagesReceived': r.messagesReceived,
+      'previousCounter': r.previousCounter,
+    };
   }
 
   @override
-  String toString() =>
-    'SibnaSession(peerId: ${_peerId.toHex().substring(0, 16)}..., '
-    'messages: $_messagesSent/$_messagesReceived, '
-    'established: $isEstablished)';
+  String toString() {
+    final peerHex =
+        _peerId != null ? bytesToHex(_peerId!).substring(0, 16) : 'None';
+    return 'Session(id: ${_sessionId.substring(0, 8)}..., '
+        'peer: $peerHex..., '
+        'sent: $messagesSent, recv: $messagesReceived, '
+        'established: $isEstablished)';
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────────
+
+  static String _generateSessionId() {
+    final bytes = randomBytes(16);
+    return bytesToHex(bytes);
+  }
 }

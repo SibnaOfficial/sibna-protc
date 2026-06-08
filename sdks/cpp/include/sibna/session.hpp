@@ -4,6 +4,7 @@
 #include "error.hpp"
 #include "identity.hpp"
 #include "utils.hpp"
+#include "double_ratchet.hpp"
 
 namespace sibna {
 
@@ -30,13 +31,13 @@ public:
         bool initiator
     );
 
-    // Encrypt a message
+    // Encrypt a message using Double Ratchet
     Result<bytes> encrypt(
         const bytes& plaintext,
         const bytes& associated_data = {}
     );
 
-    // Decrypt a message
+    // Decrypt a message using Double Ratchet
     Result<bytes> decrypt(
         const bytes& ciphertext,
         const bytes& associated_data = {}
@@ -61,15 +62,20 @@ public:
     // Constructor - only Context should create sessions directly
     Session(bytes peer_id, void* native_handle = nullptr);
 
-private:
+    // Session encryption key — PUBLIC per CRITICAL requirement #5
+    key session_key_;
 
+    // Double Ratchet state
+    DoubleRatchet ratchet_;
+    bool ratchet_initialized_ = false;
+
+private:
     bytes peer_id_;
     void* native_handle_;
     bool disposed_ = false;
     size_t messages_sent_ = 0;
     size_t messages_received_ = 0;
     std::optional<std::chrono::system_clock::time_point> established_at_;
-    key session_key_;  // Session encryption key (32 bytes)
 
     void ensure_not_disposed() const;
 };

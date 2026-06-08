@@ -16,7 +16,9 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@noble/ed25519": "^2.0.0"
+    "@noble/ciphers": "^1.3.0",
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0"
   },
   "keywords": [
     "cryptography",
@@ -50,7 +52,9 @@
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
-    "testMatch": ["**/tests/**/*.test.ts"]
+    "testMatch": [
+      "**/tests/**/*.test.ts"
+    ]
   },
   "engines": {
     "node": ">=16.0.0"

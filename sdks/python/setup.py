@@ -1,49 +1,23 @@
 #!/usr/bin/env python3
 """
-Sibna Protocol Python SDK - Setup Script
+Sibna Protocol v3.0.1 — Pure Python SDK
 """
 
-from setuptools import setup, find_packages, Extension
+from setuptools import setup, find_packages
 import os
-import platform
 
-# Read version from __init__.py
-version = "3.0.0"
-
-# Determine library name based on platform
-system = platform.system()
-if system == "Linux":
-    lib_name = "sibna"
-    lib_extension = ".so"
-elif system == "Darwin":
-    lib_name = "sibna"
-    lib_extension = ".dylib"
-elif system == "Windows":
-    lib_name = "sibna"
-    lib_extension = ".dll"
-else:
-    raise OSError(f"Unsupported platform: {system}")
-
-# Check if native library exists
-lib_path = os.path.join(os.path.dirname(__file__), "sibna", f"lib{lib_name}{lib_extension}")
-has_native_lib = os.path.exists(lib_path)
-
-# Package data
-package_data = {}
-if has_native_lib:
-    package_data["sibna"] = [f"lib{lib_name}{lib_extension}"]
+version = "3.0.1"
 
 setup(
-    name="sibna-protocol",
+    name="sibna",
     version=version,
     author="Sibna Security Team",
     author_email="security@sibna.dev",
-    description="Ultra-Secure Communication Protocol - Python SDK",
+    description="Sibna Protocol v3.0.1 — Ultra-Secure Communication Protocol (pure Python)",
     long_description=open("README.md").read() if os.path.exists("README.md") else "",
     long_description_content_type="text/markdown",
-    url="https://github.com/sibna/protocol",
+    url="https://github.com/SibnaOfficial/sibna-protc",
     packages=find_packages(),
-    package_data=package_data,
     include_package_data=True,
     classifiers=[
         "Development Status :: 5 - Production/Stable",
@@ -53,30 +27,28 @@ setup(
         "License :: OSI Approved :: Apache Software License",
         "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
         "Operating System :: OS Independent",
     ],
-    python_requires=">=3.8",
+    python_requires=">=3.9",
     install_requires=[
-        # No external dependencies for core functionality
+        "cryptography>=41.0",
     ],
     extras_require={
+        "blake3": ["blake3>=1.0"],
         "dev": [
             "pytest>=7.0",
             "pytest-cov>=4.0",
             "mypy>=1.0",
-            "black>=23.0",
-            "flake8>=6.0",
         ],
     },
     keywords="cryptography encryption signal secure-messaging e2ee",
     project_urls={
-        "Bug Reports": "https://github.com/sibna/protocol/issues",
-        "Source": "https://github.com/sibna/protocol",
-        "Documentation": "https://docs.sibna.dev",
+        "Bug Reports": "https://github.com/SibnaOfficial/sibna-protc/issues",
+        "Source": "https://github.com/SibnaOfficial/sibna-protc",
     },
 )

@@ -202,6 +202,41 @@ public class SibnaClient implements AutoCloseable {
     }
 
     /**
+     * Encrypt a group message, returning raw bytes (chain_index || ciphertext).
+     */
+    public byte[] encryptGroupMessage(byte[] groupId, byte[] plaintext) throws SibnaException {
+        ensureOpen();
+        GroupSession group = groups.get(Utils.bytesToHex(groupId));
+        if (group == null) {
+            throw new SessionException("No group found for ID");
+        }
+        try {
+            GroupSession.SenderKeyMessage msg = group.encrypt(plaintext);
+            return msg.toBytes();
+        } catch (CryptoException e) {
+            throw new SibnaException("Group encryption failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Decrypt a group message from raw bytes (chain_index || ciphertext).
+     */
+    public byte[] decryptGroupMessage(byte[] groupId, String senderIdentityHex,
+                                       byte[] messageBytes) throws SibnaException {
+        ensureOpen();
+        GroupSession group = groups.get(Utils.bytesToHex(groupId));
+        if (group == null) {
+            throw new SessionException("No group found for ID");
+        }
+        try {
+            GroupSession.SenderKeyMessage msg = GroupSession.SenderKeyMessage.fromBytes(messageBytes);
+            return group.decrypt(senderIdentityHex, msg);
+        } catch (CryptoException e) {
+            throw new SibnaException("Group decryption failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * Get a group by ID.
      */
     public Optional<GroupSession> getGroup(byte[] groupId) {

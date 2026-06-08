@@ -88,4 +88,19 @@ public class Utils {
         }
         return result;
     }
+
+    /**
+     * Constant-time hex string verification.
+     * Compares two hex strings without short-circuiting on the first mismatch.
+     * Returns false if lengths differ (but does not leak which position failed).
+     */
+    public static boolean constantTimeHexVerify(String a, String b) {
+        if (a == null || b == null) return false;
+        if (a.length() != b.length()) return false;
+        int result = 0;
+        for (int i = 0; i < a.length(); i++) {
+            result |= a.charAt(i) ^ b.charAt(i);
+        }
+        return result == 0;
+    }
 }

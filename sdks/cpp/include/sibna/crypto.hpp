@@ -84,11 +84,19 @@ public:
     // Generate a key pair
     static Result<std::pair<key, key>> generate_keypair();
 
+    // Generate public key from existing private key
+    static Result<std::pair<key, key>> generate_keypair_from_private(
+        const key& private_key
+    );
+
     // Perform Diffie-Hellman
     static Result<key> diffie_hellman(
         const key& private_key,
         const key& public_key
     );
+
+    // Reject low-order points (8 known points)
+    static bool is_low_order_point(const key& public_key);
 };
 
 // Ed25519 signatures

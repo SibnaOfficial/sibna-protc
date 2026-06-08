@@ -1,6 +1,7 @@
 #include "sibna/session.hpp"
 #include "sibna/context.hpp"
 #include "sibna/crypto.hpp"
+#include "sibna/x3dh.hpp"
 
 namespace sibna {
 
@@ -13,7 +14,6 @@ Session::Session(bytes peer_id, void* native_handle)
 {}
 
 Session::~Session() {
-    // Secure cleanup
     Utils::secure_clear(peer_id_);
     Utils::secure_clear(session_key_);
     disposed_ = true;
@@ -26,7 +26,9 @@ Session::Session(Session&& other) noexcept
     , messages_sent_(other.messages_sent_)
     , messages_received_(other.messages_received_)
     , established_at_(other.established_at_)
-    , session_key_(std::move(other.session_key_)) {
+    , session_key_(std::move(other.session_key_))
+    , ratchet_(std::move(other.ratchet_))
+    , ratchet_initialized_(other.ratchet_initialized_) {
     other.native_handle_ = nullptr;
     other.disposed_ = true;
 }
@@ -42,68 +44,84 @@ Session& Session::operator=(Session&& other) noexcept {
         messages_received_ = other.messages_received_;
         established_at_ = other.established_at_;
         session_key_ = std::move(other.session_key_);
+        ratchet_ = std::move(other.ratchet_);
+        ratchet_initialized_ = other.ratchet_initialized_;
         other.native_handle_ = nullptr;
         other.disposed_ = true;
     }
     return *this;
 }
 
-Result<void> Session::perform_handshake(const PreKeyBundle& peer_bundle, bool /*initiator*/) {
+Result<void> Session::perform_handshake(const PreKeyBundle& peer_bundle, bool initiator) {
     ensure_not_disposed();
-    
+
     // Validate the peer bundle
     if (peer_bundle.is_expired()) {
         return Result<void>(ResultCode::INVALID_ARGUMENT, "Peer bundle is expired");
     }
-    
-    // Verify the bundle signature
+
+    // Verify the SPK signature before any DH computation
     auto sig_result = peer_bundle.verify_signature(peer_bundle.identity_key());
     if (sig_result.is_err() || !sig_result.value()) {
         return Result<void>(ResultCode::AUTHENTICATION_FAILED, "Bundle signature verification failed");
     }
-    
-    // Perform X3DH handshake using the session key
-    // The session_key_ is already set in the constructor
-    // In a full implementation, this would derive the key from X3DH DH operations
-    
+
+    // In a full implementation, the caller would:
+    // 1. Generate ephemeral X25519 keypair
+    // 2. Call x3dh_initiator/x3dh_responder to get shared_secret
+    // 3. Derive session keys via x3dh_derive_session_keys
+    // 4. Initialize DoubleRatchet from shared secret
+
     established_at_ = std::chrono::system_clock::now();
-    
+
     return Result<void>();
 }
 
 Result<bytes> Session::encrypt(const bytes& plaintext, const bytes& associated_data) {
     ensure_not_disposed();
-    
+
     if (plaintext.empty()) {
         return Result<bytes>(ResultCode::INVALID_ARGUMENT, "Plaintext cannot be empty");
     }
-    
-    // Encrypt using the session key
-    auto encrypt_result = Crypto::encrypt(session_key_, plaintext, associated_data);
-    if (encrypt_result.is_err()) {
-        return encrypt_result;
+
+    // Use Double Ratchet if initialized
+    if (ratchet_initialized_) {
+        auto result = ratchet_.ratchet_encrypt(plaintext, associated_data);
+        if (result.is_ok()) {
+            messages_sent_++;
+        }
+        return result;
     }
-    
-    messages_sent_++;
-    
+
+    // Fallback: direct encryption with session key
+    auto encrypt_result = Crypto::encrypt(session_key_, plaintext, associated_data);
+    if (encrypt_result.is_ok()) {
+        messages_sent_++;
+    }
     return encrypt_result;
 }
 
 Result<bytes> Session::decrypt(const bytes& ciphertext, const bytes& associated_data) {
     ensure_not_disposed();
-    
+
     if (ciphertext.size() < NONCE_LENGTH + TAG_LENGTH + 1) {
         return Result<bytes>(ResultCode::INVALID_CIPHERTEXT, "Ciphertext too short");
     }
-    
-    // Decrypt using the session key
-    auto decrypt_result = Crypto::decrypt(session_key_, ciphertext, associated_data);
-    if (decrypt_result.is_err()) {
-        return decrypt_result;
+
+    // Use Double Ratchet if initialized
+    if (ratchet_initialized_) {
+        auto result = ratchet_.ratchet_decrypt(ciphertext, associated_data);
+        if (result.is_ok()) {
+            messages_received_++;
+        }
+        return result;
     }
-    
-    messages_received_++;
-    
+
+    // Fallback: direct decryption with session key
+    auto decrypt_result = Crypto::decrypt(session_key_, ciphertext, associated_data);
+    if (decrypt_result.is_ok()) {
+        messages_received_++;
+    }
     return decrypt_result;
 }
 

@@ -173,7 +173,7 @@ struct SessionInfo {
 struct GroupInfo {
     group_id id;
     size_t member_count = 0;
-    uint64_t epoch = 0;
+    uint32_t epoch = 0;  // uint32_t per CRITICAL requirement #4
     std::optional<std::chrono::system_clock::time_point> created_at;
     std::optional<std::chrono::system_clock::time_point> last_activity;
 };

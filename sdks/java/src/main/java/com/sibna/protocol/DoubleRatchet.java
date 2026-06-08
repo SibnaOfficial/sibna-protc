@@ -3,53 +3,73 @@ package com.sibna.protocol;
 import com.sibna.crypto.CryptoProvider;
 import com.sibna.exceptions.CryptoException;
 
+import java.security.KeyPair;
+import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Double Ratchet Algorithm implementation.
+ * Double Ratchet Algorithm (Sibna Protocol v3.0.1) — matches Rust core exactly.
  *
- * Provides:
- * - Forward secrecy via ephemeral DH ratchet
- * - Future secrecy (self-healing) via symmetric KDF chain ratchet
- * - Out-of-order message handling with skipped message keys
+ * Critical invariants (from Rust core/ratchet/session.rs):
+ *  - Initial KDF: HKDF(salt="SibnaSession_v3", ikm=shared_secret)
+ *                   .expand("SibnaRootAndChainKey_v3", 64) → root(32) + chain(32)
+ *  - Only ONE initial chain: initiator→sending, responder→receiving
+ *  - KDF_RK: HKDF(salt=root_key, ikm=dh_out, info="SibnaRatchet_v3", L=64)
+ *  - Chain: mk=HMAC(ck,0x01), next_ck=HMAC(ck,0x02)
+ *  - msg_num = SENDING CHAIN INDEX BEFORE advance (NOT global counter)
+ *  - Wire: dh_public(32) || msg_num(4 LE) || nonce(12) || encrypted
+ *  - Nonce: random(8) || msg_num_le(4)
+ *  - Header: dh_public(32) || msg_num(8 LE) || prev_chain_len(8 LE) || timestamp(8 LE) = 56 bytes
+ *  - Encryptor: initial_message_number=0, counter tracks own sequence
  */
 public class DoubleRatchet implements AutoCloseable {
     private final CryptoProvider crypto;
 
-    // DH ratchet key pair
-    private java.security.KeyPair dhRatchetKeyPair;
+    public static final int MAX_SKIPPED_MESSAGES = 2000;
+    public static final int MAX_CHAIN_MESSAGES = 4000;
+    public static final int MIN_COMPATIBLE_VERSION = 9;
 
-    // Root chain
-    private byte[] rootChainKey;
+    // Root key for DH ratchet
+    private byte[] rootKey;
+
+    // Local DH key pair (X25519)
+    private KeyPair dhLocalKeyPair;
+    // Raw 32-byte local public key bytes (for header construction)
+    private byte[] dhLocalPubBytes;
+
+    // Remote DH public key (X25519, 32 bytes)
+    private byte[] dhRemotePub;
 
     // Sending chain
     private byte[] sendingChainKey;
-    private int sendingMessageNumber = 0;
+    private int sendingChainIndex; // = msg_num BEFORE advance
 
     // Receiving chain
     private byte[] receivingChainKey;
-    private int receivingMessageNumber = 0;
+    private int receivingChainIndex;
 
-    // DH ratchet state
-    private byte[] remoteDHRatchetKey = null;
-    private boolean awaitingDHRatchet = false;
+    // Previous sending chain length for the header (set during DH ratchet)
+    private int previousCounter;
 
-    // Skipped message keys for out-of-order handling
+    // Skipped message keys: key = "dhpub_hex:msg_num", value = message_key
     private final Map<String, byte[]> skippedMessageKeys;
-    private static final int MAX_SKIPPED_MESSAGES = 2000;
+    private final Map<String, byte[]> skippedDhPubKeys;
 
     private volatile boolean closed = false;
 
     /**
-     * Initialize Double Ratchet with a shared secret from X3DH.
+     * Initialize from a shared secret (post-X3DH).
      *
-     * @param crypto Crypto provider
+     * @param crypto       crypto provider
      * @param sharedSecret 32-byte shared secret from X3DH
-     * @param isInitiator true if we initiated the session
+     * @param isInitiator  true if we initiated the session
      */
-    public DoubleRatchet(CryptoProvider crypto, byte[] sharedSecret, boolean isInitiator) throws CryptoException {
+    public DoubleRatchet(CryptoProvider crypto, byte[] sharedSecret, boolean isInitiator)
+            throws CryptoException {
         this.crypto = crypto;
         this.skippedMessageKeys = new LinkedHashMap<String, byte[]>(MAX_SKIPPED_MESSAGES, 0.75f, true) {
             @Override
@@ -57,195 +77,422 @@ public class DoubleRatchet implements AutoCloseable {
                 return size() > MAX_SKIPPED_MESSAGES;
             }
         };
+        this.skippedDhPubKeys = new ConcurrentHashMap<>();
+        this.previousCounter = 0;
 
-        // Derive root key and initial chain keys from shared secret
-        // Matches Rust: Hkdf::new(Some(b"SibnaSession_v3"), shared_secret)
-        //               .expand(b"SibnaRootAndChainKey_v3", &mut okm)
-        byte[] kdfResult = crypto.hkdf("SibnaSession_v3".getBytes(), sharedSecret, "SibnaRootAndChainKey_v3".getBytes(), 96);
-
-        this.rootChainKey = Arrays.copyOfRange(kdfResult, 0, 32);
+        // Initial KDF: HKDF(salt="SibnaSession_v3", ikm=shared_secret)
+        //               .expand("SibnaRootAndChainKey_v3", 64) → root(32) + chain(32)
+        byte[] kdfResult = crypto.hkdf(
+                "SibnaSession_v3".getBytes(),
+                sharedSecret,
+                "SibnaRootAndChainKey_v3".getBytes(),
+                64
+        );
+        this.rootKey = Arrays.copyOfRange(kdfResult, 0, 32);
+        byte[] chainKey = Arrays.copyOfRange(kdfResult, 32, 64);
+        Arrays.fill(kdfResult, (byte) 0);
 
         if (isInitiator) {
-            this.sendingChainKey = Arrays.copyOfRange(kdfResult, 32, 64);
-            this.receivingChainKey = Arrays.copyOfRange(kdfResult, 64, 96);
+            this.sendingChainKey = chainKey;
+            this.receivingChainKey = null;
         } else {
-            this.receivingChainKey = Arrays.copyOfRange(kdfResult, 32, 64);
-            this.sendingChainKey = Arrays.copyOfRange(kdfResult, 64, 96);
-            this.awaitingDHRatchet = true;
+            this.sendingChainKey = null;
+            this.receivingChainKey = chainKey;
         }
-        // Both sides need an initial DH ratchet key pair for performDHRatchet()
-        this.dhRatchetKeyPair = crypto.generateX25519KeyPair();
+        this.sendingChainIndex = 0;
+        this.receivingChainIndex = 0;
 
-        // Clear KDF result
-        Arrays.fill(kdfResult, (byte) 0);
+        // Generate initial local DH key pair
+        this.dhLocalKeyPair = crypto.generateX25519KeyPair();
+        this.dhLocalPubBytes = extractRawPublicKey(dhLocalKeyPair.getPublic());
+        this.dhRemotePub = null;
     }
 
     /**
-     * Encrypt a message.
+     * Constructor for deserialization / restoration.
      */
+    private DoubleRatchet(CryptoProvider crypto) {
+        this.crypto = crypto;
+        this.skippedMessageKeys = new LinkedHashMap<String, byte[]>(MAX_SKIPPED_MESSAGES, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<String, byte[]> eldest) {
+                return size() > MAX_SKIPPED_MESSAGES;
+            }
+        };
+        this.skippedDhPubKeys = new ConcurrentHashMap<>();
+    }
+
+    // ────────────────────── ENCRYPT ──────────────────────
+
     public byte[] encrypt(byte[] plaintext) throws CryptoException {
         ensureOpen();
+        if (plaintext == null) throw new CryptoException("Plaintext cannot be null");
 
-        if (plaintext == null || plaintext.length == 0) {
-            throw new CryptoException("Plaintext cannot be empty");
+        // If no sending chain, perform send-side DH ratchet
+        if (sendingChainKey == null) {
+            performSendRatchet();
         }
 
-        // Step 1: KDF ratchet step on sending chain
-        byte[][] kdfOutput = kdfRatchetStep(sendingChainKey);
-        byte[] messageKey = kdfOutput[0];
-        sendingChainKey = kdfOutput[1];
+        // Derive header key from sending chain BEFORE advancing
+        byte[] headerKey = deriveKey(sendingChainKey, (byte) 0x03);
 
-        // Step 2: Encrypt with message key
-        byte[] ciphertext = crypto.encrypt(messageKey, plaintext, null);
+        // Check chain exhaustion
+        if (sendingChainIndex >= MAX_CHAIN_MESSAGES) {
+            throw new CryptoException("Sending chain exhausted");
+        }
 
-        // Step 3: Build header
-        byte[] header = buildHeader();
+        // msg_num = SENDING CHAIN INDEX BEFORE advance
+        int msgNum = sendingChainIndex;
 
-        // Step 4: Combine header + ciphertext
-        byte[] result = concat(header, ciphertext);
+        // Ratchet: mk=HMAC(ck,0x01), next_ck=HMAC(ck,0x02)
+        byte[] messageKey = deriveKey(sendingChainKey, (byte) MESSAGE_KEY_SEED);
+        byte[] nextChainKey = deriveKey(sendingChainKey, (byte) CHAIN_KEY_SEED);
+        System.arraycopy(nextChainKey, 0, sendingChainKey, 0, 32);
+        Arrays.fill(nextChainKey, (byte) 0);
+        sendingChainIndex++;
 
-        // Clear message key
+        // Build header: dh_pub(32) || msg_num(8 LE) || prev_chain_len(8 LE) || timestamp(8 LE) = 56 bytes
+        byte[] header = buildHeader(msgNum);
+
+        // Encrypt: nonce(12) = random(8) || msg_num_le(4)
+        //          wire = header || nonce || ciphertext || tag
+        byte[] ciphertext = crypto.encryptWithNonceCounter(messageKey, plaintext, header, msgNum);
+
+        // Combine: header + ciphertext (which includes nonce + ciphertext + tag)
+        byte[] result = new byte[header.length + ciphertext.length];
+        System.arraycopy(header, 0, result, 0, header.length);
+        System.arraycopy(ciphertext, 0, result, header.length, ciphertext.length);
+
         Arrays.fill(messageKey, (byte) 0);
-
-        sendingMessageNumber++;
-
         return result;
     }
 
-    /**
-     * Decrypt a message.
-     */
+    // ────────────────────── DECRYPT ──────────────────────
+
     public byte[] decrypt(byte[] message) throws CryptoException {
         ensureOpen();
-
-        // Parse header
-        MessageHeader header = parseHeader(message);
-        byte[] ciphertext = Arrays.copyOfRange(message, header.headerLength, message.length);
-
-        // Check if this is a DH ratchet step
-        if (header.dhPublicKey != null && remoteDHRatchetKey != null && !Arrays.equals(header.dhPublicKey, remoteDHRatchetKey)) {
-            // Perform DH ratchet
-            performDHRatchet(header.dhPublicKey);
-        } else if (header.dhPublicKey != null && remoteDHRatchetKey == null) {
-            // First message: store remote DH key without ratcheting
-            remoteDHRatchetKey = Arrays.copyOf(header.dhPublicKey, header.dhPublicKey.length);
+        if (message == null || message.length < 56 + 12 + 16) {
+            throw new CryptoException("Message too short");
         }
+
+        // Parse header: dh_pub(32) || msg_num(8 LE) || prev_chain_len(8 LE) || timestamp(8 LE)
+        byte[] remoteDhPub = Arrays.copyOfRange(message, 0, 32);
+        int msgNum = (int) bytesToLongLE(message, 32);
+        int prevChainLen = (int) bytesToLongLE(message, 40);
+        long originalTimestamp = bytesToLongLE(message, 48);
+
+        if (msgNum < 0 || msgNum > MAX_CHAIN_MESSAGES) {
+            throw new CryptoException("Invalid message number");
+        }
+
+        // Validate the remote DH public key (low-order point rejection)
+        if (!crypto.validatePublicKey(remoteDhPub)) {
+            throw new CryptoException("Invalid DH public key (low-order point)");
+        }
+
+        // Check if this is a DH ratchet step (new remote key)
+        boolean needsRatchet = (dhRemotePub == null)
+                || !Arrays.equals(remoteDhPub, dhRemotePub);
 
         // Try skipped message keys first
-        String key = header.messageNumber + "_" + bytesToHex(header.dhPublicKey != null ? header.dhPublicKey : new byte[0]);
-        byte[] skippedKey = skippedMessageKeys.remove(key);
-        if (skippedKey != null) {
-            return crypto.decrypt(skippedKey, ciphertext, null);
+        String skipKey = bytesToHex(remoteDhPub) + ":" + msgNum;
+        byte[] skippedMk = skippedMessageKeys.remove(skipKey);
+        if (skippedMk != null) {
+            // Reconstruct header for AD using original timestamp
+            byte[] header = buildHeaderForDecrypt(remoteDhPub, msgNum, prevChainLen, originalTimestamp);
+            byte[] encryptedPart = Arrays.copyOfRange(message, 56, message.length);
+            try {
+                return crypto.decryptWithNonceCounter(skippedMk, encryptedPart, header);
+            } finally {
+                Arrays.fill(skippedMk, (byte) 0);
+                skippedDhPubKeys.remove(skipKey);
+            }
         }
 
-        // Step 1: KDF ratchet step on receiving chain
-        byte[][] kdfOutput = kdfRatchetStep(receivingChainKey);
-        byte[] messageKey = kdfOutput[0];
-        receivingChainKey = kdfOutput[1];
+        if (needsRatchet) {
+            // Save previous sending chain length for header
+            previousCounter = (sendingChainKey != null) ? sendingChainIndex : 0;
 
-        // Step 2: Decrypt
-        byte[] plaintext = crypto.decrypt(messageKey, ciphertext, null);
+            // Skip message keys on receiving chain up to previous chain length
+            skipMessageKeysUntil(receivingChainKey, receivingChainIndex, prevChainLen);
 
-        // Clear message key
-        Arrays.fill(messageKey, (byte) 0);
+            // Perform full DH ratchet
+            dhRatchetStep(remoteDhPub);
+        }
 
-        receivingMessageNumber++;
+        // Skip message keys up to msg_num on receiving chain
+        skipMessageKeysUntil(receivingChainKey, receivingChainIndex, msgNum);
 
-        return plaintext;
+        // Derive message key at msg_num: ratchet chain key
+        if (receivingChainKey == null) {
+            throw new CryptoException("No receiving chain after ratchet");
+        }
+        byte[] messageKey = deriveKey(receivingChainKey, (byte) MESSAGE_KEY_SEED);
+        byte[] nextReceivingChain = deriveKey(receivingChainKey, (byte) CHAIN_KEY_SEED);
+        System.arraycopy(nextReceivingChain, 0, receivingChainKey, 0, 32);
+        Arrays.fill(nextReceivingChain, (byte) 0);
+        receivingChainIndex++;
+
+        // Build header for AD verification using original timestamp
+        byte[] header = buildHeaderForDecrypt(remoteDhPub, msgNum, prevChainLen, originalTimestamp);
+        byte[] encryptedPart = Arrays.copyOfRange(message, 56, message.length);
+
+        try {
+            byte[] plaintext = crypto.decryptWithNonceCounter(messageKey, encryptedPart, header);
+            Arrays.fill(messageKey, (byte) 0);
+            return plaintext;
+        } catch (CryptoException e) {
+            Arrays.fill(messageKey, (byte) 0);
+            throw e;
+        }
     }
 
-    private void performDHRatchet(byte[] remoteDHPubKey) throws CryptoException {
-        // Save current receiving chain for skipped messages
-        // ... (store intermediate message keys)
+    // ────────────────────── SEND-SIDE DH RATCHET ──────────────────────
 
-        // DH with remote key
-        byte[] dhOutput = crypto.x25519Agreement(dhRatchetKeyPair.getPrivate(),
-            bytesToPublicKey(remoteDHPubKey));
+    /**
+     * Perform send-side DH ratchet when there's no sending chain.
+     * Matches Rust perform_dh_ratchet: generate new local, DH(new_local, remote),
+     * KDF_RK → root + sending_chain.
+     */
+    private void performSendRatchet() throws CryptoException {
+        KeyPair newLocal = crypto.generateX25519KeyPair();
+        byte[] newLocalPub = extractRawPublicKey(newLocal.getPublic());
 
-        // KDF root chain
-        byte[][] rootKdf = kdfRatchetStep(rootChainKey, dhOutput);
-        rootChainKey = rootKdf[0];
-        receivingChainKey = rootKdf[1];
+        if (dhRemotePub != null) {
+            // DH(new_local, remote)
+            PrivateKey newLocalPriv = newLocal.getPrivate();
+            PublicKey remotePub = bytesToPublicKey(dhRemotePub);
+            byte[] dhOutput = crypto.x25519Agreement(newLocalPriv, remotePub);
 
-        // Generate new DH key pair
-        dhRatchetKeyPair = crypto.generateX25519KeyPair();
+            // KDF_RK(root_key, dh_output) → new_root(32) + sending_chain(32)
+            byte[] kdfResult = kdfRk(rootKey, dhOutput);
+            byte[] newRoot = Arrays.copyOfRange(kdfResult, 0, 32);
+            byte[] sendChainKey = Arrays.copyOfRange(kdfResult, 32, 64);
+            Arrays.fill(kdfResult, (byte) 0);
+            Arrays.fill(dhOutput, (byte) 0);
 
-        // KDF root chain again
-        byte[] dhOutput2 = crypto.x25519Agreement(dhRatchetKeyPair.getPrivate(),
-            bytesToPublicKey(remoteDHPubKey));
-        byte[][] rootKdf2 = kdfRatchetStep(rootChainKey, dhOutput2);
-        rootChainKey = rootKdf2[0];
-        sendingChainKey = rootKdf2[1];
+            System.arraycopy(newRoot, 0, rootKey, 0, 32);
+            Arrays.fill(newRoot, (byte) 0);
 
-        remoteDHRatchetKey = Arrays.copyOf(remoteDHPubKey, remoteDHPubKey.length);
-        sendingMessageNumber = 0;
-        receivingMessageNumber = 0;
+            if (sendingChainKey != null) Arrays.fill(sendingChainKey, (byte) 0);
+            sendingChainKey = sendChainKey;
+            sendingChainIndex = 0;
+        }
 
-        // Clear DH outputs
-        Arrays.fill(dhOutput, (byte) 0);
+        // Update local DH key pair
+        if (dhLocalKeyPair != null) {
+            // Clear old private key material
+            Arrays.fill(dhLocalPubBytes, (byte) 0);
+        }
+        dhLocalKeyPair = newLocal;
+        dhLocalPubBytes = newLocalPub;
+    }
+
+    // ────────────────────── DH RATCHET STEP ──────────────────────
+
+    /**
+     * Full DH ratchet when receiving a new remote key.
+     * Matches Rust dh_ratchet exactly:
+     *   1. Use EXISTING local key → receive step → receiving chain
+     *   2. Generate NEW local key → send step → sending chain
+     */
+    private void dhRatchetStep(byte[] newRemoteDhPub) throws CryptoException {
+        // ── Receive step: use EXISTING local key ──
+        if (dhLocalKeyPair != null) {
+            PrivateKey localPriv = dhLocalKeyPair.getPrivate();
+            PublicKey remotePub = bytesToPublicKey(newRemoteDhPub);
+            byte[] dhOutput = crypto.x25519Agreement(localPriv, remotePub);
+
+            byte[] kdfResult = kdfRk(rootKey, dhOutput);
+            byte[] newRoot = Arrays.copyOfRange(kdfResult, 0, 32);
+            byte[] recvChainKey = Arrays.copyOfRange(kdfResult, 32, 64);
+            Arrays.fill(kdfResult, (byte) 0);
+            Arrays.fill(dhOutput, (byte) 0);
+
+            System.arraycopy(newRoot, 0, rootKey, 0, 32);
+            Arrays.fill(newRoot, (byte) 0);
+
+            if (receivingChainKey != null) Arrays.fill(receivingChainKey, (byte) 0);
+            receivingChainKey = recvChainKey;
+            receivingChainIndex = 0;
+        }
+
+        // Update remote key
+        dhRemotePub = Arrays.copyOf(newRemoteDhPub, 32);
+
+        // ── Send step: generate NEW local key ──
+        KeyPair newLocal = crypto.generateX25519KeyPair();
+        byte[] newLocalPub = extractRawPublicKey(newLocal.getPublic());
+        PrivateKey newLocalPriv = newLocal.getPrivate();
+        PublicKey remotePub = bytesToPublicKey(newRemoteDhPub);
+        byte[] dhOutput2 = crypto.x25519Agreement(newLocalPriv, remotePub);
+
+        byte[] kdfResult2 = kdfRk(rootKey, dhOutput2);
+        byte[] newRoot2 = Arrays.copyOfRange(kdfResult2, 0, 32);
+        byte[] sendChainKey = Arrays.copyOfRange(kdfResult2, 32, 64);
+        Arrays.fill(kdfResult2, (byte) 0);
         Arrays.fill(dhOutput2, (byte) 0);
+
+        System.arraycopy(newRoot2, 0, rootKey, 0, 32);
+        Arrays.fill(newRoot2, (byte) 0);
+
+        if (sendingChainKey != null) Arrays.fill(sendingChainKey, (byte) 0);
+        sendingChainKey = sendChainKey;
+        sendingChainIndex = 0;
+
+        // Update local DH key pair
+        if (dhLocalKeyPair != null) Arrays.fill(dhLocalPubBytes, (byte) 0);
+        dhLocalKeyPair = newLocal;
+        dhLocalPubBytes = newLocalPub;
     }
 
-    private byte[][] kdfRatchetStep(byte[] chainKey) throws CryptoException {
-        // Symmetric ratchet: HMAC-SHA256(chainKey, seed)
-        // Matches Rust chain.rs: Hmac::<Sha256>::new_from_slice(&self.key); h.update(&[seed])
-        byte[] messageKey = crypto.hmacSha256(chainKey, new byte[]{1});
-        byte[] newChainKey = crypto.hmacSha256(chainKey, new byte[]{2});
-        return new byte[][]{messageKey, newChainKey};
+    // ────────────────────── KEY DERIVATION ──────────────────────
+
+    /**
+     * Chain key ratchet: HMAC-SHA256(ck, seed) where seed is 0x01 (mk) or 0x02 (next_ck).
+     * Matches Rust chain.rs derive_key.
+     */
+    private byte[] deriveKey(byte[] chainKey, byte seed) throws CryptoException {
+        return crypto.hmacSha256(chainKey, new byte[]{seed});
     }
 
-    private byte[][] kdfRatchetStep(byte[] rootKey, byte[] dhOutput) throws CryptoException {
-        // DH ratchet: HKDF(salt=rootKey, ikm=dhOutput, info="SibnaRatchet_v3", L=64)
-        // Matches Rust kdf.rs: Hkdf::new(Some(root_key), dh_out).expand(b"SibnaRatchet_v3", &mut okm)
-        byte[] kdfResult = crypto.hkdf(rootKey, dhOutput, "SibnaRatchet_v3".getBytes(), 64);
-        return new byte[][]{Arrays.copyOfRange(kdfResult, 0, 32), Arrays.copyOfRange(kdfResult, 32, 64)};
+    private static final byte MESSAGE_KEY_SEED = 0x01;
+    private static final byte CHAIN_KEY_SEED = 0x02;
+
+    /**
+     * KDF_RK: HKDF(salt=root_key, ikm=dh_out, info="SibnaRatchet_v3", L=64)
+     * Returns root_key(32) || chain_key(32).
+     * Matches Rust kdf.rs RatchetKdf::kdf_rk (symmetric mode).
+     */
+    private byte[] kdfRk(byte[] rootKey, byte[] dhOutput) throws CryptoException {
+        return crypto.hkdf(rootKey, dhOutput, "SibnaRatchet_v3".getBytes(), 64);
     }
 
-    private byte[] buildHeader() {
-        // Header format: [dh_pubkey_len(1)] [dh_pubkey] [message_number(4)]
-        byte[] dhPub = dhRatchetKeyPair.getPublic().getEncoded();
-        byte[] header = new byte[1 + dhPub.length + 4];
-        header[0] = (byte) dhPub.length;
-        System.arraycopy(dhPub, 0, header, 1, dhPub.length);
-        // Message number (big-endian)
-        header[1 + dhPub.length] = (byte) (sendingMessageNumber >> 24);
-        header[1 + dhPub.length + 1] = (byte) (sendingMessageNumber >> 16);
-        header[1 + dhPub.length + 2] = (byte) (sendingMessageNumber >> 8);
-        header[1 + dhPub.length + 3] = (byte) sendingMessageNumber;
+    /**
+     * Skip message keys on receiving chain up to target index.
+     * Stores skipped message keys for later out-of-order decryption.
+     */
+    private void skipMessageKeysUntil(byte[] chainKey, int currentIdx, int targetIdx)
+            throws CryptoException {
+        if (chainKey == null) return;
+        if (targetIdx <= currentIdx) return;
+        if (targetIdx - currentIdx > MAX_SKIPPED_MESSAGES) {
+            throw new CryptoException("Too many skipped messages: " + (targetIdx - currentIdx));
+        }
+
+        byte[] chain = Arrays.copyOf(chainKey, 32);
+        int idx = currentIdx;
+        while (idx < targetIdx) {
+            byte[] mk = deriveKey(chain, (byte) MESSAGE_KEY_SEED);
+            byte[] nextCk = deriveKey(chain, (byte) CHAIN_KEY_SEED);
+            System.arraycopy(nextCk, 0, chain, 0, 32);
+            Arrays.fill(nextCk, (byte) 0);
+
+            // Store skipped key (if not the last one — the last one is consumed by the caller)
+            if (idx + 1 < targetIdx) {
+                String key = bytesToHex(dhRemotePub != null ? dhRemotePub : new byte[32])
+                        + ":" + idx;
+                if (skippedMessageKeys.size() < MAX_SKIPPED_MESSAGES) {
+                    skippedMessageKeys.put(key, mk);
+                    skippedDhPubKeys.put(key, dhRemotePub != null
+                            ? Arrays.copyOf(dhRemotePub, 32) : new byte[32]);
+                }
+            }
+            idx++;
+        }
+        // Copy advanced chain key back
+        System.arraycopy(chain, 0, chainKey, 0, 32);
+        Arrays.fill(chain, (byte) 0);
+    }
+
+    // ────────────────────── HEADER ──────────────────────
+
+    /**
+     * Build header for outgoing messages.
+     * Format: dh_public(32) || msg_num(8 LE) || prev_chain_len(8 LE) || timestamp(8 LE) = 56 bytes.
+     */
+    private byte[] buildHeader(int msgNum) {
+        byte[] header = new byte[56];
+        System.arraycopy(dhLocalPubBytes, 0, header, 0, 32);
+        putLongLE(header, 32, msgNum);
+        putLongLE(header, 40, previousCounter);
+        putLongLE(header, 48, System.currentTimeMillis() / 1000);
         return header;
     }
 
-    private MessageHeader parseHeader(byte[] data) {
-        if (data.length < 5) {
-            return new MessageHeader(null, 0, 0);
-        }
-        int dhPubLen = data[0] & 0xFF;
-        byte[] dhPub = Arrays.copyOfRange(data, 1, 1 + dhPubLen);
-        int msgNum = ((data[1 + dhPubLen] & 0xFF) << 24) |
-                     ((data[1 + dhPubLen + 1] & 0xFF) << 16) |
-                     ((data[1 + dhPubLen + 2] & 0xFF) << 8) |
-                     (data[1 + dhPubLen + 3] & 0xFF);
-        return new MessageHeader(dhPub, msgNum, 1 + dhPubLen + 4);
+    /**
+     * Build header for AD verification during decryption.
+     * Uses the original timestamp from the incoming message.
+     */
+    private byte[] buildHeaderForDecrypt(byte[] remoteDhPub, int msgNum, int prevChainLen,
+                                          long timestamp) {
+        byte[] header = new byte[56];
+        System.arraycopy(remoteDhPub, 0, header, 0, 32);
+        putLongLE(header, 32, msgNum);
+        putLongLE(header, 40, prevChainLen);
+        putLongLE(header, 48, timestamp);
+        return header;
     }
 
-    private java.security.PublicKey bytesToPublicKey(byte[] keyBytes) throws CryptoException {
+    // ────────────────────── KEY EXTRACTION ──────────────────────
+
+    /**
+     * Extract raw 32-byte public key from X509EncodedKeySpec.
+     * BouncyCastle X25519 keys store the raw 32-byte key at the end of the encoding.
+     */
+    private byte[] extractRawPublicKey(PublicKey publicKey) throws CryptoException {
+        byte[] encoded = publicKey.getEncoded();
+        if (encoded == null) throw new CryptoException("Cannot extract public key bytes");
+        if (encoded.length == 32) return encoded;
+        // X.509 SubjectPublicKeyInfo for X25519: 12-byte prefix + 32-byte key
+        if (encoded.length == 44) {
+            return Arrays.copyOfRange(encoded, 12, 44);
+        }
+        // Fallback: take last 32 bytes
+        return Arrays.copyOfRange(encoded, encoded.length - 32, encoded.length);
+    }
+
+    private PublicKey bytesToPublicKey(byte[] keyBytes) throws CryptoException {
         try {
-            java.security.spec.X509EncodedKeySpec spec = new java.security.spec.X509EncodedKeySpec(keyBytes);
-            java.security.KeyFactory kf = java.security.KeyFactory.getInstance("X25519");
-            return kf.generatePublic(spec);
+            // Wrap raw 32-byte key in X.509 SubjectPublicKeyInfo for X25519
+            byte[] x509Prefix = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65,
+                                  0x6e, 0x03, 0x21, 0x00};
+            byte[] x509 = new byte[x509Prefix.length + 32];
+            System.arraycopy(x509Prefix, 0, x509, 0, x509Prefix.length);
+            System.arraycopy(keyBytes, 0, x509, x509Prefix.length, 32);
+            java.security.KeyFactory kf = java.security.KeyFactory.getInstance("X25519", "BC");
+            return kf.generatePublic(new java.security.spec.X509EncodedKeySpec(x509));
         } catch (Exception e) {
-            throw new CryptoException("Failed to decode public key", e);
+            throw new CryptoException("Failed to decode X25519 public key", e);
         }
     }
 
-    private byte[] concat(byte[] a, byte[] b) {
-        byte[] result = new byte[a.length + b.length];
-        System.arraycopy(a, 0, result, 0, a.length);
-        System.arraycopy(b, 0, result, a.length, b.length);
-        return result;
+    // ────────────────────── UTILITIES ──────────────────────
+
+    private static void putLongLE(byte[] buf, int offset, long val) {
+        buf[offset]     = (byte) val;
+        buf[offset + 1] = (byte) (val >>> 8);
+        buf[offset + 2] = (byte) (val >>> 16);
+        buf[offset + 3] = (byte) (val >>> 24);
+        buf[offset + 4] = (byte) (val >>> 32);
+        buf[offset + 5] = (byte) (val >>> 40);
+        buf[offset + 6] = (byte) (val >>> 48);
+        buf[offset + 7] = (byte) (val >>> 56);
     }
 
-    private String bytesToHex(byte[] bytes) {
+    private static long bytesToLongLE(byte[] data, int offset) {
+        return (long)(data[offset]     & 0xFF)
+             | ((long)(data[offset + 1] & 0xFF) << 8)
+             | ((long)(data[offset + 2] & 0xFF) << 16)
+             | ((long)(data[offset + 3] & 0xFF) << 24)
+             | ((long)(data[offset + 4] & 0xFF) << 32)
+             | ((long)(data[offset + 5] & 0xFF) << 40)
+             | ((long)(data[offset + 6] & 0xFF) << 48)
+             | ((long)(data[offset + 7] & 0xFF) << 56);
+    }
+
+    private static String bytesToHex(byte[] bytes) {
+        if (bytes == null) return "";
         StringBuilder sb = new StringBuilder(bytes.length * 2);
         for (byte b : bytes) {
             sb.append(String.format("%02x", b));
@@ -253,126 +500,37 @@ public class DoubleRatchet implements AutoCloseable {
         return sb.toString();
     }
 
-    /**
-     * Session statistics.
-     */
-    public static class Stats {
-        public final int messagesSent;
-        public final int messagesReceived;
+    // ────────────────────── STATS / CLOSE ──────────────────────
 
-        public Stats(int sent, int received) {
-            this.messagesSent = sent;
-            this.messagesReceived = received;
+    public static class Stats {
+        public final int sendingIndex;
+        public final int receivingIndex;
+        public final int skippedKeysCount;
+
+        public Stats(int sendingIndex, int receivingIndex, int skippedKeysCount) {
+            this.sendingIndex = sendingIndex;
+            this.receivingIndex = receivingIndex;
+            this.skippedKeysCount = skippedKeysCount;
         }
     }
 
     public Stats getStats() {
-        return new Stats(sendingMessageNumber, receivingMessageNumber);
-    }
-
-    /**
-     * Serialize the current state to bytes.
-     */
-    public byte[] serialize() throws CryptoException {
-        ensureOpen();
-        // Format: version(4) || root(32) || sendKey(32) || sendIdx(4) || recvKey(32) || recvIdx(4) || hasRemoteDH(1) || remoteDH(32) || prevCounter(4)
-        int size = 4 + 32 + 32 + 4 + 32 + 4 + 1 + 32 + 4;
-        byte[] out = new byte[size];
-        int offset = 0;
-
-        // Version (simple placeholder)
-        out[offset++] = 1; out[offset++] = 0; out[offset++] = 0; out[offset++] = 0;
-        
-        System.arraycopy(rootChainKey, 0, out, offset, 32); offset += 32;
-        System.arraycopy(sendingChainKey, 0, out, offset, 32); offset += 32;
-        
-        out[offset++] = (byte)(sendingMessageNumber >> 24);
-        out[offset++] = (byte)(sendingMessageNumber >> 16);
-        out[offset++] = (byte)(sendingMessageNumber >> 8);
-        out[offset++] = (byte)sendingMessageNumber;
-        
-        System.arraycopy(receivingChainKey, 0, out, offset, 32); offset += 32;
-        
-        out[offset++] = (byte)(receivingMessageNumber >> 24);
-        out[offset++] = (byte)(receivingMessageNumber >> 16);
-        out[offset++] = (byte)(receivingMessageNumber >> 8);
-        out[offset++] = (byte)receivingMessageNumber;
-        
-        byte[] remoteDH = (remoteDHRatchetKey != null) ? remoteDHRatchetKey : new byte[32];
-        // Write flag byte: 1 if remote key is set, 0 if null
-        out[offset++] = (remoteDHRatchetKey != null) ? (byte) 1 : (byte) 0;
-        System.arraycopy(remoteDH, 0, out, offset, 32); offset += 32;
-        
-        // Placeholder for previous counter
-        out[offset++] = 0; out[offset++] = 0; out[offset++] = 0; out[offset++] = 0;
-        
-        return out;
-    }
-
-    /**
-     * Restore state from bytes.
-     */
-    public static DoubleRatchet deserialize(CryptoProvider crypto, byte[] data) throws CryptoException {
-        if (data.length < 129) throw new CryptoException("Serialized state too short");
-        
-        int offset = 4; // skip version
-        byte[] root = Arrays.copyOfRange(data, offset, offset + 32); offset += 32;
-        byte[] sendKey = Arrays.copyOfRange(data, offset, offset + 32); offset += 32;
-        int sendIdx = ((data[offset] & 0xFF) << 24) | ((data[offset+1] & 0xFF) << 16) | ((data[offset+2] & 0xFF) << 8) | (data[offset+3] & 0xFF);
-        offset += 4;
-        byte[] recvKey = Arrays.copyOfRange(data, offset, offset + 32); offset += 32;
-        int recvIdx = ((data[offset] & 0xFF) << 24) | ((data[offset+1] & 0xFF) << 16) | ((data[offset+2] & 0xFF) << 8) | (data[offset+3] & 0xFF);
-        offset += 4;
-        // Read flag byte: 1 if remote key was set, 0 if null
-        boolean hasRemoteDH = data[offset] == 1;
-        offset += 1;
-        byte[] remoteDH = hasRemoteDH ? Arrays.copyOfRange(data, offset, offset + 32) : null;
-        
-        DoubleRatchet dr = new DoubleRatchet(crypto, new byte[32], true); // Dummy init
-        dr.rootChainKey = root;
-        dr.sendingChainKey = sendKey;
-        dr.sendingMessageNumber = sendIdx;
-        dr.receivingChainKey = recvKey;
-        dr.receivingMessageNumber = recvIdx;
-        dr.remoteDHRatchetKey = remoteDH;
-        
-        return dr;
+        return new Stats(sendingChainIndex, receivingChainIndex, skippedMessageKeys.size());
     }
 
     private void ensureOpen() throws CryptoException {
-        if (closed) {
-            throw new CryptoException("DoubleRatchet is closed");
-        }
+        if (closed) throw new CryptoException("DoubleRatchet is closed");
     }
-
 
     @Override
     public void close() {
         closed = true;
-        clear(rootChainKey, sendingChainKey, receivingChainKey);
-        if (remoteDHRatchetKey != null) {
-            clear(remoteDHRatchetKey);
-        }
+        if (rootKey != null) Arrays.fill(rootKey, (byte) 0);
+        if (sendingChainKey != null) Arrays.fill(sendingChainKey, (byte) 0);
+        if (receivingChainKey != null) Arrays.fill(receivingChainKey, (byte) 0);
+        if (dhLocalPubBytes != null) Arrays.fill(dhLocalPubBytes, (byte) 0);
+        if (dhRemotePub != null) Arrays.fill(dhRemotePub, (byte) 0);
         skippedMessageKeys.clear();
-    }
-
-    private void clear(byte[]... arrays) {
-        for (byte[] arr : arrays) {
-            if (arr != null) {
-                Arrays.fill(arr, (byte) 0);
-            }
-        }
-    }
-
-    private static class MessageHeader {
-        final byte[] dhPublicKey;
-        final int messageNumber;
-        final int headerLength;
-
-        MessageHeader(byte[] dhPublicKey, int messageNumber, int headerLength) {
-            this.dhPublicKey = dhPublicKey;
-            this.messageNumber = messageNumber;
-            this.headerLength = headerLength;
-        }
+        skippedDhPubKeys.clear();
     }
 }

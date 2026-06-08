@@ -11,6 +11,8 @@
 #include "group.hpp"
 #include "safety_number.hpp"
 #include "context.hpp"
+#include "x3dh.hpp"
+#include "double_ratchet.hpp"
 
 namespace sibna {
 

@@ -432,4 +432,232 @@ Result<bytes> Crypto::unpad(const bytes& padded) {
     return plaintext;
 }
 
+// ── X25519 Implementation ────────────────────────────────────────────────────
+
+Result<std::pair<key, key>> X25519::generate_keypair() {
+    key private_key;
+    if (RAND_bytes(private_key.data(), static_cast<int>(private_key.size())) != 1) {
+        return Result<std::pair<key, key>>(ResultCode::INTERNAL_ERROR, "Failed to generate private key");
+    }
+    // Clamp the private key per X25519 spec
+    private_key[0] &= 248;
+    private_key[31] &= 127;
+    private_key[31] |= 64;
+
+    return generate_keypair_from_private(private_key);
+}
+
+Result<std::pair<key, key>> X25519::generate_keypair_from_private(const key& private_key) {
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_X25519, nullptr);
+    if (!ctx) {
+        return Result<std::pair<key, key>>(ResultCode::INTERNAL_ERROR, "Failed to create X25519 context");
+    }
+
+    EVP_PKEY* pkey = EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519, nullptr,
+        private_key.data(), private_key.size());
+    if (!pkey) {
+        EVP_PKEY_CTX_free(ctx);
+        return Result<std::pair<key, key>>(ResultCode::INTERNAL_ERROR, "Failed to create private key");
+    }
+
+    key public_key;
+    size_t pub_len = public_key.size();
+    if (EVP_PKEY_get_raw_public_key(pkey, public_key.data(), &pub_len) != 1) {
+        EVP_PKEY_free(pkey);
+        EVP_PKEY_CTX_free(ctx);
+        return Result<std::pair<key, key>>(ResultCode::INTERNAL_ERROR, "Failed to get public key");
+    }
+
+    EVP_PKEY_free(pkey);
+    EVP_PKEY_CTX_free(ctx);
+
+    return std::make_pair(private_key, public_key);
+}
+
+Result<key> X25519::diffie_hellman(const key& private_key, const key& public_key) {
+    if (is_low_order_point(public_key)) {
+        return Result<key>(ResultCode::INVALID_KEY, "Low-order X25519 point rejected");
+    }
+
+    EVP_PKEY* pkey = EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519, nullptr,
+        private_key.data(), private_key.size());
+    if (!pkey) {
+        return Result<key>(ResultCode::INTERNAL_ERROR, "Failed to create private key");
+    }
+
+    EVP_PKEY* peer_key = EVP_PKEY_new_raw_public_key(EVP_PKEY_X25519, nullptr,
+        public_key.data(), public_key.size());
+    if (!peer_key) {
+        EVP_PKEY_free(pkey);
+        return Result<key>(ResultCode::INVALID_KEY, "Failed to create peer public key");
+    }
+
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new(pkey, nullptr);
+    if (!ctx) {
+        EVP_PKEY_free(pkey);
+        EVP_PKEY_free(peer_key);
+        return Result<key>(ResultCode::INTERNAL_ERROR, "Failed to create DH context");
+    }
+
+    if (EVP_PKEY_derive_init(ctx) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        EVP_PKEY_free(peer_key);
+        return Result<key>(ResultCode::INTERNAL_ERROR, "Failed to init derive");
+    }
+
+    if (EVP_PKEY_derive_set_peer(ctx, peer_key) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        EVP_PKEY_free(peer_key);
+        return Result<key>(ResultCode::INTERNAL_ERROR, "Failed to set peer key");
+    }
+
+    key shared_secret;
+    size_t secret_len = shared_secret.size();
+    if (EVP_PKEY_derive(ctx, shared_secret.data(), &secret_len) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        EVP_PKEY_free(peer_key);
+        return Result<key>(ResultCode::ENCRYPTION_FAILED, "DH derive failed");
+    }
+
+    EVP_PKEY_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+    EVP_PKEY_free(peer_key);
+
+    return shared_secret;
+}
+
+// 8 known low-order X25519 points (RFC 7748 Section 6.1 / "contributed" points)
+static const std::array<key, 8> LOW_ORDER_POINTS = {{
+    {{0}}, // all zeros
+    {{1}},
+    {{0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae, 0x16, 0xc6, 0x6f, 0xb3, 0x13, 0x18, 0x1c, 0x72,
+      0x11, 0x72, 0xd4, 0x46, 0xc7, 0xbf, 0x68, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {{0xd5, 0x1f, 0x0e, 0x5a, 0xb1, 0x10, 0x08, 0x1e, 0x57, 0x55, 0x1a, 0x00, 0x83, 0x56, 0xa2, 0x78,
+      0xf4, 0x27, 0xd8, 0x25, 0x77, 0x70, 0x50, 0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {{0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {{0xed, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f}},
+    {{0xee, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f}},
+    {{0x9f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f}}
+}};
+
+bool X25519::is_low_order_point(const key& public_key) {
+    for (const auto& lp : LOW_ORDER_POINTS) {
+        if (Utils::constant_time_equals(public_key, lp)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ── Ed25519 Implementation ──────────────────────────────────────────────────
+
+Result<std::pair<key, key>> Ed25519::generate_keypair() {
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, nullptr);
+    if (!ctx) {
+        return Result<std::pair<key, key>>(ResultCode::INTERNAL_ERROR, "Failed to create Ed25519 context");
+    }
+
+    if (EVP_PKEY_keygen_init(ctx) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        return Result<std::pair<key, key>>(ResultCode::INTERNAL_ERROR, "Failed to init Ed25519 keygen");
+    }
+
+    EVP_PKEY* pkey = nullptr;
+    if (EVP_PKEY_keygen(ctx, &pkey) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        return Result<std::pair<key, key>>(ResultCode::INTERNAL_ERROR, "Failed to generate Ed25519 keypair");
+    }
+
+    EVP_PKEY_CTX_free(ctx);
+
+    key public_key;
+    size_t pub_len = public_key.size();
+    if (EVP_PKEY_get_raw_public_key(pkey, public_key.data(), &pub_len) != 1) {
+        EVP_PKEY_free(pkey);
+        return Result<std::pair<key, key>>(ResultCode::INTERNAL_ERROR, "Failed to get public key");
+    }
+
+    key private_key;
+    size_t priv_len = private_key.size();
+    if (EVP_PKEY_get_raw_private_key(pkey, private_key.data(), &priv_len) != 1) {
+        EVP_PKEY_free(pkey);
+        return Result<std::pair<key, key>>(ResultCode::INTERNAL_ERROR, "Failed to get private key");
+    }
+
+    EVP_PKEY_free(pkey);
+    return std::make_pair(private_key, public_key);
+}
+
+Result<signature> Ed25519::sign(const key& private_key, const bytes& message) {
+    EVP_PKEY* pkey = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
+        private_key.data(), private_key.size());
+    if (!pkey) {
+        return Result<signature>(ResultCode::INVALID_KEY, "Failed to create private key");
+    }
+
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) {
+        EVP_PKEY_free(pkey);
+        return Result<signature>(ResultCode::INTERNAL_ERROR, "Failed to create sign context");
+    }
+
+    if (EVP_DigestSignInit(ctx, nullptr, nullptr, nullptr, pkey) != 1) {
+        EVP_MD_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        return Result<signature>(ResultCode::INTERNAL_ERROR, "Failed to init sign");
+    }
+
+    size_t sig_len = 0;
+    if (EVP_DigestSign(ctx, nullptr, &sig_len, message.data(), message.size()) != 1) {
+        EVP_MD_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        return Result<signature>(ResultCode::INTERNAL_ERROR, "Failed to get signature length");
+    }
+
+    signature sig;
+    if (EVP_DigestSign(ctx, sig.data(), &sig_len, message.data(), message.size()) != 1) {
+        EVP_MD_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        return Result<signature>(ResultCode::INTERNAL_ERROR, "Failed to sign");
+    }
+
+    EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+    return sig;
+}
+
+Result<bool> Ed25519::verify(const key& public_key, const bytes& message, const signature& sig) {
+    EVP_PKEY* pkey = EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, nullptr,
+        public_key.data(), public_key.size());
+    if (!pkey) {
+        return Result<bool>(ResultCode::INVALID_KEY, "Failed to create public key");
+    }
+
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) {
+        EVP_PKEY_free(pkey);
+        return Result<bool>(ResultCode::INTERNAL_ERROR, "Failed to create verify context");
+    }
+
+    if (EVP_DigestVerifyInit(ctx, nullptr, nullptr, nullptr, pkey) != 1) {
+        EVP_MD_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        return Result<bool>(ResultCode::INTERNAL_ERROR, "Failed to init verify");
+    }
+
+    int result = EVP_DigestVerify(ctx, sig.data(), sig.size(), message.data(), message.size());
+
+    EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+
+    return result == 1;
+}
+
 } // namespace sibna

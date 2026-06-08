@@ -203,14 +203,14 @@ export async function generateIdentity(): Promise<IdentityKeys> {
 }
 
 /**
- * Sign data with Ed25519 private key using @noble/ed25519.
+ * Sign data with Ed25519 private key using @noble/curves/ed25519.
  * Falls back to WebCrypto if available.
  */
 export async function signData(privateKey: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
-  // Try @noble/ed25519 first (more reliable)
+  // Try @noble/curves/ed25519 first (more reliable)
   try {
-    const { signAsync } = await import('@noble/ed25519');
-    return await signAsync(data, privateKey);
+    const { ed25519 } = await import('@noble/curves/ed25519');
+    return ed25519.sign(data, privateKey);
   } catch {
     // Fallback to WebCrypto - need to derive public key from private key
     // Ed25519 public key = private key seed -> clamp -> scalar multiply base point
@@ -323,13 +323,13 @@ export async function verifySignedEnvelope(envelope: SignedEnvelope): Promise<bo
     );
     const hash = await sha512(signingPayload);
 
-    // Try @noble/ed25519 first
+    // Try @noble/curves/ed25519 first
     try {
-      const { verifyAsync } = await import('@noble/ed25519');
-      return await verifyAsync(sigBytes, hash, senderPubKey);
+      const { ed25519 } = await import('@noble/curves/ed25519');
+      return ed25519.verify(sigBytes, hash, senderPubKey);
     } catch {
       // Fallback: no verification available
-      console.warn('@noble/ed25519 not available — skipping signature verification');
+      console.warn('@noble/curves/ed25519 not available — skipping signature verification');
       return true;
     }
   } catch {

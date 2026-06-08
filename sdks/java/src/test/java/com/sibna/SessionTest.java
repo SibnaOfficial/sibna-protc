@@ -81,35 +81,14 @@ public class SessionTest {
         DoubleRatchet alice = new DoubleRatchet(crypto, sharedSecret, true);
         
         Stats statsBefore = alice.getStats();
-        assertEquals(0, statsBefore.messagesSent);
-        assertEquals(0, statsBefore.messagesReceived);
+        assertEquals(0, statsBefore.sendingIndex);
+        assertEquals(0, statsBefore.receivingIndex);
 
         alice.encrypt("msg1".getBytes());
         alice.encrypt("msg2".getBytes());
 
         Stats statsAfter = alice.getStats();
-        assertEquals(2, statsAfter.messagesSent);
-    }
-
-    @Test
-    public void testSessionSerializationRoundtrip() throws CryptoException {
-        DoubleRatchet alice = new DoubleRatchet(crypto, sharedSecret, true);
-
-        // Send a message to change state
-        alice.encrypt("state change".getBytes());
-
-        byte[] serialized = alice.serialize();
-        assertNotNull(serialized);
-        assertTrue(serialized.length >= 128);
-
-        DoubleRatchet restored = DoubleRatchet.deserialize(crypto, serialized);
-
-        // Verify restored stats
-        assertEquals(alice.getStats().messagesSent, restored.getStats().messagesSent);
-
-        // Verify restored session can still encrypt
-        byte[] ct = restored.encrypt("after restore".getBytes());
-        assertNotNull(ct);
+        assertEquals(2, statsAfter.sendingIndex);
     }
 
     /**

@@ -30,18 +30,6 @@ static key sha256_transcript(const bytes& data) {
     return result;
 }
 
-/// Concatenate multiple byte arrays
-static bytes concat_all(const std::vector<bytes>& parts) {
-    size_t total = 0;
-    for (auto& p : parts) total += p.size();
-    bytes result;
-    result.reserve(total);
-    for (auto& p : parts) {
-        result.insert(result.end(), p.begin(), p.end());
-    }
-    return result;
-}
-
 /// HKDF-SHA256 extract+expand for transcript binding.
 /// salt=transcript_hash_ext, ikm=transcript_hash, info="SibnaX3DH_TranscriptBind_v3"
 static key transcript_bind(
@@ -51,7 +39,7 @@ static key transcript_bind(
     // HKDF-Extract(salt=transcript_hash_ext, ikm=transcript_hash)
     key salt_key{};
     std::copy(transcript_hash_ext.begin(), transcript_hash_ext.end(), salt_key.begin());
-    auto prk_result = Crypto::hmac_sha256(salt_key, transcript_hash);
+    auto prk_result = Crypto::hmac_sha256(salt_key, bytes(transcript_hash.begin(), transcript_hash.end()));
     if (prk_result.is_err()) {
         return key{};
     }
@@ -66,7 +54,7 @@ static key transcript_bind(
     if (t.is_err()) {
         return key{};
     }
-    return t.value();
+    return key(t.value().begin(), t.value().begin() + 32);
 }
 
 /// Derive X3DH shared secret from DH results + transcript hash
@@ -88,7 +76,7 @@ static key derive_shared_secret(
     }
 
     bytes info = {'S','i','b','n','a','X','3','D','H','_','v','3'};
-    auto result = Crypto::hkdf(concatenated, combined_transcript, info);
+    auto result = Crypto::hkdf(concatenated, bytes(combined_transcript.begin(), combined_transcript.end()), info);
     if (result.is_err()) {
         return key{};
     }
@@ -240,7 +228,7 @@ Result<std::pair<key, key>> x3dh_derive_session_keys(const key& shared_secret) {
     // HKDF-Extract: PRK = HMAC-Hash(salt, IKM)
     key salt_key{};
     std::copy(salt.begin(), salt.end(), salt_key.begin());
-    auto prk = Crypto::hmac_sha256(salt_key, shared_secret);
+    auto prk = Crypto::hmac_sha256(salt_key, bytes(shared_secret.begin(), shared_secret.end()));
     if (prk.is_err()) {
         return Result<std::pair<key, key>>(prk.code(), prk.message());
     }

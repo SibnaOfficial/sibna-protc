@@ -85,7 +85,7 @@ func (s *Session) InitiateAsInitiator(
 	if err != nil {
 		return nil, fmt.Errorf("init ratchet: %w", err)
 	}
-	s.EstablishedAt = time.Now().Unix()
+	s.EstablishedAt = float64(time.Now().Unix())
 	s.PeerID = append([]byte{}, peerBundle.IdentityKey...)
 
 	return ephemeral.PublicKeyBytes(), nil
@@ -122,7 +122,7 @@ func (s *Session) InitiateAsResponder(
 	if err != nil {
 		return fmt.Errorf("init ratchet: %w", err)
 	}
-	s.EstablishedAt = time.Now().Unix()
+	s.EstablishedAt = float64(time.Now().Unix())
 	s.PeerID = append([]byte{}, peerIdentity...)
 	return nil
 }
@@ -143,10 +143,10 @@ func SessionFromSharedSecret(
 		return nil, err
 	}
 	return &Session{
-		Config:       DefaultSessionConfig(),
-		Ratchet:      ratchet,
-		SessionID:    generateSessionID(),
-		EstablishedAt: time.Now().Unix(),
+		Config:        DefaultSessionConfig(),
+		Ratchet:       ratchet,
+		SessionID:     generateSessionID(),
+		EstablishedAt: float64(time.Now().Unix()),
 	}, nil
 }
 

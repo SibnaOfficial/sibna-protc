@@ -174,7 +174,8 @@ func (dr *DoubleRatchet) dhRatchetStep() error {
 	if err != nil {
 		return fmt.Errorf("DH recv: %w", err)
 	}
-	dr.RootKey, recvChainKey = dr.kdfRK(dhOutRecv)
+	recvRootKey, recvChainKey := dr.kdfRK(dhOutRecv)
+	dr.RootKey = recvRootKey
 	dr.ReceivingChain = NewChainKey(recvChainKey)
 
 	// Send step: generate new key pair
@@ -188,7 +189,8 @@ func (dr *DoubleRatchet) dhRatchetStep() error {
 	if err != nil {
 		return fmt.Errorf("DH send: %w", err)
 	}
-	dr.RootKey, sendChainKey = dr.kdfRK(dhOutSend)
+	sendRootKey, sendChainKey := dr.kdfRK(dhOutSend)
+	dr.RootKey = sendRootKey
 	dr.SendingChain = NewChainKey(sendChainKey)
 
 	return nil
@@ -250,7 +252,8 @@ func (dr *DoubleRatchet) RatchetEncrypt(plaintext, associatedData []byte) ([]byt
 		if err != nil {
 			return nil, fmt.Errorf("DH ratchet: %w", err)
 		}
-		dr.RootKey, sendChainKey := dr.kdfRK(dhOut)
+		sendRootKey, sendChainKey := dr.kdfRK(dhOut)
+		dr.RootKey = sendRootKey
 		dr.SendingChain = NewChainKey(sendChainKey)
 	}
 
@@ -264,7 +267,7 @@ func (dr *DoubleRatchet) RatchetEncrypt(plaintext, associatedData []byte) ([]byt
 	dr.SendingChain = nextCk
 
 	dr.MessagesSent++
-	dr.LastActivity = time.Now().Unix()
+	dr.LastActivity = float64(time.Now().Unix())
 
 	// Build header: dh_public(32) + message_number(4 LE)
 	header := make([]byte, 0, KeyLength+4)
@@ -331,7 +334,8 @@ func (dr *DoubleRatchet) RatchetDecrypt(ciphertext, associatedData []byte) ([]by
 		if err := dr.skipMessageKeys(msgNum); err != nil {
 			return nil, fmt.Errorf("skip keys: %w", err)
 		}
-		mk, _, err := dr.ReceivingChain.NextMessageKey()
+		var err error
+		mk, _, err = dr.ReceivingChain.NextMessageKey()
 		if err != nil {
 			return nil, fmt.Errorf("receiving chain exhausted: %w", err)
 		}
@@ -351,7 +355,7 @@ func (dr *DoubleRatchet) RatchetDecrypt(ciphertext, associatedData []byte) ([]by
 	}
 
 	dr.MessagesReceived++
-	dr.LastActivity = time.Now().Unix()
+	dr.LastActivity = float64(time.Now().Unix())
 	return plaintext, nil
 }
 

@@ -5,10 +5,10 @@
 
 ---
 
-## Project Maturity: Security-Hardened Research Prototype (Pre-Audit)
+## Project Maturity: Security-Hardened Research Prototype
 
 > [!IMPORTANT]
-> Sibna v3.0.1 is an architectural implementation designed with high-assurance security invariants. It has been engineered to mitigate common side-channel vulnerabilities and evaluated through internal statistical benchmarks. A formal independent security audit is planned and will be conducted when the project reaches the required maturity and an appropriate third-party reviewer is selected.
+> Sibna v3.0.1 is an architectural implementation designed with high-assurance security invariants. It has been engineered to mitigate common side-channel vulnerabilities and evaluated through internal statistical benchmarks. A formal independent security audit has not been performed.
 
 ---
 

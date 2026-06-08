@@ -5,9 +5,6 @@ A high-security implementation of the X3DH handshake, the Double Ratchet, and se
 > [!CAUTION]
 > **Security disclaimer**: this protocol is an experimental research prototype. It has **not** undergone an independent third-party cryptographic review or formal security audit. Use it for research and evaluation only.
 
-> [!IMPORTANT]
-> The codebase has been engineered to mitigate common side-channel vulnerabilities and has been exercised by extensive internal testing (cargo test, cargo-fuzz, Kani model checking, MIRI undefined-behaviour checking, cargo-audit, cargo-deny). A formal external audit has not yet been performed.
-
 ---
 
 ## Repository layout
@@ -29,8 +26,7 @@ A high-security implementation of the X3DH handshake, the Double Ratchet, and se
 │   ├── dart/             # Dart FFI bindings to the native core
 │   ├── flutter/          # Flutter plugin (FFI bindings + value types)
 │   └── cpp/              # pure C++17 + OpenSSL 3 implementation
-├── docs/                 # threat model, internal security notes, maturity proof
-├── audit/                # self-audit reports and patch documentation
+├── docs/                 # threat model
 └── .github/workflows/    # CI: format, clippy, tests, fuzz, Kani, MIRI, audit, deny, outdated
 ```
 
@@ -159,10 +155,8 @@ Full API in [`sdks/cpp/README.md`](sdks/cpp/README.md).
 
 ## Security and verification
 
-- **Threat model**: see [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
-- **Internal security review**: see [`docs/SECURITY_INTERNAL.md`](docs/SECURITY_INTERNAL.md).
-- **Maturity proof**: see [`docs/MATURITY_PROOF.md`](docs/MATURITY_PROOF.md).
-- **Self-audit reports**: see [`audit/`](audit/).
+- **Threat model**: see [`docs/THREAT_MODEL.md`](THREAT_MODEL.md).
+- **Security policy**: see [`SECURITY.md`](SECURITY.md).
 
 Continuous verification runs in CI on every push to `main` and on a weekly schedule:
 
@@ -209,8 +203,6 @@ that callers must understand before relying on them.
 - [`THREAT_MODEL.md`](THREAT_MODEL.md) — attacker model, mitigations, residual risks.
 - [`CHANGELOG.md`](CHANGELOG.md) — release history.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — contribution rules.
-- [`SECURITY_FIXES_v3.0.1.md`](SECURITY_FIXES_v3.0.1.md) — v3.0.1 patch log.
-- [`SDK_AUDIT_REPORT_v3.0.1.md`](SDK_AUDIT_REPORT_v3.0.1.md) — SDK coverage audit (this release).
 
 ## License
 

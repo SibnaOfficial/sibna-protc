@@ -1,5 +1,5 @@
 """
-Sibna Protocol — Python SDK v3.0.1 (sole official SDK).
+Sibna Protocol — Python SDK v3.0.2 (sole official SDK).
 
 Pure-Python implementation of the Sibna Protocol (X3DH handshake, Double
 Ratchet session encryption, sender-key group messaging, safety numbers,
@@ -17,7 +17,7 @@ Install:
 
 from __future__ import annotations
 
-__version__ = "3.0.1"
+__version__ = "3.0.2"
 __author__ = "Sibna Security Team"
 __license__ = "Apache-2.0 OR MIT"
 

@@ -5,7 +5,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
-## [Unreleased] — v3.1.0 Security & Interop Fixes
+## [v3.0.2] — 2026-06-16 (SDK Consolidation & Cross-Platform)
+
+### SDK Consolidation
+
+- **SDK consolidation**: Removed C++, Dart, Flutter, Go, Java, and JavaScript SDKs. Python SDK is the sole official SDK.
 
 ### Security Fixes — CRITICAL
 
@@ -13,16 +17,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 - **Python WebSocket JWT Leak (sdks/python)** — Async WebSocket client appended JWT to query string (`/ws?token=...`), leaking in access logs, browser history, Referer. **Fix:** token now sent via `Authorization: Bearer <jwt>` header in `ws_connect()`.
 
+- **Signed PreKey signature domain consistency (core/src/handshake/mod.rs)** — `PreKeyBundle::validate()` now verifies the SPK signature over `"SibnaSignedPreKey_v3" || signed_prekey`, consistent with `perform_handshake()` and Python's `verify_spk_signature()`.
+
 ### Documentation
 
-- `CHANGELOG.md` — this entry
-- `README.md` — repository layout and component descriptions updated
-- `PROTOCOL_SPECIFICATION.md` — PQ hybrid KDF input ordering corrected to match implementation (`dh1 || dh2 || dh3 || dh4 || ss_kem`); Signed PreKey signature domain prefix (`"SibnaSignedPreKey_v3"`) made consistent across Rust `PreKeyBundle::validate()` and `perform_handshake()`
-- `core/src/handshake/mod.rs:55` — stale comment corrected
+- `PROTOCOL_SPECIFICATION.md` — PQ hybrid KDF input ordering corrected to match implementation (`dh1 || dh2 || dh3 || dh4 || ss_kem`); Signed PreKey signature domain prefix (`"SibnaSignedPreKey_v3"`) made consistent across Rust `PreKeyBundle::validate()` and `perform_handshake()`.
+- `core/src/handshake/mod.rs:55` — stale comment corrected.
+
+### Cross-Platform CI
+
+- Added Windows and macOS CI jobs for clippy, test-core, test-proptest, build-verify, sdk-python, and server tests.
+- Added `run_interop.sh` bash script for cross-platform interoperability testing.
 
 ### Breaking Changes
 
 - **Python SDK**: WebSocket handshake now uses `Authorization: Bearer` header instead of query string; server must be updated.
+
+---
+
+## [Unreleased]
+
+### Planned
+
+- None currently scheduled.
 
 ---
 

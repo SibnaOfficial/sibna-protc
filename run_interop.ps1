@@ -18,7 +18,7 @@ $ErrorActionPreference = "Stop"
 $PY_CT_PATH = Join-Path $env:TEMP "sibna_py_ratchet_ct.json"
 $RUST_CT_PATH = Join-Path $env:TEMP "sibna_rust_ratchet_ct.json"
 
-$REPO_ROOT = "C:\Users\benso\Downloads\sibna-protc-main\sibna-protc-main"
+$REPO_ROOT = $PSScriptRoot
 $PY_SDK_DIR = Join-Path $REPO_ROOT "sdks\python"
 $CORE_DIR = Join-Path $REPO_ROOT "core"
 

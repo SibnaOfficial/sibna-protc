@@ -23,9 +23,9 @@
 
 | Component | Version |
 |-----------|---------|
-| Protocol specification | v3.0.1 |
-| Rust workspace (Cargo.toml) | 3.0.1 |
-| Python SDK (pyproject.toml / __init__.py) | 3.0.1 |
+| Protocol specification | v3.0.2 |
+| Rust workspace (Cargo.toml) | 3.0.2 |
+| Python SDK (pyproject.toml / __init__.py) | 3.0.2 |
 | Protocol wire VERSION_NUMBER | 10 |
 | MIN_COMPATIBLE_VERSION | 9 |
 
@@ -150,10 +150,10 @@ The Python SDK is a pure-Python implementation of the full Sibna Protocol stack:
 
 | Component | Version |
 |-----------|---------|
-| Protocol specification | v3.0.1 |
-| Rust core (CARGO_PKG_VERSION) | 3.0.1 |
-| Python SDK (__init__.py __version__) | 3.0.1 |
-| Python SDK (pyproject.toml version) | 3.0.1 |
+| Protocol specification | v3.0.2 |
+| Rust core (CARGO_PKG_VERSION) | 3.0.2 |
+| Python SDK (__init__.py __version__) | 3.0.2 |
+| Python SDK (pyproject.toml version) | 3.0.2 |
 | Protocol wire VERSION_NUMBER | 10 |
 | MIN_COMPATIBLE_VERSION | 9 |
 
@@ -244,7 +244,7 @@ Maintain as a complete, standalone protocol implementation:
 ## 6. Biggest risks
 
 1. **Padding format drift between SDKs** — cross-SDK test vectors exist but need ongoing validation
-2. **Version confusion** — server health endpoint returns "3.0.0" while everything else says 3.0.1
+2. **Version confusion** - server health endpoint returns "3.0.0" while everything else says 3.0.2
 3. **Interoperability if Python ever diverges from Rust core** — must exactly match Rust core KDF parameters, transcript hashes, wire formats
 4. **No independent security audit** — protocol and implementations have not been formally reviewed
 
@@ -252,4 +252,4 @@ Maintain as a complete, standalone protocol implementation:
 
 - Do NOT delete or reduce the Rust core — it's the security foundation
 - Do NOT implement full X3DH/Double Ratchet in Python without exact matching of all Rust core parameters
-- Do NOT ignore the version inconsistencies between server (3.0.0) and clients (3.0.1)
+- Do NOT ignore the version inconsistencies between server (3.0.0) and clients (3.0.2)

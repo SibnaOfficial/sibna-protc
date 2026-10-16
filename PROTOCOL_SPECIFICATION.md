@@ -1,4 +1,4 @@
-# Sibna Protocol Specification — v3.0.1
+# Sibna Protocol Specification - v3.0.2
 
 ---
 

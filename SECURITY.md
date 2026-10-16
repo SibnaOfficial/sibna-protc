@@ -1,4 +1,4 @@
-# Security Policy — Sibna Protocol v3.0.1
+# Security Policy - Sibna Protocol v3.0.2
 
 > [!CAUTION]
 > **Security Disclaimer**: Sibna is an experimental cryptographic implementation. It has not undergone formal 3rd-party review. Cryptographic software should not be deployed in critical production environments without independent validation.

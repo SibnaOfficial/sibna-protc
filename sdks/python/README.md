@@ -1,6 +1,6 @@
 # Sibna Protocol — Python SDK (sole official SDK)
 
-Pure-Python implementation of the Sibna Protocol v3.0.1: X3DH handshake, hybrid
+Pure-Python implementation of the Sibna Protocol v3.0.2: X3DH handshake, hybrid
 ML-KEM-768 post-quantum key agreement, Double Ratchet session encryption,
 sender-key group messaging, safety numbers, signed envelopes, encrypted storage,
 and the relay HTTP/WebSocket client.
@@ -192,10 +192,10 @@ disabled.
 
 | Item | Value |
 |------|-------|
-| Protocol specification | v3.0.1 |
+| Protocol specification | v3.0.2 |
 | Wire-format version | 10 |
 | Minimum compatible wire version | 9 |
-| Python SDK package | 3.0.1 |
+| Python SDK package | 3.0.2 |
 
 The Python package version, Rust workspace version, and protocol wire version
 are validated together by [`scripts/version_check.py`](../../scripts/version_check.py),

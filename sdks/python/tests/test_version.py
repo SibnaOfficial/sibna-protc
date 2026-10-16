@@ -18,8 +18,8 @@ from sibna import constants as C
 
 
 def test_package_version():
-    assert __version__ == "3.0.1"
-    assert PROTOCOL_VERSION_STRING == "3.0.1"
+    assert __version__ == "3.0.2"
+    assert PROTOCOL_VERSION_STRING == "3.0.2"
 
 
 def test_protocol_wire_versions():

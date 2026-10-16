@@ -1,4 +1,4 @@
-# Threat Model — Sibna Protocol v3.0.1
+# Threat Model - Sibna Protocol v3.0.2
 
 ## 1. Assets
 

@@ -20,7 +20,7 @@
 
 ### Version Sync (DONE)
 
-- scripts/version_check.py — PASSES (protocol 10, package 3.0.1 all in sync).
+- scripts/version_check.py — PASSES (protocol 10, package 3.0.2 all in sync).
 - CI workflow: deleted SDK jobs removed; Python lint/mypy/conformance/
   version/build/install jobs added; Rust security jobs kept.
 
@@ -172,7 +172,7 @@ Root cause analysis completed. Three categories of bugs were fixed:
 - Gap 3: Rust integration-test coverage (test_mdns_discovery hangs on Windows).
 - Gap 5: SDK inventory confirmed — Python only official SDK.
 - Server health endpoint returns "3.0.0" while all other components report
-  3.0.1 — potential client-side version mismatch logic issue.
+  3.0.2 - potential client-side version mismatch logic issue.
 
 ### Blockers
 

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sibna"
-version = "3.0.1"
-description = "Sibna Protocol v3.0.1 — pure Python SDK (X3DH, Double Ratchet, sender-key groups, safety numbers, signed envelopes, encrypted storage, relay HTTP/WebSocket client)"
+version = "3.0.2"
+description = "Sibna Protocol v3.0.2 — pure Python SDK (X3DH, Double Ratchet, sender-key groups, safety numbers, signed envelopes, encrypted storage, relay HTTP/WebSocket client)"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "Apache-2.0 OR MIT"}

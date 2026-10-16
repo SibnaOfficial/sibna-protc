@@ -85,6 +85,16 @@ def read_constants_wire_version() -> int:
     return int(m.group(1))
 
 
+def read_protocol_version_string() -> str:
+    constants = REPO_ROOT / "sdks" / "python" / "sibna" / "constants.py"
+    text = constants.read_text()
+    m = re.search(r'^PROTOCOL_VERSION_STRING\s*=\s*"([^"]+)"\s*$', text, re.MULTILINE)
+    if not m:
+        fail("sdks/python/sibna/constants.py: PROTOCOL_VERSION_STRING not found")
+        return "0.0.0"
+    return m.group(1)
+
+
 # ── CHANGELOG ────────────────────────────────────────────────────────────
 
 
@@ -100,10 +110,12 @@ def main() -> int:
     init_ver = read_sibna_version()
     spec_wire = read_protocol_wire_version()
     const_wire = read_constants_wire_version()
+    proto_ver_str = read_protocol_version_string()
 
     print(f"Rust workspace version   : {rust_ver}")
     print(f"Python package version   : {py_ver}")
     print(f"Python __version__       : {init_ver}")
+    print(f"Python version string    : {proto_ver_str}")
     print(f"Spec wire version        : {spec_wire}")
     print(f"Python constants wire    : {const_wire}")
 
@@ -112,6 +124,8 @@ def main() -> int:
         fail(f"version mismatch: Rust {rust_ver} != Python package {py_ver}")
     if py_ver != init_ver:
         fail(f"version mismatch: Python package {py_ver} != __init__ {init_ver}")
+    if py_ver != proto_ver_str:
+        fail(f"version mismatch: Python package {py_ver} != PROTOCOL_VERSION_STRING {proto_ver_str}")
 
     # Wire versions must agree.
     if spec_wire != const_wire:

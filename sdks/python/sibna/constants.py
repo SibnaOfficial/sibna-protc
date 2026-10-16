@@ -11,7 +11,7 @@ from __future__ import annotations
 
 # ── Protocol version ─────────────────────────────────────────────────────────
 # Normative protocol version (package / specification).
-PROTOCOL_VERSION_STRING = "3.0.1"
+PROTOCOL_VERSION_STRING = "3.0.2"
 
 # Wire-format protocol version (see PROTOCOL_SPECIFICATION.md §8).
 PROTOCOL_VERSION_WIRE = 10

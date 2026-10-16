@@ -1,4 +1,4 @@
-# Sibna Protocol v3.0.1
+# Sibna Protocol v3.0.2
 
 A high-security implementation of the X3DH handshake, the Double Ratchet, and
 sender-key group messaging — with a relay server, a native Rust core, and the

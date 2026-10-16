@@ -382,7 +382,7 @@ async fn health_handler() -> impl IntoResponse {
         StatusCode::OK,
         Json(serde_json::json!({
             "status": "ok",
-            "version": "3.0.1",
+            "version": "3.0.2",
             "transports": ["http", "websocket"],
             "auth": "ed25519-jwt"
         })),

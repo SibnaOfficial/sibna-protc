@@ -50,7 +50,7 @@ goal is confidential, forward-secret, post-compromise-secure messaging between
 two or more parties, with optional post-quantum protection at handshake time.
 
 The protocol is specified in [`PROTOCOL_SPECIFICATION.md`](PROTOCOL_SPECIFICATION.md)
-(v3.0.1). This repository contains three maintained components plus shared
+(v3.0.2). This repository contains three maintained components plus shared
 tests:
 
 | Component | Role |
@@ -147,11 +147,11 @@ and in the module docstrings.
 
 | Item | Value |
 |------|-------|
-| Protocol specification | v3.0.1 |
+| Protocol specification | v3.0.2 |
 | Wire-format version | 10 |
 | Minimum compatible wire version | 9 |
-| Rust workspace / core package | 3.0.1 |
-| Python SDK package | 3.0.1 |
+| Rust workspace / core package | 3.0.2 |
+| Python SDK package | 3.0.2 |
 
 The package version, Rust workspace version, and protocol wire version are kept
 in sync automatically by [`scripts/version_check.py`](scripts/version_check.py),

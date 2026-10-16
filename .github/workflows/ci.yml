@@ -7,7 +7,7 @@ on:
     branches: [main]
   schedule:
     - cron: '0 2 * * 0'  # Weekly: run extended security checks
-
+  workflow_dispatch:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -287,3 +287,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run MIRI (core library tests only)
         run: cargo miri test -p sibna-core --lib 2>&1 | tail -100
+
+
+
+
+
+
+
+
+
+

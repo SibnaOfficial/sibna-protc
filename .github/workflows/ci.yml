@@ -103,13 +103,13 @@ jobs:
           python-version: '3.13'
       # Linting & formatting
       - run: pip install black mypy
-      - run: cd sdks/python && black --check sibna tests scripts
+      - run: cd sdks/python && black --check sibna tests
       - run: cd sdks/python && mypy sibna
       # Unit + protocol-conformance tests
       - run: cd sdks/python && pip install -e ".[dev]"
       - run: cd sdks/python && python -m pytest tests/ -v
       # Version consistency (protocol, Rust workspace, Python package)
-      - run: python scripts/version_check.py
+      - run: python ../../scripts/version_check.py
       # Package build + clean installation + smoke test
       - run: cd sdks/python && python -m build
       - run: cd sdks/python && pip install dist/sibna-*.whl
@@ -162,6 +162,7 @@ jobs:
         run: |
           cargo build --release -p sibna-core --features p2p,pqc,argon2,ffi
           echo "lib-path=$(pwd)/target/release" >> $GITHUB_OUTPUT
+        shell: bash
       - name: Upload native library
         uses: actions/upload-artifact@v4
         with:

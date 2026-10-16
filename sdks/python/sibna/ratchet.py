@@ -1,13 +1,42 @@
 """
-Sibna Protocol v3.0.1 — Double Ratchet Implementation
+Sibna Protocol v3.0.1 — Double Ratchet.
 
-Matches the Rust core exactly:
-  - ChainKey derivation: HMAC-SHA256(chain_key, 0x01) = message_key,
-                         HMAC-SHA256(chain_key, 0x02) = next_chain_key
-  - Root key KDF: HKDF(root_key, dh_output, "SibnaRatchet_v3")
-  - Initial session KDF: HKDF(shared_secret, salt="SibnaSession_v3",
-                               info="SibnaRootAndChainKey_v3")
-  - Encryptor wire format: msg_number(8) || timestamp(8) || nonce(12) || ciphertext+tag
+Wire-compatible with the Rust core (`core/src/ratchet/`).
+
+Encrypt wire format (plaintext header, v3.0 default — matches Rust
+`RatchetMessage::to_bytes`):
+
+    dh_public(32) || message_number(8 LE) || previous_chain_length(8 LE) ||
+    timestamp(8 LE) || nonce(12) || ciphertext || tag(16)
+
+That is: RatchetHeader(56 bytes) || Encryptor output
+         (nonce(12) || ciphertext || tag(16)).
+
+Encrypted header (v3.1, `enable_header_encryption`):
+
+    nonce(12) || ChaCha20-Poly1305(header)(56) || tag(16) || ciphertext(...)
+
+Associated data: caller AD || header_bytes.
+
+Double Ratchet KDFs match Rust `core/src/crypto/kdf.rs`:
+
+    KDF_RK(root_key, dh_out) = HKDF(salt=root_key, ikm=dh_out,
+                                     info="SibnaRatchet_v3", len=64)
+        -> [root_key(32)][chain_key(32)]
+    KDF_CK(chain_key):
+        message_key   = HMAC-SHA256(chain_key, 0x01)
+        next_chain_key= HMAC-SHA256(chain_key, 0x02)
+    header_key        = HMAC-SHA256(chain_key, 0x03)
+
+Initial session from X3DH shared secret:
+
+    OKM = HKDF(salt="SibnaSession_v3", ikm=shared_secret,
+               info="SibnaRootAndChainKey_v3", len=64)
+    root_key   = OKM[:32]
+    chain_key  = OKM[32:]
+
+Skipped-message-key cache: up to MAX_SKIPPED_MESSAGES (2000) entries,
+keyed by (remote_dh_public, message_number), single-use, evicted oldest-first.
 """
 
 from __future__ import annotations
@@ -18,10 +47,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple
 
+from . import constants as C
 from .crypto import (
-    KEY_LENGTH,
-    NONCE_LENGTH,
-    TAG_LENGTH,
     X25519KeyPair,
     chacha20_poly1305_decrypt,
     chacha20_poly1305_encrypt,
@@ -29,19 +56,15 @@ from .crypto import (
     hmac_sha256,
     random_bytes,
 )
+from .errors import CryptoError, ProtocolError, ValidationError
 
-# ── Chain Key ────────────────────────────────────────────────────────────────
+MESSAGE_KEY_SEED = b"\x01"
+CHAIN_KEY_SEED = b"\x02"
+HEADER_KEY_SEED = b"\x03"
+HANDSHAKE_OK_AD = b"OK"
+HANDSHAKE_OK_AD = b"OK"
 
-MESSAGE_KEY_SEED = bytes([0x01])
-CHAIN_KEY_SEED = bytes([0x02])
-HEADER_KEY_SEED = bytes([0x03])
-
-INITIAL_KDF_SALT = b"SibnaSession_v3"
-INITIAL_KDF_INFO = b"SibnaRootAndChainKey_v3"
-DH_RATCHET_INFO = b"SibnaRatchet_v3"
-
-MAX_CHAIN_MESSAGES = 4000
-MAX_SKIPPED_MESSAGES = 2000
+HEADER_SIZE = 56  # dh_public(32) || message_number(8) || prev_len(8) || timestamp(8)
 
 
 @dataclass
@@ -51,13 +74,10 @@ class ChainKey:
     key: bytes
     index: int = 0
     created_at: float = field(default_factory=time.time)
-    max_messages: int = MAX_CHAIN_MESSAGES
+    max_messages: int = C.MAX_CHAIN_MESSAGES
 
     def next_message_key(self) -> Optional[Tuple[bytes, "ChainKey"]]:
-        """
-        Derive the next message key and advance the chain.
-        Returns (message_key, next_chain_key) or None if chain exhausted.
-        """
+        """Derive next message key and advance the chain."""
         if self.index >= self.max_messages:
             return None
         message_key = hmac_sha256(self.key, MESSAGE_KEY_SEED)
@@ -76,15 +96,12 @@ class ChainKey:
         return max(0, self.max_messages - self.index)
 
 
-# ── Double Ratchet Session ──────────────────────────────────────────────────
-
-
 class DoubleRatchet:
     """
     Double Ratchet encryption state machine.
 
-    Manages root_key, sending_chain, receiving_chain, DH key pairs,
-    and skipped message key cache for out-of-order delivery.
+    Manages root_key, sending/receiving chains, DH pairs, skipped-message-key
+    cache, and replay protection. Wire-compatible with the Rust core.
     """
 
     def __init__(
@@ -96,8 +113,10 @@ class DoubleRatchet:
         dh_local_public: Optional[bytes] = None,
         dh_remote_public: Optional[bytes] = None,
         previous_counter: int = 0,
-        max_skip: int = MAX_SKIPPED_MESSAGES,
+        max_skip: int = C.MAX_SKIPPED_MESSAGES,
     ):
+        if len(root_key) != C.KEY_LENGTH:
+            raise ValidationError("root_key must be 32 bytes")
         self.root_key = root_key
         self.sending_chain = sending_chain
         self.receiving_chain = receiving_chain
@@ -120,17 +139,18 @@ class DoubleRatchet:
         remote_dh_public: bytes,
         role_is_initiator: bool,
     ) -> "DoubleRatchet":
-        """
-        Create initial DoubleRatchet state from X3DH shared secret.
-        Matches Rust DoubleRatchetSession::from_shared_secret().
-        """
-        if len(shared_secret) != KEY_LENGTH:
-            raise ValueError("shared_secret must be 32 bytes")
+        """Create initial DoubleRatchet state from X3DH shared secret."""
+        if len(shared_secret) != C.KEY_LENGTH:
+            raise ValidationError("shared_secret must be 32 bytes")
+        if len(local_dh_private) != C.KEY_LENGTH:
+            raise ValidationError("local_dh_private must be 32 bytes")
+        if len(remote_dh_public) != C.KEY_LENGTH:
+            raise ValidationError("remote_dh_public must be 32 bytes")
 
         okm = hkdf(
             shared_secret,
-            salt=INITIAL_KDF_SALT,
-            info=INITIAL_KDF_INFO,
+            salt=C.INITIAL_KDF_SALT,
+            info=C.INITIAL_KDF_INFO,
             length=64,
         )
         root_key = okm[:32]
@@ -154,53 +174,41 @@ class DoubleRatchet:
             dh_remote_public=remote_dh_public,
         )
 
-    # ── Root key KDF ────────────────────────────────────────────────────
+    # ── Root key KDF ──────────────────────────────────────────────────
 
     def _kdf_rk(self, dh_out: bytes) -> Tuple[bytes, bytes]:
-        """KDF_RK: derive new root_key and chain_key from DH output."""
         okm = hkdf(
             dh_out,
             salt=self.root_key,
-            info=DH_RATCHET_INFO,
+            info=C.DH_RATCHET_INFO,
             length=64,
         )
         return okm[:32], okm[32:]
 
-    # ── DH Ratchet ──────────────────────────────────────────────────────
+    # ── DH Ratchet step ───────────────────────────────────────────────
 
     def _dh_ratchet_step(self) -> None:
-        """
-        Perform a DH ratchet step when a new remote key is received.
-        Matches Signal Double Ratchet spec exactly:
-
-        1. Receive step: DH(existing_local_priv, new_remote_pub) → root + receiving_chain
-        2. Send step: generate new_local, DH(new_local_priv, new_remote_pub) → root + sending_chain
-        """
-        # Save previous receiving chain for skipped key tracking
         if self.receiving_chain is not None:
             self.previous_counter = self.receiving_chain.index
 
-        # --- Receive step: use EXISTING local key ---
-        # This is critical: Alice uses her current private key (eph key) to DH with Bob's new key
+        assert self.dh_local_private is not None
+        assert self.dh_remote_public is not None
         existing_local = X25519KeyPair.from_private_bytes(self.dh_local_private)
         dh_out_recv = existing_local.dh(self.dh_remote_public)
         self.root_key, receiving_chain_key = self._kdf_rk(dh_out_recv)
         self.receiving_chain = ChainKey(key=receiving_chain_key)
 
-        # --- Send step: generate new key pair for future sends ---
         new_local = X25519KeyPair.generate()
         self.dh_local_private = new_local.private_key_bytes
         self.dh_local_public = new_local.public_key
+        assert self.dh_remote_public is not None
         dh_out_send = new_local.dh(self.dh_remote_public)
         self.root_key, sending_chain_key = self._kdf_rk(dh_out_send)
         self.sending_chain = ChainKey(key=sending_chain_key)
 
-    # ── Try skipped keys ────────────────────────────────────────────────
+    # ── Skipped keys ──────────────────────────────────────────────────
 
-    def _try_skipped_message_key(
-        self, dh_public: bytes, message_number: int
-    ) -> Optional[bytes]:
-        """Check if we have a skipped message key for this (pub, nr)."""
+    def _try_skipped_message_key(self, dh_public: bytes, message_number: int) -> Optional[bytes]:
         key = (dh_public, message_number)
         if key in self.skipped_keys:
             mk = self.skipped_keys.pop(key)
@@ -208,7 +216,6 @@ class DoubleRatchet:
         return None
 
     def _skip_message_keys(self, until: int) -> None:
-        """Skip message keys in the receiving chain until `until`."""
         if self.receiving_chain is None:
             return
         while self.receiving_chain.index < until:
@@ -216,30 +223,64 @@ class DoubleRatchet:
             if result is None:
                 break
             mk, next_ck = result
-            self.skipped_keys[
-                (self.dh_remote_public, self.receiving_chain.index)
-            ] = mk
+            assert self.dh_remote_public is not None
+            self.skipped_keys[(self.dh_remote_public, self.receiving_chain.index)] = mk
             if len(self.skipped_keys) > self.max_skip:
-                # Evict oldest entries
                 oldest_key = next(iter(self.skipped_keys))
                 del self.skipped_keys[oldest_key]
             self.receiving_chain = next_ck
 
-    # ── Encrypt ─────────────────────────────────────────────────────────
+    # ── Transactional state copy ──────────────────────────────────────
+
+    def _clone_for_decrypt(self) -> "DoubleRatchet":
+        """Create an isolated copy of ratchet state for transactional decryption.
+
+        ChainKey objects are immutable once created: ``next_message_key()``
+        returns a new instance rather than mutating in place, so sharing
+        references between the original and the clone is safe.  The
+        ``skipped_keys`` dict is shallow-copied so that a partial consumption
+        during a failed decryption attempt does not affect the live state.
+        """
+        clone = DoubleRatchet(
+            root_key=self.root_key,
+            sending_chain=self.sending_chain,
+            receiving_chain=self.receiving_chain,
+            dh_local_private=self.dh_local_private,
+            dh_local_public=self.dh_local_public,
+            dh_remote_public=self.dh_remote_public,
+            previous_counter=self.previous_counter,
+            max_skip=self.max_skip,
+        )
+        clone.skipped_keys = dict(self.skipped_keys)
+        clone.messages_sent = self.messages_sent
+        clone.messages_received = self.messages_received
+        clone.created_at = self.created_at
+        clone.last_activity = self.last_activity
+        return clone
+
+    # ── Encrypt ───────────────────────────────────────────────────────
 
     def ratchet_encrypt(self, plaintext: bytes, associated_data: bytes = b"") -> bytes:
-        """
-        Encrypt a message using the sending chain.
+        """Encrypt using the sending chain.
 
-        Wire format: dh_public(32) || message_number(4) || encrypted(12+msg+16)
+        Wire format (matches Rust ``RatchetMessage::to_bytes``):
 
-        If no sending chain exists (responder's first reply), generates a new
-        DH key pair and performs a DH ratchet step to create one.
+            header(56) || encryptor_frame(...)
+
+        header  = dh_public(32) || message_number(8 LE)
+                  || previous_chain_length(8 LE) || timestamp(8 LE)
+
+        encryptor_frame = message_number(8 LE) || timestamp(8 LE)
+                          || padding(8 LE) || nonce(12) || ciphertext || tag(16)
+
+        Associated data = caller AD || header.
         """
-        # If no sending chain, do a DH ratchet step to create one
+        if len(associated_data) > C.MAX_AD_LEN:
+            raise ValidationError("Associated data too long")
+
         if self.sending_chain is None:
             if self.dh_remote_public is None:
-                raise RuntimeError("No remote DH public key")
+                raise CryptoError("No remote DH public key")
             new_local = X25519KeyPair.generate()
             self.dh_local_private = new_local.private_key_bytes
             self.dh_local_public = new_local.public_key
@@ -247,87 +288,150 @@ class DoubleRatchet:
             self.root_key, sending_chain_key = self._kdf_rk(dh_out)
             self.sending_chain = ChainKey(key=sending_chain_key)
 
-        # Capture the message number BEFORE advancing the chain.
-        # The message number is the chain index at the time of key derivation.
         msg_num = self.sending_chain.index
-
         result = self.sending_chain.next_message_key()
         if result is None:
-            raise RuntimeError("Chain exhausted")
+            raise CryptoError("Chain exhausted")
         message_key, next_ck = result
         self.sending_chain = next_ck
-
         self.messages_sent += 1
 
-        # Build header: dh_public(32) + message_number(4 LE)
-        header = self.dh_local_public + struct.pack("<I", msg_num & 0xFFFFFFFF)
-
-        # Nonce: 8 bytes random + 4 bytes message_number LE
-        nonce_prefix = os.urandom(8)
-        nonce = nonce_prefix + struct.pack("<I", msg_num & 0xFFFFFFFF)
-
-        # Associated data = caller's AD + header
-        full_ad = associated_data + header
-
-        ciphertext = chacha20_poly1305_encrypt(
-            message_key, plaintext, full_ad, nonce
+        assert self.dh_local_public is not None
+        timestamp = int(time.time())
+        header = (
+            self.dh_local_public
+            + struct.pack("<Q", msg_num)
+            + struct.pack("<Q", self.previous_counter)
+            + struct.pack("<Q", timestamp)
         )
+        if len(header) != HEADER_SIZE:
+            raise CryptoError("Header size mismatch")
+
+        nonce = random_bytes(C.NONCE_LENGTH)
+        # Encryptor frame header: message_number(8) || timestamp(8) || padding(8).
+        # This is part of the AEAD associated data, matching the Rust Encryptor.
+        frame_header = (
+            struct.pack("<Q", 0)  # encryptor message_number (fresh per message)
+            + struct.pack("<Q", timestamp)
+            + struct.pack("<Q", 0)  # padding (Rust always writes 0)
+        )
+        full_ad = associated_data + header + frame_header
+        ct_and_tag = chacha20_poly1305_encrypt(
+            message_key, plaintext, full_ad, nonce
+        )  # nonce(12) || ciphertext || tag(16)
+
+        frame = frame_header + ct_and_tag
 
         self.last_activity = time.time()
-        return header + ciphertext
+        return header + frame
 
-    # ── Decrypt ─────────────────────────────────────────────────────────
+    # ── Decrypt ───────────────────────────────────────────────────────
 
     def ratchet_decrypt(self, ciphertext: bytes, associated_data: bytes = b"") -> bytes:
-        """
-        Decrypt a message using the receiving chain.
+        if len(associated_data) > C.MAX_AD_LEN:
+            raise ValidationError("Associated data too long")
+        # header(56) + frame_min(8+8+8+12+16)
+        if len(ciphertext) < HEADER_SIZE + 52:
+            raise CryptoError("Ciphertext too short")
 
-        Wire format: dh_public(32) || message_number(4) || encrypted(12+msg+16)
-        """
-        if len(ciphertext) < KEY_LENGTH + 4 + NONCE_LENGTH + TAG_LENGTH:
-            raise ValueError("Ciphertext too short")
+        remote_dh_pub = ciphertext[: C.KEY_LENGTH]
+        msg_num = struct.unpack("<Q", ciphertext[C.KEY_LENGTH : C.KEY_LENGTH + 8])[0]
+        previous_chain_length = struct.unpack(
+            "<Q", ciphertext[C.KEY_LENGTH + 8 : C.KEY_LENGTH + 16]
+        )[0]
+        timestamp = struct.unpack("<Q", ciphertext[C.KEY_LENGTH + 16 : C.KEY_LENGTH + 24])[0]
+        frame = ciphertext[HEADER_SIZE:]
 
-        remote_dh_pub = ciphertext[:KEY_LENGTH]
-        msg_num = struct.unpack("<I", ciphertext[KEY_LENGTH : KEY_LENGTH + 4])[0]
-        encrypted_part = ciphertext[KEY_LENGTH + 4 :]
+        self._validate_timestamp(timestamp)
 
-        # Try skipped key first
-        mk = self._try_skipped_message_key(remote_dh_pub, msg_num)
+        # Transactional: perform all state mutations on an isolated clone.
+        # Commit to the live state only after ChaCha20-Poly1305 authentication
+        # succeeds.  On any failure the clone is discarded and the live state
+        # is unchanged.
+        candidate = self._clone_for_decrypt()
+
+        mk = candidate._try_skipped_message_key(remote_dh_pub, msg_num)
         if mk is None:
-            # Check if this is from a new remote key (DH ratchet step needed)
-            if remote_dh_pub != self.dh_remote_public:
-                # Discard old receiving chain and skipped keys (forward secrecy)
-                self.receiving_chain = None
-                self.skipped_keys.clear()
-                # Perform DH ratchet: receive step + send step
-                self.dh_remote_public = remote_dh_pub
-                self._dh_ratchet_step()
+            if remote_dh_pub != candidate.dh_remote_public:
+                candidate.receiving_chain = None
+                candidate.skipped_keys.clear()
+                candidate.dh_remote_public = remote_dh_pub
+                candidate._dh_ratchet_step()
 
-            # Skip ahead to the needed message number in the new receiving chain
-            if self.receiving_chain is not None:
-                self._skip_message_keys(msg_num)
-                result = self.receiving_chain.next_message_key()
+            if candidate.receiving_chain is not None:
+                candidate._skip_message_keys(msg_num)
+                result = candidate.receiving_chain.next_message_key()
                 if result is None:
-                    raise RuntimeError("Receiving chain exhausted")
+                    raise CryptoError("Receiving chain exhausted")
                 mk, next_ck = result
-                self.receiving_chain = next_ck
+                candidate.receiving_chain = next_ck
             else:
-                raise RuntimeError("No receiving chain")
+                raise CryptoError("No receiving chain")
 
-        # Build header for AD verification
-        header = remote_dh_pub + struct.pack("<I", msg_num & 0xFFFFFFFF)
-        full_ad = associated_data + header
+        header = (
+            remote_dh_pub
+            + struct.pack("<Q", msg_num)
+            + struct.pack("<Q", previous_chain_length)
+            + struct.pack("<Q", timestamp)
+        )
 
-        # chacha20_poly1305_encrypt returns nonce(12) || ciphertext || tag(16)
-        # Pass the entire encrypted_part to decrypt which extracts the nonce
-        plaintext = chacha20_poly1305_decrypt(mk, encrypted_part, full_ad)
+        # frame: frame_header(24) || nonce(12) || ciphertext || tag(16)
+        frame_header = frame[:24]
+        nonce = frame[24 : 24 + C.NONCE_LENGTH]
+        ct_and_tag = frame[24 + C.NONCE_LENGTH :]
 
-        self.messages_received += 1
-        self.last_activity = time.time()
+        # full_ad = caller AD || header(56) || frame_header(24)
+        full_ad = associated_data + header + frame_header
+
+        try:
+            plaintext = chacha20_poly1305_decrypt(
+                mk,
+                nonce + ct_and_tag,
+                full_ad,
+            )  # verify authentication; plaintext is the message payload
+        except Exception as exc:
+            raise CryptoError("Decryption failed") from exc
+
+        # Commit candidate state only after successful authentication.
+        candidate.messages_received += 1
+        candidate.last_activity = time.time()
+        self.root_key = candidate.root_key
+        self.sending_chain = candidate.sending_chain
+        self.receiving_chain = candidate.receiving_chain
+        self.dh_local_private = candidate.dh_local_private
+        self.dh_local_public = candidate.dh_local_public
+        self.dh_remote_public = candidate.dh_remote_public
+        self.previous_counter = candidate.previous_counter
+        self.skipped_keys = candidate.skipped_keys
+        self.messages_received = candidate.messages_received
+        self.last_activity = candidate.last_activity
+
         return plaintext
 
-    # ── Message Number / Counter ────────────────────────────────────────
+    # ── Helpers ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _validate_timestamp(timestamp: int) -> None:
+        now = int(time.time())
+        if timestamp == 0:
+            raise CryptoError("Rejected timestamp == 0")
+        if timestamp > now + C.MAX_TIMESTAMP_FUTURE_SECS:
+            raise CryptoError("Timestamp in the future")
+        if now > timestamp + C.MAX_MESSAGE_AGE_SECS:
+            raise CryptoError("Message too old")
+
+    def validate_message_number(self, n: int) -> None:
+        if n > C.MAX_MESSAGE_NUMBER:
+            raise ProtocolError("Message number exceeds limit")
 
     @property
     def current_message_number(self) -> int:
         return self.messages_sent + self.messages_received
+
+
+__all__ = [
+    "ChainKey",
+    "DoubleRatchet",
+    "HEADER_SIZE",
+    "ProtocolError",
+]

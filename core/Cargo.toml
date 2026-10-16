@@ -110,8 +110,35 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"
 tokio-test = "0.4.4"
 criterion = { version = "0.5.1", features = ["html_reports"] }
 proptest = "1.5.0"
+blake3 = { workspace = true }
+hkdf = { workspace = true }
+sha2 = { workspace = true }
 
 
 [[test]]
 name = "integration"
 path = "tests/integration.rs"
+
+[[test]]
+name = "gen_interop_vectors"
+path = "tests/gen_interop_vectors.rs"
+
+[[test]]
+name = "debug_x3dh"
+path = "tests/debug_x3dh.rs"
+
+[[test]]
+name = "offensive_test"
+path = "tests/offensive_test.rs"
+
+[[test]]
+name = "advanced_offensive_test"
+path = "tests/advanced_offensive_test.rs"
+
+[[test]]
+name = "proptest_properties"
+path = "tests/proptest_properties.rs"
+
+[[test]]
+name = "statistical_timing_test"
+path = "tests/statistical_timing_test.rs"

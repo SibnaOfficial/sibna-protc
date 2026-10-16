@@ -1,12 +1,25 @@
 """
-Sibna Protocol v3.0.1 — Group Messaging (Sender Keys)
+Sibna Protocol v3.0.1 — Group Messaging (Sender Keys).
 
-Implements Sender Keys protocol for efficient group encryption.
-Matches the Rust core's group module exactly:
-  - Chain key derivation: HKDF(chain_key, "SibnaGroupMessageKey_v3") = message_key
-  - Chain advance: HKDF(chain_key, "SibnaGroupChainKey_v3") = next_chain_key
-  - Wire format: group_id(32) || key_id(4) || message_number(4) || nonce(12) || ciphertext+tag
-  - Signature: Ed25519 over signable_bytes
+Implements the sender-key group design from the Rust core
+(`core/src/group/mod.rs`). Each group member has a SenderKey chain; messages are
+encrypted with a per-message key derived from the chain and authenticated with
+the sender's Ed25519 identity key.
+
+Wire format for a group message:
+
+    group_id(32) || sender_key_id(4 LE) || message_number(4 LE)
+    || epoch(8 LE) || timestamp(8 LE) || ct_len(4 LE) || ciphertext
+    || sig_len(4 LE) || signature
+
+The ciphertext is ``nonce(12) || ct || tag`` from ChaCha20-Poly1305 with
+associated data = group_id. The signature (Ed25519) covers
+``signable_bytes() = group_id || sender_key_id || message_number || epoch ||
+timestamp || SHA-256(ciphertext)``.
+
+Key distribution (SenderKeyMessage) binds: group_id, sender public key,
+encrypted sender key, key_id, timestamp, and an Ed25519 signature over
+``group_id || key_id(4 LE) || encrypted_key || timestamp(8 LE)``.
 """
 
 from __future__ import annotations
@@ -15,34 +28,30 @@ import os
 import struct
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
+from . import constants as C
 from .crypto import (
-    KEY_LENGTH,
-    NONCE_LENGTH,
-    Ed25519KeyPair,
     X25519KeyPair,
+    Ed25519KeyPair,
     chacha20_poly1305_decrypt,
     chacha20_poly1305_encrypt,
     hkdf,
-    hmac_sha256,
-    random_bytes,
     sha256,
 )
+from .errors import CryptoError, ValidationError
 
-MAX_GROUP_SIZE = 256
-MAX_GROUP_MESSAGE_SIZE = 10 * 1024 * 1024  # 10 MB
-DEFAULT_KEY_EXPIRATION_SECS = 7 * 86400  # 7 days
+MAX_GROUP_SIZE = C.MAX_GROUP_SIZE
+MAX_GROUP_MESSAGE_SIZE = C.MAX_GROUP_MESSAGE_SIZE
+DEFAULT_KEY_EXPIRATION_SECS = 7 * 86400
 
-
-# ── Sender Key ──────────────────────────────────────────────────────────────
+GROUP_MESSAGE_KEY_INFO = C.GROUP_MESSAGE_KEY_INFO
+GROUP_CHAIN_KEY_INFO = C.GROUP_CHAIN_KEY_INFO
+GROUP_KEY_DISTRIBUTE_INFO = C.GROUP_KEY_DISTRIBUTE_INFO
 
 
 class SenderKey:
-    """
-    Sender key for group encryption.
-    Matches Rust SenderKey.
-    """
+    """Sender key for group encryption (matches Rust ``SenderKey``)."""
 
     def __init__(
         self,
@@ -52,6 +61,8 @@ class SenderKey:
         created_at: Optional[float] = None,
         expiration: Optional[float] = None,
     ):
+        if len(chain_key) != C.KEY_LENGTH:
+            raise ValidationError("chain_key must be 32 bytes")
         self.chain_key = chain_key
         self.message_number = message_number
         self.key_id = key_id
@@ -60,40 +71,22 @@ class SenderKey:
 
     @classmethod
     def generate(cls, key_id: int = 0) -> "SenderKey":
-        """Generate a new random sender key."""
         return cls(
-            chain_key=random_bytes(KEY_LENGTH),
+            chain_key=os.urandom(C.KEY_LENGTH),
             key_id=key_id,
             expiration=time.time() + DEFAULT_KEY_EXPIRATION_SECS,
         )
 
-    def next_message_key(self) -> Optional[bytes]:
-        """
-        Derive the next message key and advance the chain.
-        Matches Rust SenderKey::next_message_key().
-        """
+    def next_message_key(self) -> bytes:
+        """Derive next message key and advance the chain."""
         if self.expiration and time.time() > self.expiration:
-            raise RuntimeError("Sender key expired")
-
-        # message_key = HKDF(chain_key, info="SibnaGroupMessageKey_v3")
+            raise CryptoError("Sender key expired")
         message_key = hkdf(
-            self.chain_key,
-            salt=None,
-            info=b"SibnaGroupMessageKey_v3",
-            length=KEY_LENGTH,
+            self.chain_key, salt=None, info=GROUP_MESSAGE_KEY_INFO, length=C.KEY_LENGTH
         )
-
-        # next_chain = HKDF(chain_key, info="SibnaGroupChainKey_v3")
-        next_chain = hkdf(
-            self.chain_key,
-            salt=None,
-            info=b"SibnaGroupChainKey_v3",
-            length=KEY_LENGTH,
-        )
-
+        next_chain = hkdf(self.chain_key, salt=None, info=GROUP_CHAIN_KEY_INFO, length=C.KEY_LENGTH)
         self.chain_key = next_chain
         self.message_number += 1
-
         return message_key
 
     @property
@@ -102,13 +95,7 @@ class SenderKey:
             return False
         return time.time() > self.expiration
 
-    def age_secs(self) -> float:
-        return time.time() - self.created_at
-
-    def needs_rotation(self) -> bool:
-        return self.is_expired or self.age_secs() > 86400
-
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "chain_key": self.chain_key.hex(),
             "message_number": self.message_number,
@@ -118,7 +105,7 @@ class SenderKey:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "SenderKey":
+    def from_dict(cls, d: dict[str, Any]) -> "SenderKey":
         return cls(
             chain_key=bytes.fromhex(d["chain_key"]),
             message_number=d["message_number"],
@@ -128,25 +115,18 @@ class SenderKey:
         )
 
 
-# ── Sender Key Distribution Message ─────────────────────────────────────────
-
-
 @dataclass
 class SenderKeyMessage:
-    """
-    Key distribution message for group join.
-    Matches Rust SenderKeyMessage.
-    """
+    """Key distribution message for group join."""
 
-    group_id: bytes  # 32 bytes
+    group_id: bytes
     sender_public_key: bytes  # Ed25519 public key (32 bytes)
-    encrypted_key: bytes  # Encrypted sender key
+    encrypted_key: bytes  # ChaCha20-Poly1305(nonce||ct||tag) of sender chain key
     signature: bytes  # Ed25519 signature
     key_id: int
     timestamp: float = field(default_factory=time.time)
 
     def signable_bytes(self) -> bytes:
-        """Bytes to sign: group_id || key_id || encrypted_key || timestamp."""
         return (
             self.group_id
             + struct.pack("<I", self.key_id)
@@ -155,22 +135,17 @@ class SenderKeyMessage:
         )
 
     def sign(self, identity: Ed25519KeyPair) -> bytes:
-        """Sign this distribution message."""
         self.signature = identity.sign(self.signable_bytes())
         return self.signature
 
     def verify_signature(self) -> bool:
-        """Verify the Ed25519 signature."""
-        if len(self.signature) != 64:
+        if len(self.signature) != C.ED25519_SIGNATURE_LENGTH:
             return False
         return Ed25519KeyPair.verify_with_key(
-            self.sender_public_key,
-            self.signable_bytes(),
-            self.signature,
+            self.sender_public_key, self.signable_bytes(), self.signature
         )
 
     def to_bytes(self) -> bytes:
-        """Serialize to bytes for wire transmission."""
         return (
             self.group_id
             + self.sender_public_key
@@ -184,7 +159,6 @@ class SenderKeyMessage:
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "SenderKeyMessage":
-        """Deserialize from bytes."""
         offset = 0
         group_id = data[offset : offset + 32]
         offset += 32
@@ -201,7 +175,6 @@ class SenderKeyMessage:
         sig_len = struct.unpack("<I", data[offset : offset + 4])[0]
         offset += 4
         signature = data[offset : offset + sig_len]
-
         return cls(
             group_id=group_id,
             sender_public_key=sender_public_key,
@@ -212,87 +185,172 @@ class SenderKeyMessage:
         )
 
 
-# ── Group Session ───────────────────────────────────────────────────────────
+class GroupMessage:
+    """An encrypted + signed group message."""
+
+    def __init__(
+        self,
+        group_id: bytes,
+        sender_key_id: int,
+        message_number: int,
+        ciphertext: bytes,
+        epoch: int,
+        timestamp: int,
+        sender_signature: bytes,
+    ):
+        self.group_id = group_id
+        self.sender_key_id = sender_key_id
+        self.message_number = message_number
+        self.ciphertext = ciphertext
+        self.epoch = epoch
+        self.timestamp = timestamp
+        self.sender_signature = sender_signature
+
+    def signable_bytes(self) -> bytes:
+        ct_hash = sha256(self.ciphertext)
+        buf = bytearray()
+        buf.extend(self.group_id)
+        buf.extend(struct.pack("<I", self.sender_key_id))
+        buf.extend(struct.pack("<I", self.message_number))
+        buf.extend(struct.pack("<Q", self.epoch))
+        buf.extend(struct.pack("<Q", self.timestamp))
+        buf.extend(ct_hash)
+        return bytes(buf)
+
+    def to_bytes(self) -> bytes:
+        out = bytearray()
+        out.extend(self.group_id)
+        out.extend(struct.pack("<I", self.sender_key_id))
+        out.extend(struct.pack("<I", self.message_number))
+        out.extend(struct.pack("<Q", self.epoch))
+        out.extend(struct.pack("<Q", self.timestamp))
+        out.extend(struct.pack("<I", len(self.ciphertext)))
+        out.extend(self.ciphertext)
+        out.extend(struct.pack("<I", len(self.sender_signature)))
+        out.extend(self.sender_signature)
+        return bytes(out)
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> "GroupMessage":
+        offset = 0
+        group_id = data[offset : offset + 32]
+        offset += 32
+        sender_key_id = struct.unpack("<I", data[offset : offset + 4])[0]
+        offset += 4
+        message_number = struct.unpack("<I", data[offset : offset + 4])[0]
+        offset += 4
+        epoch = struct.unpack("<Q", data[offset : offset + 8])[0]
+        offset += 8
+        timestamp = struct.unpack("<Q", data[offset : offset + 8])[0]
+        offset += 8
+        ct_len = struct.unpack("<I", data[offset : offset + 4])[0]
+        offset += 4
+        ciphertext = data[offset : offset + ct_len]
+        offset += ct_len
+        sig_len = struct.unpack("<I", data[offset : offset + 4])[0]
+        offset += 4
+        signature = data[offset : offset + sig_len]
+        return cls(
+            group_id=group_id,
+            sender_key_id=sender_key_id,
+            message_number=message_number,
+            ciphertext=ciphertext,
+            epoch=epoch,
+            timestamp=timestamp,
+            sender_signature=signature,
+        )
 
 
 class GroupSession:
-    """
-    Group encryption session using Sender Keys.
-
-    Each member has their own SenderKey. When joining, the key is
-    distributed via SenderKeyMessage encrypted to each member.
-    """
+    """Group encryption session using Sender Keys."""
 
     def __init__(self, group_id: bytes):
         if len(group_id) != 32:
-            raise ValueError("group_id must be 32 bytes")
+            raise ValidationError("group_id must be 32 bytes")
         self.group_id = group_id
         self._sender_key: Optional[SenderKey] = None
         self._sender_keys: Dict[bytes, SenderKey] = {}  # public_key -> SenderKey
-        self._key_rotation_count = 0
+        self.members: List[bytes] = []
+        self.epoch = 0
+        self.created_at = time.time()
+        self.last_activity = time.time()
 
     @classmethod
     def create(cls, group_id: Optional[bytes] = None) -> "GroupSession":
-        """Create a new group session with a random group ID."""
         if group_id is None:
-            group_id = random_bytes(32)
+            group_id = os.urandom(32)
         session = cls(group_id)
-        session._sender_key = SenderKey.generate(key_id=0)
+        session._sender_key = SenderKey.generate(key_id=1)
         return session
 
-    # ── Sender operations ───────────────────────────────────────────────
+    def initialize_sender_key(self, key_id: int = 1) -> None:
+        self._sender_key = SenderKey.generate(key_id=key_id)
 
-    def encrypt(self, plaintext: bytes) -> bytes:
-        """
-        Encrypt a group message using our sender key.
-        Wire format: group_id(32) || key_id(4) || msg_number(4) || nonce(12) || ciphertext+tag
-        """
+    def add_member(self, public_key: bytes) -> None:
+        if len(public_key) != 32:
+            raise ValidationError("public key must be 32 bytes")
+        if len(self.members) >= MAX_GROUP_SIZE:
+            raise CryptoError("Group size limit reached")
+        if public_key in self.members:
+            raise CryptoError("Duplicate member")
+        self.members.append(public_key)
+        self.epoch += 1
+        self.last_activity = time.time()
+
+    def remove_member(self, public_key: bytes) -> None:
+        self.members = [k for k in self.members if k != public_key]
+        self._sender_keys.pop(public_key, None)
+        self.epoch += 1
+        # Immediate rotation for future secrecy.
+        if self._sender_key is not None:
+            self._sender_key = SenderKey.generate(key_id=self._sender_key.key_id + 1)
+        self.last_activity = time.time()
+
+    # ── Sender operations ───────────────────────────────────────────
+
+    def encrypt(
+        self, plaintext: bytes, signing_identity: Optional[Ed25519KeyPair] = None
+    ) -> GroupMessage:
+        if len(plaintext) > MAX_GROUP_MESSAGE_SIZE:
+            raise CryptoError("Group message too large")
         if self._sender_key is None:
-            raise RuntimeError("No sender key — join or create group first")
+            raise CryptoError("No sender key — initialize group first")
 
-        mk = self._sender_key.next_message_key()
-        if mk is None:
-            raise RuntimeError("Sender key chain exhausted")
-
-        nonce = random_bytes(NONCE_LENGTH)
+        message_key = self._sender_key.next_message_key()
+        nonce = os.urandom(C.NONCE_LENGTH)
+        ct_and_tag = chacha20_poly1305_encrypt(message_key, plaintext, self.group_id, nonce)
+        self._sender_key.message_number  # already advanced
         msg_number = self._sender_key.message_number - 1
 
-        # Build AD: group_id || key_id || message_number
-        ad = (
-            self.group_id
-            + struct.pack("<I", self._sender_key.key_id)
-            + struct.pack("<I", msg_number)
+        message = GroupMessage(
+            group_id=self.group_id,
+            sender_key_id=self._sender_key.key_id,
+            message_number=msg_number,
+            ciphertext=ct_and_tag,
+            epoch=self.epoch,
+            timestamp=int(time.time()),
+            sender_signature=b"",
         )
+        if signing_identity is not None:
+            sig = signing_identity.sign(message.signable_bytes())
+            message.sender_signature = sig
 
-        ciphertext = chacha20_poly1305_encrypt(mk, plaintext, ad, nonce)
-
-        return (
-            self.group_id
-            + struct.pack("<I", self._sender_key.key_id)
-            + struct.pack("<I", msg_number)
-            + ciphertext
-        )
+        self.last_activity = time.time()
+        return message
 
     def get_key_distribution_message(
         self, identity: Ed25519KeyPair, member_public_keys: List[bytes]
     ) -> List[SenderKeyMessage]:
-        """
-        Create key distribution messages for group members.
-        Each message encrypts our sender key to a member's X25519 key.
-        """
         if self._sender_key is None:
-            raise RuntimeError("No sender key")
-
+            raise CryptoError("No sender key")
         messages = []
         for member_pub in member_public_keys:
-            # Encrypt sender key to member (using X25519 DH + HKDF + ChaCha20)
             ephemeral = X25519KeyPair.generate()
             shared = ephemeral.dh(member_pub)
-            enc_key = hkdf(shared, info=b"SibnaGroupKeyDistribute_v3", length=KEY_LENGTH)
+            enc_key = hkdf(shared, salt=None, info=GROUP_KEY_DISTRIBUTE_INFO, length=C.KEY_LENGTH)
             encrypted = chacha20_poly1305_encrypt(
                 enc_key, self._sender_key.chain_key
-            )
-
+            )  # nonce||ct||tag
             msg = SenderKeyMessage(
                 group_id=self.group_id,
                 sender_public_key=identity.public_key,
@@ -302,96 +360,62 @@ class GroupSession:
             )
             msg.sign(identity)
             messages.append(msg)
-
         return messages
 
-    # ── Receiver operations ─────────────────────────────────────────────
+    # ── Receiver operations ─────────────────────────────────────────
 
     def process_key_distribution(
-        self,
-        msg: SenderKeyMessage,
-        our_x25519: X25519KeyPair,
-        ephemeral_public: bytes,
+        self, msg: SenderKeyMessage, our_x25519: X25519KeyPair, ephemeral_public: bytes
     ) -> None:
-        """Process a key distribution message and store the sender's key."""
         if not msg.verify_signature():
-            raise ValueError("Invalid signature on key distribution message")
-
+            raise CryptoError("Invalid signature on key distribution message")
         shared = our_x25519.dh(ephemeral_public)
-        enc_key = hkdf(shared, info=b"SibnaGroupKeyDistribute_v3", length=KEY_LENGTH)
+        enc_key = hkdf(shared, salt=None, info=GROUP_KEY_DISTRIBUTE_INFO, length=C.KEY_LENGTH)
         chain_key = chacha20_poly1305_decrypt(enc_key, msg.encrypted_key)
-
+        # Epoch rollback protection: reject key_id <= existing.
+        existing = self._sender_keys.get(msg.sender_public_key)
+        if existing is not None and msg.key_id <= existing.key_id:
+            raise CryptoError("Possible epoch rollback attack: key_id not newer")
         self._sender_keys[msg.sender_public_key] = SenderKey(
             chain_key=chain_key,
             key_id=msg.key_id,
         )
 
-    def decrypt(
-        self,
-        ciphertext: bytes,
-        sender_public_key: bytes,
-    ) -> bytes:
-        """
-        Decrypt a group message from a specific sender.
-        """
-        if len(ciphertext) < 32 + 4 + 4 + NONCE_LENGTH + 16:
-            raise ValueError("Ciphertext too short")
-
-        offset = 0
-        group_id = ciphertext[offset : offset + 32]
-        offset += 32
-        key_id = struct.unpack("<I", ciphertext[offset : offset + 4])[0]
-        offset += 4
-        msg_number = struct.unpack("<I", ciphertext[offset : offset + 4])[0]
-        offset += 4
-        encrypted_part = ciphertext[offset:]
-
-        if group_id != self.group_id:
-            raise ValueError("Group ID mismatch")
+    def decrypt(self, message: GroupMessage, sender_public_key: bytes) -> bytes:
+        if len(message.sender_signature) == 0:
+            raise CryptoError("Unsigned group message rejected")
+        # Verify sender signature before deriving keys.
+        vk_ok = Ed25519KeyPair.verify_with_key(
+            sender_public_key, message.signable_bytes(), message.sender_signature
+        )
+        if not vk_ok:
+            raise CryptoError("Invalid group message signature")
+        if message.group_id != self.group_id:
+            raise CryptoError("Group ID mismatch")
+        if message.epoch < self.epoch:
+            raise CryptoError("Stale epoch (replay/rollback)")
 
         sender_key = self._sender_keys.get(sender_public_key)
         if sender_key is None:
-            raise RuntimeError("No sender key for this sender")
+            raise CryptoError("No sender key for this sender")
+        if sender_key.key_id != message.sender_key_id:
+            raise CryptoError("Key ID mismatch")
 
-        if sender_key.key_id != key_id:
-            raise ValueError(f"Key ID mismatch: expected {sender_key.key_id}, got {key_id}")
+        # Skip ahead to target message number.
+        while sender_key.message_number < message.message_number:
+            sender_key.next_message_key()
+        message_key = sender_key.next_message_key()
 
-        # Skip ahead if needed
-        while sender_key.message_number < msg_number:
-            mk = sender_key.next_message_key()
-            if mk is None:
-                raise RuntimeError("Sender key chain exhausted")
+        plaintext = chacha20_poly1305_decrypt(message_key, message.ciphertext, self.group_id)
+        self.last_activity = time.time()
+        return plaintext
 
-        mk = sender_key.next_message_key()
-        if mk is None:
-            raise RuntimeError("Sender key chain exhausted")
 
-        nonce = encrypted_part[:NONCE_LENGTH]
-        actual_ct = encrypted_part[NONCE_LENGTH:]
-
-        ad = (
-            self.group_id
-            + struct.pack("<I", key_id)
-            + struct.pack("<I", msg_number)
-        )
-
-        return chacha20_poly1305_decrypt(mk, actual_ct, ad, nonce)
-
-    # ── Key rotation ────────────────────────────────────────────────────
-
-    def rotate_sender_key(self) -> SenderKey:
-        """Rotate to a new sender key."""
-        self._key_rotation_count += 1
-        self._sender_key = SenderKey.generate(key_id=self._key_rotation_count)
-        return self._sender_key
-
-    @property
-    def sender_key(self) -> Optional[SenderKey]:
-        return self._sender_key
-
-    def __repr__(self) -> str:
-        return (
-            f"GroupSession(group_id={self.group_id[:8].hex()}..., "
-            f"members={len(self._sender_keys)}, "
-            f"rotations={self._key_rotation_count})"
-        )
+__all__ = [
+    "SenderKey",
+    "SenderKeyMessage",
+    "GroupMessage",
+    "GroupSession",
+    "MAX_GROUP_SIZE",
+    "MAX_GROUP_MESSAGE_SIZE",
+]

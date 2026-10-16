@@ -63,4 +63,4 @@ Sibna v3.0.1 is an experimental research prototype. It does **not** provide guar
 
 **Do not open public issues for security vulnerabilities.**  
 Please report security concerns privately to:  
-📧 `contact.sibna.dev`
+`contact.sibna.dev`

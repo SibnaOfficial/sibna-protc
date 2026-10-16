@@ -1,260 +1,261 @@
-# Sibna Protocol — Python SDK
+# Sibna Protocol — Python SDK (sole official SDK)
 
-> **Sibna Protocol v3.0.1** — relay client with sealed-envelope messaging, identity management, and metadata-resistant padding.
-> This document reflects the code that is actually shipped in this directory. Anything not listed below is not implemented in this SDK.
+Pure-Python implementation of the Sibna Protocol v3.0.1: X3DH handshake, hybrid
+ML-KEM-768 post-quantum key agreement, Double Ratchet session encryption,
+sender-key group messaging, safety numbers, signed envelopes, encrypted storage,
+and the relay HTTP/WebSocket client.
 
-## What this SDK is
+**No Rust core, FFI, or native library is required.** All cryptography is
+provided by maintained libraries (`cryptography`, `blake3`, `pqcrypto`). The SDK
+is kept in sync with the retained Rust core (`core/`) and the normative
+specification (`PROTOCOL_SPECIFICATION.md`) through automated conformance tests
+that run in CI.
 
-The Python SDK is a **pure-Python** client library for talking to a Sibna relay server. It is **not** a self-contained cryptography stack — it is a transport + envelope layer.
+> [!CAUTION]
+> Sibna is an experimental research prototype. It has **not** undergone an
+> independent third-party cryptographic review or formal security audit.
+> See [`SECURITY.md`](https://github.com/SibnaOfficial/sibna-protc/blob/main/SECURITY.md)
+> and [`THREAT_MODEL.md`](https://github.com/SibnaOfficial/sibna-protc/blob/main/THREAT_MODEL.md).
 
-What is implemented in `sdks/python/sibna/`:
+---
 
-| Capability | Implemented? | Where |
-|---|---|---|
-| Ed25519 identity keypair generation | ✅ | `sibna.client.Identity` |
-| Ed25519 sign / verify | ✅ | `Identity.sign`, `verify_signed_envelope` |
-| Sealed-envelope message format (sign + payload) | ✅ | `make_signed_envelope`, `verify_signed_envelope` |
-| Block-aligned payload padding (1 KiB blocks) | ✅ | `pad_payload`, `unpad_payload` |
-| Sync HTTP client (REST) | ✅ | `SibnaClient` |
-| Async WebSocket client | ✅ | `AsyncSibnaClient` |
-| TLS certificate pinning (PEM file) | ✅ | `SibnaClient(pinned_cert=...)`, `AsyncSibnaClient(pinned_cert=...)` |
-| Fan-out to multiple recipient devices | ✅ | `send_message_multi`, `send_multi` |
-| Offline inbox polling with signature verification | ✅ | `fetch_inbox` |
-| WebSocket ACK on received message | ✅ | inside `AsyncSibnaClient.connect` |
+## What this SDK implements
 
-What is **not** implemented in this SDK:
+| Capability | Module |
+|------------|--------|
+| Ed25519 / X25519 keypairs, low-order point rejection | `sibna.crypto` |
+| HKDF-SHA256, HMAC-SHA256, SHA-256, SHA-512 | `sibna.crypto` |
+| BLAKE3 transcript hash (mandatory) | `sibna.crypto` |
+| ChaCha20-Poly1305 AEAD | `sibna.crypto` |
+| ML-KEM-768 hybrid KEM (FIPS 203) | `sibna.crypto` |
+| X3DH initiator + responder, SPK signature verification | `sibna.x3dh` |
+| Double Ratchet sessions (Rust wire-compatible) | `sibna.ratchet`, `sibna.session` |
+| Sender-key groups, key distribution, signed group messages | `sibna.group` |
+| Safety numbers (80 digits) | `sibna.safety_number` |
+| Length-prefix signed envelopes | `sibna.envelope` |
+| Block-aligned metadata-resistant padding | `sibna.padding` |
+| Encrypted storage with rollback protection | `sibna.storage` |
+| Relay HTTP + WebSocket client (JWT auth) | `sibna.client` |
 
-- ❌ X3DH handshake — not present.
-- ❌ Double Ratchet — not present.
-- ❌ Group messaging / sender keys — not present.
-- ❌ Safety number / verification QR — not present.
-- ❌ ChaCha20-Poly1305 encryption helpers — the SDK signs the envelope and pads the payload, but it does **not** encrypt the application message. The encrypted payload (Double Ratchet ciphertext) is expected to be produced by a separate component (e.g. a Rust core) and passed in as `payload_hex`.
+The SDK is **not** merely an envelope/transport layer: it implements the full
+cryptographic stack (X3DH, Double Ratchet, groups) and can be used standalone
+without the Rust core or any relay server.
 
-If you need end-to-end encrypted messaging, the Python SDK is the **envelope/transport layer**. Pair it with `sibna-core` for the cryptographic layer.
+---
 
 ## Requirements
 
-- Python 3.8+
-- One of the following install profiles:
-  - HTTP sync only: `cryptography`, `requests`
-  - WebSocket async: `cryptography`, `aiohttp`
+- Python 3.9+
+- Mandatory: `cryptography`, `blake3`, `pqcrypto`, `requests`, `aiohttp`
+- Optional (dev): `pytest`, `pytest-cov`, `pytest-asyncio`, `mypy`, `black`
 
 ## Installation
 
 ```bash
-# from this repository
-cd sdks/python
-pip install -r requirements.txt
-pip install -e .
+# from this directory
+pip install -e ".[dev]"
+
+# or, once published:
+pip install sibna
 ```
 
-`requirements.txt` lists:
+`pyproject.toml` declares `cryptography`, `blake3`, `pqcrypto`, `requests`, and
+`aiohttp` as mandatory dependencies. `requests`/`aiohttp` are required by the
+relay client (`sibna.client`); the cryptographic modules work with just
+`cryptography`, `blake3`, and `pqcrypto`.
 
-```
-cryptography
-requests
-aiohttp
-websockets
-```
+## Quick start — end-to-end encrypted session
 
-The package is not currently published to PyPI. Install it from the source tree.
+```python
+from sibna import Session, PreKeyBundle
+from sibna.crypto import (
+    X25519KeyPair,
+    Ed25519KeyPair,
+    derive_identity_keys,
+)
+
+# --- Bob publishes a prekey bundle ---
+bob_ed, bob_x = derive_identity_keys(b"bob-master-seed-32bytes!!")
+bob_spk = X25519KeyPair.generate()
+bundle = PreKeyBundle(
+    identity_key=bob_ed.public_key,
+    x25519_identity_key=bob_x.public_key,
+    signed_prekey=bob_spk.public_key,
+    signed_prekey_signature=bob_ed.sign(
+        b"SibnaSignedPreKey_v3" + bob_spk.public_key
+    ),
+)
+
+# --- Alice initiates ---
+alice_ed, alice_x = derive_identity_keys(b"alice-master-seed-32bytes!!")
+alice = Session()
+eph = X25519KeyPair.generate()
+alice.initiate_as_initiator(alice_x, eph, bundle)
+ct = alice.encrypt(b"Hello Bob")
+
+# --- Bob responds ---
+bob = Session()
+bob.initiate_as_responder(bob_x, bob_spk, None, alice_x.public_key, eph.public_key)
+assert bob.decrypt(ct) == b"Hello Bob"
+
+ct2 = bob.encrypt(b"Hi Alice")
+assert alice.decrypt(ct2) == b"Hi Alice"
+```
 
 ## Module layout
 
 ```
 sdks/python/
+├── pyproject.toml        # packaging (setuptools)
+├── README.md             # this document
 ├── sibna/
-│   ├── __init__.py        # FFI-style ctypes shim (optional, requires libsibna)
-│   └── client.py          # Pure-Python client (this README documents this)
-├── tests/
-├── requirements.txt
-└── setup.py
+│   ├── __init__.py       # public API + version
+│   ├── py.typed          # PEP 561 marker
+│   ├── constants.py      # protocol versions, wire formats, KDF strings
+│   ├── errors.py         # typed exceptions
+│   ├── crypto.py         # primitives (Ed25519, X25519, HKDF, HMAC, SHA,
+│   │                     #   BLAKE3, ChaCha20-Poly1305, ML-KEM-768)
+│   ├── padding.py        # block-aligned metadata-resistant padding
+│   ├── x3dh.py           # X3DH handshake (initiator/responder, SPK validation)
+│   ├── ratchet.py        # Double Ratchet (Rust wire-compatible)
+│   ├── session.py        # Session (X3DH + Double Ratchet)
+│   ├── group.py          # sender-key groups
+│   ├── safety_number.py  # 80-digit fingerprints
+│   ├── envelope.py       # signed envelopes (canonical length-prefixed form)
+│   ├── storage.py        # encrypted storage + rollback protection
+│   └── client.py         # relay HTTP + WebSocket client
+└── tests/                # pytest conformance suite
 ```
 
-There are two entry points inside `sibna/`:
+## Public API overview
 
-1. `sibna.client` — the pure-Python sealed-envelope client documented here.
-2. `sibna` (the package root) — a ctypes shim around the native `libsibna` shared library. The shim is loaded only if the library is found on the system. It is **not** a complete client; it is a thin FFI wrapper for `sibna_context_*`, `sibna_session_*`, `sibna_identity_*` etc. Most of the methods are stubs that raise `NotImplementedError` because the corresponding native functions are not yet exported from the Rust core.
+### `sibna.crypto` — primitives
 
-## Quick start (HTTP, sync)
+`X25519KeyPair`, `Ed25519KeyPair`, `derive_identity_keys(seed)`,
+`blake3_hash`, `sha256`, `sha512`, `hkdf`, `hkdf_extract`, `hkdf_expand`,
+`hmac_sha256`, `random_bytes`, `chacha20_poly1305_encrypt/decrypt`,
+`ml_kem_768_keypair/encapsulate/decapsulate`, `LOW_ORDER_POINTS`.
 
-```python
-from sibna.client import SibnaClient, Identity
+### `sibna.x3dh` — handshake
 
-# 1. Create client
-client = SibnaClient(server="https://sibna.example.com",
-                     pinned_cert="/etc/sibna/server.pem")
+`PreKeyBundle`, `X3DHResult`, `x3dh_initiator`, `x3dh_responder`,
+`generate_peer_bundle`. The SPK signature is verified over
+`b"SibnaSignedPreKey_v3" ‖ SPK` before any DH computation (spec §2.2).
 
-# 2. Generate or load an Ed25519 identity
-identity = client.generate_identity()
-# or: identity = Identity.load("/path/to/private.key")
-# or: identity = Identity(private_key_bytes=raw_32_bytes)
+### `sibna.ratchet` / `sibna.session` — sessions
 
-# 3. Authenticate against the server (Ed25519 challenge-response → JWT)
-token = client.authenticate()   # returns the JWT string
+`DoubleRatchet`, `ChainKey`, `Session`, `SessionConfig`. Wire format matches
+the Rust core: `header(56) ‖ encryptor_frame`, where the frame is
+`msg_number(8) ‖ timestamp(8) ‖ padding(8) ‖ nonce(12) ‖ ct ‖ tag`, and the
+AEAD associated data is `caller_AD ‖ header ‖ frame_header`.
 
-# 4. Upload a PreKey bundle (bundle_hex is produced by the Rust core)
-client.upload_prekey(bundle_hex="...", is_last_resort=False)
+### `sibna.group` — sender-key groups
 
-# 5. Send a sealed envelope to a recipient.
-#    payload_hex is the already-encrypted ciphertext (e.g. Double Ratchet output).
-status = client.send_message(
-    recipient_id="<64-char Ed25519 public key hex>",
-    payload_hex="<ciphertext as hex>",
-    sign=True,
-)
+`SenderKey`, `SenderKeyMessage`, `GroupMessage`, `GroupSession`. Key
+distribution messages are Ed25519-signed and bind `group_id ‖ key_id ‖
+encrypted_key ‖ timestamp`.
 
-# 6. Poll the offline inbox
-for envelope in client.fetch_inbox():
-    print(envelope["message_id"], envelope["sender_id"])
+### `sibna.safety_number` — verification
+
+`SafetyNumber.calculate(our, their)` — 80 digits, SHA-512 fingerprint, keys
+sorted lexicographically. `SafetyNumber.parse`, `verify`, `qr_data`.
+
+### `sibna.envelope` — signed relay envelopes
+
+`make_signed_envelope`, `verify_signed_envelope`. Canonical payload:
+`u64_be(len)‖recipient_id ‖ u64_be(len)‖message_id ‖ u64_be(len)‖payload_hex`,
+signed over `SHA-512(canonical)`.
+
+### `sibna.padding` — padding
+
+`pad_message` / `unpad_message` (aliases `pad_payload`/`unpad_payload`).
+Format: `prefix_len(1) ‖ prefix_noise(1–8) ‖ plaintext ‖ padding ‖
+pad_len(2 LE)`, aligned to 1024-byte blocks with 0–7 randomized extra blocks
+(SIBNA-2026-018).
+
+### `sibna.storage` — encrypted storage
+
+`SecureStorage` — ChaCha20-Poly1305-encrypted payload with an HMAC-authenticated
+manifest and rollback (sequence-number) protection.
+
+### `sibna.client` — relay client
+
+`Identity`, `SibnaClient` (sync HTTP), `AsyncSibnaClient` (WebSocket).
+Authentication is Ed25519 challenge-response → HS256 JWT; the JWT is sent via
+the WebSocket `?token=` query parameter matching the relay server. TLS
+certificate pinning is supported via `pinned_cert` and is never silently
+disabled.
+
+---
+
+## Version compatibility
+
+| Item | Value |
+|------|-------|
+| Protocol specification | v3.0.1 |
+| Wire-format version | 10 |
+| Minimum compatible wire version | 9 |
+| Python SDK package | 3.0.1 |
+
+The Python package version, Rust workspace version, and protocol wire version
+are validated together by [`scripts/version_check.py`](../../scripts/version_check.py),
+which runs as a mandatory CI gate.
+
+---
+
+## Running tests
+
+```bash
+cd sdks/python
+pip install -e ".[dev]"
+python -m pytest tests/ -v
+python -m black --check sibna tests
+python -m mypy sibna
 ```
 
-## Quick start (WebSocket, async)
+The full suite (unit + protocol-conformance, including cross-implementation
+vectors against the Rust core) runs on every push and pull request in CI.
 
-```python
-import asyncio
-from sibna.client import AsyncSibnaClient
-
-async def main():
-    client = AsyncSibnaClient(server="https://sibna.example.com",
-                              pinned_cert="/etc/sibna/server.pem")
-    client.generate_identity()
-    await client.authenticate()
-
-    async def on_message(envelope):
-        print("got:", envelope["message_id"])
-
-    await client.connect(on_message=on_message)
-    # The connection stays open; send() uses the same JWT.
-    await client.send(recipient_id="<hex>", payload_hex="<hex>")
-    # keep alive ...
-    # (the class is single-shot — closing the context manager ends the connection)
-
-asyncio.run(main())
-```
-
-## API reference
-
-### `class Identity`
-
-Ed25519 keypair backed by `cryptography.hazmat`.
-
-| Method / property | Description |
-|---|---|
-| `Identity(private_key_bytes=None)` | Generate a new keypair, or load one from a 32-byte raw seed. |
-| `Identity.load(path)` | Load a 32-byte raw private key from a file. The file is created with mode `0o600`. |
-| `i.save(path)` | Save the 32-byte raw private key to a file. |
-| `i.public_key_bytes` | 32-byte raw Ed25519 public key. |
-| `i.public_key_hex` | 64-character hex of the public key. |
-| `i.private_key_bytes` | 32-byte raw Ed25519 private seed. |
-| `i.sign(data)` → `bytes` | Returns a 64-byte Ed25519 signature. |
-| `i.sign_hex(data)` → `str` | Hex-encoded signature. |
-
-### Padding
-
-```python
-from sibna.client import pad_payload, unpad_payload
-
-padded = pad_payload(b"hello")          # 1024-byte aligned, with random prefix and trailer
-plain  = unpad_payload(padded)         # b"hello"
-```
-
-Wire format (matches the Rust core's padding block):
-
-```
-[ prefix_len(1) | prefix_noise(1..8) | plaintext | random_padding | pad_len(2, LE) ]
-```
-
-The output is always a multiple of 1024 bytes. A 0..1 extra block of random padding is added per call to make two paddings of the same plaintext indistinguishable in size.
-
-### Sealed envelope
-
-```python
-from sibna.client import make_signed_envelope, verify_signed_envelope
-
-env = make_signed_envelope(identity, recipient_id="<hex>", payload_hex="<hex>")
-ok  = verify_signed_envelope(env)   # also rejects envelopes older than 5 minutes
-```
-
-Envelope fields:
-
-| Field | Type | Notes |
-|---|---|---|
-| `recipient_id` | hex string | The server routes on this; the payload is opaque to the relay. |
-| `payload_hex` | hex string | Encrypted application message. |
-| `sender_id` | hex string | The sender's Ed25519 public key (32 bytes, hex). |
-| `timestamp` | int | Unix seconds. Envelopes older than 5 minutes are rejected. |
-| `message_id` | string | UUIDv4 random identifier. |
-| `signature_hex` | hex string | Ed25519 signature over `SHA-512(recipient_id ‖ payload_hex ‖ timestamp ‖ message_id)`. |
-| `compressed` | bool | Reserved flag, currently always `False`. |
-
-### `class SibnaClient` (synchronous HTTP)
-
-Constructor:
-
-```python
-SibnaClient(server: str = "http://localhost:8080", pinned_cert: str | None = None)
-```
-
-| Method | Description |
-|---|---|
-| `generate_identity(private_key_bytes=None) → Identity` | Generate or load a keypair; assigns to `self.identity`. |
-| `authenticate() → str` | Full Ed25519 challenge-response, returns the JWT, also stored as `self.jwt_token`. JWT is valid for 24 h. |
-| `health() → dict` | Returns the JSON body of `GET /health`. |
-| `upload_prekey(bundle_hex, is_last_resort=False)` | `POST /v1/prekeys/upload`. The `bundle_hex` is opaque to the Python SDK — it is produced by the Rust core. |
-| `fetch_prekeys(root_id_hex) → list[str]` | `GET /v1/prekeys/{root_id_hex}`. Returns a list of bundle hex strings, one per linked device. The server deletes them after fetch. |
-| `send_message(recipient_id, payload_hex, sign=True, compress=False) → int` | `POST /v1/messages/send`. Returns the HTTP status (200 = live delivery, 202 = queued offline). |
-| `send_message_multi(encrypted_messages, sign=True, compress=False) → dict[str, int]` | Fan-out to multiple devices; returns a per-recipient status map. |
-| `fetch_inbox() → list[dict]` | `GET /v1/messages/inbox`. Returns envelopes whose signature verifies. Envelopes with invalid signatures are dropped and a warning is printed. |
-
-Error mapping:
-
-| HTTP status | Raised exception |
-|---|---|
-| 401 | `AuthError` |
-| 429 | `NetworkError` (status_code=429) |
-| any other ≥ 400 | `NetworkError` |
-
-### `class AsyncSibnaClient` (asynchronous WebSocket)
-
-Constructor:
-
-```python
-AsyncSibnaClient(server: str = "http://localhost:8080", pinned_cert: str | None = None)
-```
-
-| Method | Description |
-|---|---|
-| `generate_identity(private_key_bytes=None) → Identity` | Same as the sync client. |
-| `await authenticate() → str` | Ed25519 challenge-response over HTTP using `aiohttp`. |
-| `await connect(on_message=None)` | Opens the WebSocket. `on_message(envelope)` is called for each verified envelope. Sends an `{"type":"ack","message_id":...}` frame for every received message. |
-| `await send(recipient_id, payload_hex, sign=True, compress=False)` | Send a sealed envelope over the WebSocket. |
-| `await send_multi(encrypted_messages, sign=True, compress=False)` | Fan-out. Uses `asyncio.TaskGroup` on Python 3.11+, falls back to `asyncio.gather` otherwise. |
-
-The `on_message` callback receives the parsed envelope after `verify_signed_envelope` succeeds. WebSocket traffic of `type="envelope"` is accepted; the `type="webrtc"` traffic is logged but not dispatched (no WebRTC peer connection is opened in this SDK).
-
-### Exceptions
-
-| Class | Cause |
-|---|---|
-| `SibnaError` | Base class. Has a `status_code` attribute. |
-| `AuthError(SibnaError)` | 401 responses. |
-| `NetworkError(SibnaError)` | 429, other HTTP errors, transport failures. |
-| `CryptoError(SibnaError)` | Padding or signature failure. |
+---
 
 ## Security notes
 
-- **TLS pinning** is supported. Pass `pinned_cert="/path/to/server.pem"` to enforce a single certificate. Without it, the client falls back to the system trust store and prints a `UserWarning`.
-- **Signature verification** is mandatory on the receive side — `fetch_inbox` drops envelopes with invalid or expired signatures.
-- **Sealed envelopes** hide the sender's identity from the relay: the server only sees `recipient_id`, `payload_hex`, and the metadata envelope fields. The `sender_id` is **not** stripped; clients that need to hide the sender from the server must proxy the envelope through a third party.
-- **Padding** is block-aligned and includes a random prefix. It is **not** a substitute for application-level encryption.
-- The `secrets` module is used for all randomness (`secrets.token_bytes`, `secrets.randbelow`).
+- **BLAKE3 is mandatory** for X3DH transcript hashing. It is imported at
+  module load time; if unavailable, the SDK fails loudly rather than silently
+  substituting SHA-256.
+- **Signed prekeys are verified** (`b"SibnaSignedPreKey_v3" ‖ SPK`) before any
+  DH computation; invalid bundles are rejected.
+- **ML-KEM-768** is integrated into the X3DH handshake (default ON) and tested
+  for initiator/responder agreement.
+- **TLS certificate verification is never disabled.** Use `pinned_cert` for
+  pinning; without it the client validates against the system trust store and
+  warns.
+- **No secrets are logged.** Diagnostic representations redact private key
+  material.
+- **No silent fallbacks.** If a protocol-required primitive (e.g. BLAKE3,
+  ML-KEM-768) is unavailable, the operation fails clearly.
 
-## Limitations
+This SDK is **not** production-audited. It is an experimental research
+prototype. See [`SECURITY.md`](https://github.com/SibnaOfficial/sibna-protc/blob/main/SECURITY.md)
+and [`THREAT_MODEL.md`](https://github.com/SibnaOfficial/sibna-protc/blob/main/THREAT_MODEL.md).
 
-- The Python SDK is the **envelope and transport layer only**. It does not implement X3DH, Double Ratchet, or group messaging. For end-to-end encrypted messaging, use `sibna-core` (Rust) or the Java SDK and pass the resulting ciphertext as `payload_hex` to this client.
-- The package root `sibna/__init__.py` exposes an FFI shim around `libsibna`. Most of its methods (`Session.encrypt`, `Session.decrypt`) currently raise `NotImplementedError` because the corresponding symbols are not exported by the Rust core at this version. The shim is present but not yet a working client.
+---
+
+## What is *not* supported
+
+The following are implemented in the Rust core but are **not** ported to this
+Python SDK, and are explicitly *not* advertised as supported here:
+
+- OS-level P2P facilities: mDNS discovery, STUN, IGD port mapping (the Rust
+  `p2p` feature). These depend on non-Python-native crates (`mdns-sd`, `if-addrs`,
+  `igd`, `stun`) and are not part of the Python SDK's supported contract.
+- The Rust core's FFI/WASM bindings (`ffi`, `wasm` features). The Python SDK
+  is pure Python and does not load `libsibna`.
+
+If you need P2P transport or FFI, use the Rust core directly.
+
+---
 
 ## License
 
-Apache-2.0 OR MIT
+Apache License 2.0 / MIT (dual). See [`LICENSE`](https://github.com/SibnaOfficial/sibna-protc/blob/main/LICENSE).

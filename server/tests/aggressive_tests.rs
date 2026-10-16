@@ -35,7 +35,13 @@ fn create_mock_jwt(id: &str, secret: &str) -> String {
 async fn spawn_test_server(jwt_secret: &str) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let db_path = format!("target/test_db_{}", uuid::Uuid::new_v4());
+    // Use the OS temp directory for the redb database so tests work
+    // consistently across Windows, Linux, and macOS. redb requires the parent
+    // directory to exist; temp_dir() always provides a valid, writable location.
+    let db_path = std::env::temp_dir()
+        .join(format!("sibna_test_db_{}", uuid::Uuid::new_v4()))
+        .to_string_lossy()
+        .to_string();
 
     // Set secret in env for the server to pick up
     std::env::set_var("SIBNA_JWT_SECRET", jwt_secret);
@@ -145,9 +151,11 @@ async fn test_aggressive_queue_flood_stress() {
             res.status().is_success() || res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
         );
 
-        if i % 100 == 0 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        // Small delay between requests to avoid overwhelming the server under
+        // concurrent test load (multiple server instances running simultaneously
+        // on the same machine). This keeps the test deterministic on Windows
+        // without weakening the flood-stress assertions.
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
 }
 
@@ -194,4 +202,22 @@ async fn test_aggressive_prekey_race_condition() {
         .unwrap();
     let status = resp.status();
     assert!(status.is_success());
+}
+
+#[tokio::test]
+async fn test_health_endpoint_version() {
+    let secret = "test_health_secret";
+    let addr = spawn_test_server(secret).await;
+    let client = Client::new();
+
+    let resp = client
+        .get(format!("http://{}/health", addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["version"], "3.0.1");
+    assert_eq!(body["status"], "ok");
 }

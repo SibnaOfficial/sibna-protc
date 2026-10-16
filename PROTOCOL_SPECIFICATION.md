@@ -51,7 +51,7 @@ Alice (Initiator)                           Bob (Responder)
      T = HKDF-SHA256-Extract(salt=transcript_hash_ext, ikm=T_internal)
          with info="SibnaX3DH_TranscriptBind_v3"
 6. Derive session key:
-     SK = HKDF-SHA256(salt=T, ikm=ss_kem || dh1 || dh2 || dh3 || dh4)
+     SK = HKDF-SHA256(salt=T, ikm=dh1 || dh2 || dh3 || dh4 || ss_kem)
 ```
 
 `transcript_hash_ext` is `[0u8; 32]` for relay-mediated connections. For direct P2P it carries the P2P handshake transcript.

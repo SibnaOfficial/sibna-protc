@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sibna"
+version = "3.0.1"
+description = "Sibna Protocol v3.0.1 — pure Python SDK (X3DH, Double Ratchet, sender-key groups, safety numbers, signed envelopes, encrypted storage, relay HTTP/WebSocket client)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "Apache-2.0 OR MIT"}
+authors = [{name = "Sibna Security Team", email = "security@sibna.dev"}]
+keywords = ["cryptography", "encryption", "signal", "secure-messaging", "e2ee", "x3dh", "double-ratchet", "ml-kem-768"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Communications :: Chat",
+    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "cryptography>=41.0",
+    "blake3>=1.0",
+    "pqcrypto>=0.3",
+    "requests>=2.31",
+    "aiohttp>=3.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-asyncio>=1.0",
+    "mypy>=1.0",
+    "black>=24.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/SibnaOfficial/sibna-protc"
+Repository = "https://github.com/SibnaOfficial/sibna-protc"
+Documentation = "https://github.com/SibnaOfficial/sibna-protc#readme"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sibna*"]
+
+[tool.setuptools.package-data]
+sibna = ["py.typed"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_any_generics = true
+
+[tool.black]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -m \"not interop\""
+markers = [
+    "interop: cross-implementation Rust↔Python interoperability tests (require dedicated runner)",
+]

@@ -53,4 +53,4 @@ if computed_mac_hex != stored_mac_hex { ... }
 
 **Do not open public issues for security vulnerabilities.**  
 Please report security concerns privately to:  
-📧 `sibnaa@zohomail.com`
+`contact.sibna.dev`

@@ -30,3 +30,28 @@ brain/
 
 # Server Database
 **/sibna_server_db/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# OS junk
+.DS_Store
+Thumbs.db
+.brain/
+.agents/
+.agent/
+_agents/
+_agent/
+brain/

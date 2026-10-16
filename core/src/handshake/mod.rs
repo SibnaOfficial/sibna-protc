@@ -331,12 +331,17 @@ impl PreKeyBundle {
         }
 
         // Verify signed_prekey signature
+        // Signed payload: b"SibnaSignedPreKey_v3" || signed_prekey
         let verifying_key =
             VerifyingKey::from_bytes(&self.identity_key).map_err(|_| ProtocolError::InvalidKey)?;
         let spk_signature = Signature::from_bytes(&self.signature);
 
+        let mut signed_payload = Vec::with_capacity(20 + self.signed_prekey.len());
+        signed_payload.extend_from_slice(b"SibnaSignedPreKey_v3");
+        signed_payload.extend_from_slice(&self.signed_prekey);
+
         verifying_key
-            .verify(&self.signed_prekey, &spk_signature)
+            .verify(&signed_payload, &spk_signature)
             .map_err(|_| ProtocolError::InvalidSignature)?;
 
         // Verify full bundle signature
@@ -601,8 +606,11 @@ mod tests {
         let signed_prekey_secret = StaticSecret::random_from_rng(&mut OsRng);
         let signed_prekey = PublicKey::from(&signed_prekey_secret).to_bytes();
 
-        // Sign the prekey
-        let signature = signing_key.sign(&signed_prekey).to_bytes();
+        // Sign the prekey with domain prefix: "SibnaSignedPreKey_v3" || spk
+        let mut spk_payload = Vec::with_capacity(20 + signed_prekey.len());
+        spk_payload.extend_from_slice(b"SibnaSignedPreKey_v3");
+        spk_payload.extend_from_slice(&signed_prekey);
+        let signature = signing_key.sign(&spk_payload).to_bytes();
 
         // Master device identity signature
         let mut dev_payload = Vec::with_capacity(36);

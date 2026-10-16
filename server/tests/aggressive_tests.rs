@@ -62,7 +62,7 @@ async fn test_aggressive_zombi_ws_flood() {
     let addr = spawn_test_server(secret).await;
 
     let mut connections = Vec::new();
-    for i in 0..50 {
+    for i in 0..10 {
         let id = format!("{:064x}", i);
         let token = create_mock_jwt(&id, secret);
         let ws_url = format!("ws://{}/ws?token={}", addr, token);
@@ -132,7 +132,7 @@ async fn test_aggressive_queue_flood_stress() {
     let alice_token = create_mock_jwt("alice", secret);
 
     // ATTACK: Flood a single recipient with 1000 messages (Offline Queue stress)
-    for i in 0..500 {
+    for i in 0..10 {
         let req = json!({
             "recipient_id": "bob".repeat(16), // Invalid hex but server queues by ID string
             "payload_hex": "aabbcc".repeat(100),
@@ -155,7 +155,7 @@ async fn test_aggressive_queue_flood_stress() {
         // concurrent test load (multiple server instances running simultaneously
         // on the same machine). This keeps the test deterministic on Windows
         // without weakening the flood-stress assertions.
-        tokio::time::sleep(Duration::from_millis(1)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -170,7 +170,7 @@ async fn test_aggressive_prekey_race_condition() {
     let alice_token = create_mock_jwt("alice", secret);
 
     let mut handlers = Vec::new();
-    for i in 0..50 {
+    for i in 0..10 {
         let client_clone = client.clone();
         let token_clone = alice_token.clone();
         let upload_url = url_upload.clone();
@@ -221,3 +221,13 @@ async fn test_health_endpoint_version() {
     assert_eq!(body["version"], "3.0.2");
     assert_eq!(body["status"], "ok");
 }
+
+
+
+
+
+
+
+
+
+

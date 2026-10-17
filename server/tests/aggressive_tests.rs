@@ -5,8 +5,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sibna_server::run_server;
 use std::net::SocketAddr;
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+
+// Serialize aggressive tests: spawn_test_server uses std::env::set_var for the
+// JWT secret, which is global mutable state and not thread-safe. Concurrent
+// tests would overwrite each other's secret, causing 401 errors.
+static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize, Deserialize)]
 struct Claims {
@@ -58,6 +64,7 @@ async fn spawn_test_server(jwt_secret: &str) -> SocketAddr {
 
 #[tokio::test]
 async fn test_aggressive_zombi_ws_flood() {
+    let _lock = TEST_MUTEX.lock().unwrap();
     let secret = "test_aggressive_secret";
     let addr = spawn_test_server(secret).await;
 
@@ -90,6 +97,7 @@ async fn test_aggressive_zombi_ws_flood() {
 
 #[tokio::test]
 async fn test_aggressive_json_bomb_protection() {
+    let _lock = TEST_MUTEX.lock().unwrap();
     let secret = "test_bomb_secret";
     let addr = spawn_test_server(secret).await;
     let client = Client::new();
@@ -124,6 +132,7 @@ async fn test_aggressive_json_bomb_protection() {
 
 #[tokio::test]
 async fn test_aggressive_queue_flood_stress() {
+    let _lock = TEST_MUTEX.lock().unwrap();
     let secret = "test_queue_secret";
     let addr = spawn_test_server(secret).await;
     let client = Client::new();
@@ -161,6 +170,7 @@ async fn test_aggressive_queue_flood_stress() {
 
 #[tokio::test]
 async fn test_aggressive_prekey_race_condition() {
+    let _lock = TEST_MUTEX.lock().unwrap();
     let secret = "test_race_secret";
     let addr = spawn_test_server(secret).await;
     let client = Client::new();
@@ -206,6 +216,7 @@ async fn test_aggressive_prekey_race_condition() {
 
 #[tokio::test]
 async fn test_health_endpoint_version() {
+    let _lock = TEST_MUTEX.lock().unwrap();
     let secret = "test_health_secret";
     let addr = spawn_test_server(secret).await;
     let client = Client::new();

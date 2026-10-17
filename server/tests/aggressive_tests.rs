@@ -232,7 +232,3 @@ async fn test_health_endpoint_version() {
     assert_eq!(body["version"], "3.0.2");
     assert_eq!(body["status"], "ok");
 }
-
-
-
-

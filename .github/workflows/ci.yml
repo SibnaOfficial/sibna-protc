@@ -104,9 +104,9 @@ jobs:
       # Linting & formatting
       - run: pip install black mypy
       - run: cd sdks/python && black --check sibna tests
+      - run: cd sdks/python && pip install -e ".[dev]"
       - run: cd sdks/python && mypy sibna
       # Unit + protocol-conformance tests
-      - run: cd sdks/python && pip install -e ".[dev]"
       - run: cd sdks/python && python -m pytest tests/ -v
       # Version consistency (protocol, Rust workspace, Python package)
       - run: python scripts/version_check.py

@@ -16,8 +16,9 @@ set -euo pipefail
 
 # Dedicated temporary fixture paths (matches Python tempfile.gettempdir() and
 # Rust std::env::temp_dir() on all platforms)
-PY_CT_PATH="${TEMPDIR:-/tmp}/sibna_py_ratchet_ct.json"
-RUST_CT_PATH="${TEMPDIR:-/tmp}/sibna_rust_ratchet_ct.json"
+TEMP_DIR="$(python -c "import tempfile; print(tempfile.gettempdir())")"
+PY_CT_PATH="${TEMP_DIR}/sibna_py_ratchet_ct.json"
+RUST_CT_PATH="${TEMP_DIR}/sibna_rust_ratchet_ct.json"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY_SDK_DIR="${REPO_ROOT}/sdks/python"

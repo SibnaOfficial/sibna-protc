@@ -17,17 +17,15 @@
 
 #![allow(missing_docs)]
 
+use blake3::Hasher;
 use fips203::ml_kem_768;
 use fips203::traits::{Decaps, Encaps, KeyGen, SerDes};
-use serde::Serialize;
-use sibna_core::error::{ProtocolError, ProtocolResult};
-use sibna_core::handshake::x3dh::{
-    x3dh_initiator_v3, x3dh_responder_v3,
-};
-use x25519_dalek::{PublicKey, StaticSecret};
-use blake3::Hasher;
 use hkdf::Hkdf;
+use serde::Serialize;
 use sha2::Sha256;
+use sibna_core::error::{ProtocolError, ProtocolResult};
+use sibna_core::handshake::x3dh::{x3dh_initiator_v3, x3dh_responder_v3};
+use x25519_dalek::{PublicKey, StaticSecret};
 
 #[derive(Serialize)]
 struct KemVectors {
@@ -83,7 +81,10 @@ fn static_secret_from_hex(h: &str) -> StaticSecret {
 }
 
 fn public_key_from_hex(h: &str) -> PublicKey {
-    let bytes: [u8; 32] = decode_hex(h).as_slice().try_into().expect("32-byte public key");
+    let bytes: [u8; 32] = decode_hex(h)
+        .as_slice()
+        .try_into()
+        .expect("32-byte public key");
     PublicKey::from(bytes)
 }
 
@@ -124,9 +125,8 @@ fn generate_vectors() -> ProtocolResult<GenerateOutput> {
         ct_a_bytes.as_slice().try_into().expect("1088-byte ct"),
     )
     .expect("valid ML-KEM-768 ciphertext");
-    let ss_a_check =
-        <ml_kem_768::DecapsKey as Decaps>::try_decaps(&sk_a_dec_key, &ct_a_cipher)
-            .expect("ML-KEM-768 decapsulate");
+    let ss_a_check = <ml_kem_768::DecapsKey as Decaps>::try_decaps(&sk_a_dec_key, &ct_a_cipher)
+        .expect("ML-KEM-768 decapsulate");
     assert_eq!(
         SerDes::into_bytes(ss_a_check),
         ss_a_bytes,
@@ -196,8 +196,8 @@ struct RespondOutput {
 // Reads JSON from stdin with all responder inputs, including the PQ ciphertext
 // produced by Python's encapsulation and Bob's ML-KEM secret key.
 fn x3dh_respond(stdin: &[u8]) -> ProtocolResult<RespondOutput> {
-    let input: serde_json::Value = serde_json::from_slice(stdin)
-        .map_err(|_| ProtocolError::InvalidArgument)?;
+    let input: serde_json::Value =
+        serde_json::from_slice(stdin).map_err(|_| ProtocolError::InvalidArgument)?;
 
     let bob_identity = static_secret_from_hex(
         input["bob_identity_hex"]
@@ -268,8 +268,16 @@ fn x3dh_respond(stdin: &[u8]) -> ProtocolResult<RespondOutput> {
     hk.expand(b"SibnaX3DH_TranscriptBind_v3", &mut combined_transcript[..])
         .expect("HKDF expand");
 
-    eprintln!("DEBUG responder dh1={} dh2={} dh3={}", hex(dh1.as_bytes()), hex(dh2.as_bytes()), hex(dh3.as_bytes()));
-    eprintln!("DEBUG responder transcript={}", hex(transcript_hash.as_slice()));
+    eprintln!(
+        "DEBUG responder dh1={} dh2={} dh3={}",
+        hex(dh1.as_bytes()),
+        hex(dh2.as_bytes()),
+        hex(dh3.as_bytes())
+    );
+    eprintln!(
+        "DEBUG responder transcript={}",
+        hex(transcript_hash.as_slice())
+    );
     eprintln!("DEBUG responder combined={}", hex(&combined_transcript));
     eprintln!("DEBUG responder our_pq_sk={}", our_pq_sk_hex);
     eprintln!("DEBUG responder peer_pq_ct={}", peer_pq_ct_hex);
@@ -288,7 +296,10 @@ fn x3dh_respond(stdin: &[u8]) -> ProtocolResult<RespondOutput> {
     )
     .expect("Rust X3DH responder with PQ");
 
-    eprintln!("DEBUG responder shared_secret={}", hex(bob_result.shared_secret.as_ref()));
+    eprintln!(
+        "DEBUG responder shared_secret={}",
+        hex(bob_result.shared_secret.as_ref())
+    );
 
     Ok(RespondOutput {
         shared_secret_hex: hex(bob_result.shared_secret.as_ref()),
@@ -303,7 +314,10 @@ fn main() {
             println!("{}", serde_json::to_string(&out).unwrap());
         }
         Some("decapsulate") => {
-            let sk_hex = args.get(1).map(|_| &args[2]).expect("usage: decapsulate <sk_hex> <ct_hex>");
+            let sk_hex = args
+                .get(1)
+                .map(|_| &args[2])
+                .expect("usage: decapsulate <sk_hex> <ct_hex>");
             let ct_hex = args.get(3).expect("usage: decapsulate <sk_hex> <ct_hex>");
             let sk_bytes = decode_hex(sk_hex);
             let ct_bytes = decode_hex(ct_hex);
@@ -311,10 +325,9 @@ fn main() {
                 sk_bytes.as_slice().try_into().map_err(|_| ()).unwrap(),
             )
             .unwrap();
-            let ct_cipher = ml_kem_768::CipherText::try_from_bytes(
-                ct_bytes.as_slice().try_into().unwrap(),
-            )
-            .unwrap();
+            let ct_cipher =
+                ml_kem_768::CipherText::try_from_bytes(ct_bytes.as_slice().try_into().unwrap())
+                    .unwrap();
             let ss = <ml_kem_768::DecapsKey as Decaps>::try_decaps(&sk_key, &ct_cipher).unwrap();
             print!("{}", hex(&SerDes::into_bytes(ss)));
         }
@@ -325,9 +338,7 @@ fn main() {
             println!("{}", serde_json::to_string(&out).unwrap());
         }
         _ => {
-            eprintln!(
-                "usage: pq_kem_x3dh_interop {{generate|decapsulate <sk> <ct>|x3dh_respond}}"
-            );
+            eprintln!("usage: pq_kem_x3dh_interop {{generate|decapsulate <sk> <ct>|x3dh_respond}}");
             std::process::exit(2);
         }
     }

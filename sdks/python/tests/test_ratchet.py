@@ -572,6 +572,7 @@ def test_multi_ratchet_tampered_then_valid():
     # msg1, so ct2 reuses Bob's existing DH public key (no new ratchet on send).
     assert alice.dh_remote_public == alice_pre["dh_remote_public"]
 
+
 def test_ratchet_skipped_key_not_consumed_on_failure(alice_keys, bob_keys, bob_bundle):
     """A skipped message key must not be consumed when decryption of a
     tampered out-of-order message fails authentication. The original valid

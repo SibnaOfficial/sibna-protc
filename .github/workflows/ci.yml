@@ -109,7 +109,7 @@ jobs:
       - run: cd sdks/python && pip install -e ".[dev]"
       - run: cd sdks/python && python -m pytest tests/ -v
       # Version consistency (protocol, Rust workspace, Python package)
-      - run: python ../../scripts/version_check.py
+      - run: python scripts/version_check.py
       # Package build + clean installation + smoke test
       - run: cd sdks/python && python -m build
       - run: cd sdks/python && pip install dist/sibna-*.whl

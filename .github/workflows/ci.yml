@@ -121,6 +121,30 @@ jobs:
             print('sibna smoke test OK')
         "
 
+  # === RUST-PYTHON INTEROP (run on every push/PR) ===
+  interop:
+    name: Rust-Python Interop
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -e ".[dev]"
+        working-directory: sdks/python
+      - name: Run interop tests (Linux/macOS)
+        run: bash run_interop.sh
+        if: ${{ matrix.os != 'windows-latest' }}
+      - name: Run interop tests (Windows)
+        run: powershell -ExecutionPolicy Bypass -File .\run_interop.ps1
+        if: ${{ matrix.os == 'windows-latest' }}
+
   # === SECURITY AUDITS (run on every push/PR) ===
   audit-deny:
     name: Security Audit (cargo-deny)

@@ -226,16 +226,19 @@ def test_ratchet_timestamp_zero_rejected():
 # ── Cross-implementation: decrypt Rust-generated ciphertexts ──────────
 
 
-def test_decrypt_rust_fixture_ciphertexts(interop_fixture):
-    """Python decrypts Double Ratchet ciphertexts using fixture keys.
+def test_ratchet_roundtrip_with_fixture_keys(interop_fixture):
+    """Python Double Ratchet round-trip using fixture keys.
 
     The committed fixture (interop_vectors.json) provides fixed test keys and
     the X3DH shared secret for structural validation. These assertions are
     timestamp-independent and never go stale.
 
-    Actual decryption uses ciphertexts generated at runtime so the test does
-    not depend on pre-committed ciphertexts whose embedded timestamps expire
-    after 24 hours (MAX_MESSAGE_AGE_SECS).
+    Encryption/decryption uses ciphertexts generated at runtime so the test
+    does not depend on pre-committed ciphertexts whose embedded timestamps
+    expire after 24 hours (MAX_MESSAGE_AGE_SECS).
+
+    This is a Python round-trip test, not a Rust interop test. Genuine
+    Rust<->Python interop is covered by test_ratchet_python_to_rust_interop.py.
     """
     # Structural assertions against the committed fixture (timestamp-independent)
     bob_spk = X25519KeyPair.from_seed(BOB_SPK_SK)

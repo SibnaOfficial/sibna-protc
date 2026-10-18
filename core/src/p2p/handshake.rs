@@ -332,7 +332,7 @@ pub async fn initiator_handshake(
         .map_err(|e| P2pError::Handshake(format!("x3dh_initiator: {:?}", e)))?;
 
         #[cfg(not(feature = "pqc"))]
-        let mut x3dh_result = crate::handshake::x3dh::x3dh_initiator_v3(
+        let x3dh_result = crate::handshake::x3dh::x3dh_initiator_v3(
             our_identity_x,
             &alice_ephemeral,
             &peer_identity_x,

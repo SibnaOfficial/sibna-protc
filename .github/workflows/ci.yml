@@ -75,7 +75,7 @@ jobs:
       # Explicitly list test targets to run; exclude:
       # - test_python_interop: requires Python fixture generation (tested in sdk-interop job)
       # - offensive_test, advanced_offensive_test: weekly schedule only
-      - run: cargo test --no-default-features --features p2p -p sibna-core --test integration --test gen_interop_vectors --test debug_x3dh --test proptest_properties --test statistical_timing_test -- --test-threads=1
+      - run: cargo test --no-default-features --features p2p,pqc -p sibna-core --test integration --test gen_interop_vectors --test debug_x3dh --test proptest_properties --test statistical_timing_test -- --test-threads=1
       - run: cargo test --no-default-features --features p2p -p sibna-tests --test integration_tests --test attack_tests --test multi_device_tests -- --test-threads=1
 
   test-proptest:
@@ -239,7 +239,7 @@ jobs:
   test-offensive:
     name: Offensive Tests
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -250,7 +250,7 @@ jobs:
   test-attack:
     name: Security Audit Tests
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -263,7 +263,7 @@ jobs:
   dependency-check:
     name: Outdated Dependencies
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -274,7 +274,7 @@ jobs:
   fuzz:
     name: Fuzzing
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -284,18 +284,30 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-fuzz --locked
       - name: Run fuzz targets (short)
+        shell: bash
         run: |
+          set -o pipefail
           cd core
           for target in fuzz_crypto_encrypt fuzz_ratchet_decrypt fuzz_handshake_x3dh fuzz_padding; do
             echo "=== Running $target ==="
-            timeout 120 cargo fuzz run $target -- -max_total_time=20 -runs=0 || true
+            if timeout 120 cargo fuzz run $target -- -max_total_time=20 -runs=0; then
+              echo "=== $target completed ==="
+            else
+              exit_code=$?
+              if [ $exit_code -eq 124 ]; then
+                echo "=== $target timed out (expected boundary) ==="
+              else
+                echo "=== $target failed with exit code $exit_code ===" >&2
+                exit $exit_code
+              fi
+            fi
           done
 
   # === MODEL CHECKING (weekly only - very slow) ===
   kani:
     name: Kani Model Checking
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -313,7 +325,9 @@ jobs:
           cargo install --locked kani-verifier
           cargo kani --setup
       - name: Run Kani harnesses
+        shell: bash
         run: |
+          set -o pipefail
           cd core
           for harness in kani_ratchet_replay_detection kani_handshake_role_determination kani_serialize_deserialize_state; do
             echo "=== Running $harness ==="
@@ -323,7 +337,7 @@ jobs:
   miri:
     name: MIRI UB Detection
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -332,4 +346,7 @@ jobs:
           components: miri
       - uses: Swatinem/rust-cache@v2
       - name: Run MIRI (core library tests only)
-        run: cargo miri test -p sibna-core --lib 2>&1 | tail -100
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo miri test -p sibna-core --lib 2>&1 | tail -100

@@ -55,7 +55,6 @@ fn ensure_py_fixture() -> PathBuf {
 
     // Generate the fixture using the same fixed keys as the Python test
     let alice_id = StaticSecret::from([0x61u8; 32]);
-    let alice_id_pub = PublicKey::from(&alice_id);
     let bob_id = StaticSecret::from([0x62u8; 32]);
     let bob_id_pub = PublicKey::from(&bob_id);
     let bob_spk = StaticSecret::from([0x63u8; 32]);

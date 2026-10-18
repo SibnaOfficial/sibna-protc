@@ -55,7 +55,7 @@ async fn spawn_test_server(jwt_secret: &str) -> SocketAddr {
     });
 
     // Wait for server to be ready by polling health endpoint
-    let client = reqwest::Client::new();
+    let _client = reqwest::Client::new();
     let health_url = format!("http://{}/health", addr);
     for _ in 0..60 {
         if let Ok(resp) = reqwest::get(&health_url).await {
@@ -72,15 +72,15 @@ async fn spawn_test_server(jwt_secret: &str) -> SocketAddr {
     let test_id = test_ctx.get_identity().unwrap().ed25519_public;
     let test_id_hex = hex::encode(test_id);
     let test_token = create_mock_jwt(&test_id_hex, jwt_secret);
-    let test_url = format!("http://{}/v1/messages/send", addr);
-    let test_req = json!({
+    let _test_url = format!("http://{}/v1/messages/send", addr);
+    let _test_req = json!({
         "recipient_id": hex::encode(&[0u8; 32]),
         "payload_hex": "deadbeef",
         "compressed": false,
     });
-    let test_client = reqwest::Client::new();
+    let _test_client = reqwest::Client::new();
     for _ in 0..30 {
-        if let Ok(test_resp) = test_client
+        if let Ok(test_resp) = _test_client
             .post(&format!("http://{}/v1/messages/send", addr))
             .header("Authorization", format!("Bearer {}", test_token))
             .json(&json!({

@@ -1,5 +1,5 @@
 """
-Sibna Protocol v3.0.1 — Signed envelope (relay transport).
+Sibna Protocol v3.0.2 — Signed envelope (relay transport).
 
 Canonical signed payload matches the Rust relay server
 (`server/src/ws.rs::route_message`):
@@ -12,13 +12,38 @@ Length-prefix encoding prevents field-boundary reinterpretation attacks.
 
 The envelope is signed by the sender's Ed25519 identity key over the SHA-512
 of the canonical payload. The relay verifies this signature before routing.
+
+Signed fields (authenticated): recipient_id, message_id, payload_hex.
+The signature binds these three fields together so an attacker cannot swap or
+reinterpret field boundaries.
+
+Fields intentionally NOT covered by the signature:
+
+- `timestamp`: delivery/receipt timestamp. It is NOT authenticated and is
+  re-stamped by the server on receipt (`route_message` overwrites the
+  client-supplied value). It is a transport hint only. Message expiration is
+  enforced server-side by the offline-queue TTL (7 days), and replay is
+  prevented by server message_id deduplication plus client ratchet
+  sequence-number tracking — NOT by rejecting envelopes on wall-clock age.
+  Rejecting old envelopes here would break legitimate store-and-forward /
+  delayed delivery (offline recipients, reconnect replay).
+
+- `compressed`: transport hint (LZ4). Flipping it causes a decompression or
+  AEAD-decryption failure (message dropped), not a confidentiality or
+  integrity breach. It is authenticated indirectly: a mismatched flag makes
+  the sealed payload fail to decrypt.
+
+- `sender_id`: used as the Ed25519 verification key. An attacker who changes
+  it causes verification to fail against the wrong key, so it is implicitly
+  bound to a valid signature.
+
+See PROTOCOL_SPECIFICATION.md §4 for the canonical form.
 """
 
 from __future__ import annotations
 
 import hashlib
 import struct
-import time
 import uuid
 from typing import Any, Dict, Protocol
 
@@ -35,7 +60,12 @@ class Signer(Protocol):
     def sign(self, data: bytes) -> bytes: ...
 
 
-ENVELOPE_MAX_AGE_SECS = 300  # signed envelopes older than 5 minutes are rejected
+# ENVELOPE_MAX_AGE_SECS is retained for API compatibility but is no longer
+# enforced by verify_signed_envelope. Expiration is server-side (queue TTL)
+# and replay protection is message-ID / sequence-number based, so a
+# legitimately delayed envelope (offline queue up to 7 days) must not be
+# rejected merely because its creation timestamp is old.
+ENVELOPE_MAX_AGE_SECS = 300
 
 
 def _canonical_payload(recipient_id: str, message_id: str, payload_hex: str) -> bytes:
@@ -65,10 +95,14 @@ def make_signed_envelope(
 
     The signature covers ``SHA-512(canonical)`` where canonical is the
     length-prefixed encoding of recipient_id, message_id, and payload_hex.
+    ``timestamp`` and ``compressed`` are transport metadata and are NOT part
+    of the signed canonical payload (see module docstring).
     """
     if message_id is None:
         message_id = str(uuid.uuid4())
     if timestamp is None:
+        import time
+
         timestamp = int(time.time())
 
     canonical = _canonical_payload(recipient_id, message_id, payload_hex)
@@ -87,9 +121,17 @@ def make_signed_envelope(
 
 
 def verify_signed_envelope(envelope: Dict[str, Any]) -> bool:
-    """Verify a received envelope's Ed25519 signature and freshness.
+    """Verify a received envelope's Ed25519 signature.
 
-    Returns True if valid, False otherwise. Always call before processing.
+    Returns True if the signature is valid, False otherwise. Always call
+    before processing.
+
+    The signature authenticates recipient_id, message_id, and payload_hex.
+    Age/freshness is deliberately NOT enforced here: delayed (offline-queued)
+    envelopes may carry creation timestamps far in the past and must still be
+    verifiable. Expiration is enforced server-side by the queue TTL, and
+    replay is prevented by message-ID deduplication plus client ratchet
+    sequence-number tracking.
     """
     try:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -102,19 +144,12 @@ def verify_signed_envelope(envelope: Dict[str, Any]) -> bool:
         payload_hex = envelope["payload_hex"]
         sender_id = bytes.fromhex(envelope["sender_id"])
         signature = bytes.fromhex(envelope["signature_hex"])
-        timestamp = envelope["timestamp"]
 
         canonical = _canonical_payload(recipient_id, message_id, payload_hex)
         signing_hash = hashlib.sha512(canonical).digest()
 
         vk = Ed25519PublicKey.from_public_bytes(sender_id)
         vk.verify(signature, signing_hash)
-
-        # Freshness: reject envelopes older than 5 minutes or far in future.
-        now = int(time.time())
-        age = now - timestamp
-        if age > ENVELOPE_MAX_AGE_SECS or age < -ENVELOPE_MAX_AGE_SECS:
-            return False
 
         return True
     except (InvalidSignature, ValueError, KeyError, TypeError):

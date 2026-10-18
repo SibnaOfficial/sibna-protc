@@ -1,4 +1,4 @@
-# Security Policy - Sibna Protocol v3.0.2
+# Security Policy — Sibna Protocol v3.0.2
 
 > [!CAUTION]
 > **Security Disclaimer**: Sibna is an experimental cryptographic implementation. It has not undergone formal 3rd-party review. Cryptographic software should not be deployed in critical production environments without independent validation.
@@ -36,7 +36,7 @@ The Sibna Protocol is analyzed against a **Dolev-Yao** adversary $\mathcal{A}$ w
 
 ## 3. Non-Guarantees & Known Limitations
 
-Sibna v3.0.2 is an experimental research prototype. It does **not** provide guarantees against:
+Sibna v3.0.1 is an experimental research prototype. It does **not** provide guarantees against:
 1.  **Hardware Side-Channels**: Resistance is software-layer only. Differential Power Analysis (DPA) is outside the design scope.
 2.  **Compromised Shared Infrastructure**: Micro-architectural attacks (e.g., Spectre) in virtualized cloud environments may impact timing stability.
 3.  **Root/Kernel Compromise**: A compromised host environment can bypass physical memory pinning and secure storage.

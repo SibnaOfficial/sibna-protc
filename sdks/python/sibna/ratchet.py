@@ -413,12 +413,22 @@ class DoubleRatchet:
     @staticmethod
     def _validate_timestamp(timestamp: int) -> None:
         now = int(time.time())
+        # Reject a zero timestamp: it carries no authenticated creation time
+        # and must not be accepted as a legitimate message.
         if timestamp == 0:
             raise CryptoError("Rejected timestamp == 0")
+        # Reject messages more than 5 minutes in the future (clock skew
+        # tolerance only). A message stamped in the future cannot have been
+        # authentically created yet.
         if timestamp > now + C.MAX_TIMESTAMP_FUTURE_SECS:
             raise CryptoError("Timestamp in the future")
-        if now > timestamp + C.MAX_MESSAGE_AGE_SECS:
-            raise CryptoError("Message too old")
+        # NOTE: deliberately NO past-age rejection here. A legitimately delayed
+        # message (offline queue, store-and-forward, reconnect replay) must be
+        # decryptable regardless of how old its authenticated creation
+        # timestamp is. Expiration is enforced server-side by the queue TTL
+        # (7 days), and replay is prevented by per-session message-number
+        # tracking, not by wall-clock age. Rejecting by absolute age here
+        # would break delayed delivery and punish slow/restricted links.
 
     def validate_message_number(self, n: int) -> None:
         if n > C.MAX_MESSAGE_NUMBER:

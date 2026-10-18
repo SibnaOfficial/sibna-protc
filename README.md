@@ -49,8 +49,8 @@ Sibna Protocol is an end-to-end encrypted communication protocol stack. Its
 goal is confidential, forward-secret, post-compromise-secure messaging between
 two or more parties, with optional post-quantum protection at handshake time.
 
-The protocol is specified in [`PROTOCOL_SPECIFICATION.md`](PROTOCOL_SPECIFICATION.md)
-(v3.0.2). This repository contains three maintained components plus shared
+The protocol is specified in [`PROTOCOL_SPECIFICATION.md`](PROTOCOL_SPECIFICATION.md).
+This repository contains three maintained components plus shared
 tests:
 
 | Component | Role |

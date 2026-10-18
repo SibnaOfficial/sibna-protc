@@ -2,12 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, release/3.0.2]
   pull_request:
-    branches: [main]
+    branches: [main, release/3.0.2]
   schedule:
     - cron: '0 2 * * 0'  # Weekly: run extended security checks
-  workflow_dispatch:
+  workflow_dispatch:  # allow manual runs on the default branch
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -47,7 +48,7 @@ jobs:
       - run: cargo clippy -p sibna-tests -- -D warnings
 
   test-core:
-    name: Core Tests
+    name: Core Unit Tests
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -58,6 +59,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --lib
+
+  test-integration:
+    name: Integration Tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Run every integration test target with each crate's default features
+      # (sibna-server declares no optional features, so workspace-wide
+      # --features would fail for it).
+      - run: cargo test --workspace --test '*'
 
   test-proptest:
     name: Property-Based Tests
@@ -101,22 +118,28 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      # Linting & formatting
-      - run: pip install black mypy
+      # Linting, formatting, type checking, and packaging tooling.
+      - run: pip install black mypy build
       - run: cd sdks/python && black --check sibna tests
-      - run: cd sdks/python && pip install -e ".[dev]"
       - run: cd sdks/python && mypy sibna
       # Unit + protocol-conformance tests
+      - run: cd sdks/python && pip install -e ".[dev]"
       - run: cd sdks/python && python -m pytest tests/ -v
       # Version consistency (protocol, Rust workspace, Python package)
       - run: python scripts/version_check.py
       # Package build + clean installation + smoke test
       - run: cd sdks/python && python -m build
       - run: cd sdks/python && pip install dist/sibna-*.whl
-      - run: cd sdks/python && python -c "import sibna; from sibna import Session, PreKeyBundle, X25519KeyPair, Ed25519KeyPair, derive_identity_keys; ed, x = derive_identity_keys(b'\\\\x01' * 32); assert len(x.public_key) == 32; print('sibna smoke test OK')"
+      - run: cd sdks/python && python -c "
+            import sibna
+            from sibna import Session, PreKeyBundle, X25519KeyPair, Ed25519KeyPair, derive_identity_keys
+            ed, x = derive_identity_keys(b'\\x01' * 32)
+            assert len(x.public_key) == 32
+            print('sibna smoke test OK')
+        "
 
-  # === RUST-PYTHON INTEROP (run on every push/PR) ===
-  interop:
+  # === GENUINE RUST <-> PYTHON INTEROPERABILITY ===
+  sdk-interop:
     name: Rust-Python Interop
     runs-on: ${{ matrix.os }}
     strategy:
@@ -130,14 +153,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - run: pip install -e ".[dev]"
-        working-directory: sdks/python
-      - name: Run interop tests (Linux/macOS)
+      # Python dependencies needed by the SDK and interop tests.
+      - run: pip install blake3 pqcrypto cryptography pytest
+      - run: cd sdks/python && pip install -e .
+      # Run the platform-appropriate interop runner.
+      - name: Run interop (Linux/macOS)
+        if: runner.os != 'Windows'
         run: bash run_interop.sh
-        if: ${{ matrix.os != 'windows-latest' }}
-      - name: Run interop tests (Windows)
-        run: powershell -ExecutionPolicy Bypass -File .\run_interop.ps1
-        if: ${{ matrix.os == 'windows-latest' }}
+      - name: Run interop (Windows)
+        if: runner.os == 'Windows'
+        run: powershell -ExecutionPolicy Bypass -File run_interop.ps1
 
   # === SECURITY AUDITS (run on every push/PR) ===
   audit-deny:
@@ -159,7 +184,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-audit --locked
       - run: cargo audit
-        continue-on-error: false
 
   # === NATIVE LIBRARY BUILD ===
   build-native:
@@ -180,7 +204,6 @@ jobs:
         run: |
           cargo build --release -p sibna-core --features p2p,pqc,argon2,ffi
           echo "lib-path=$(pwd)/target/release" >> $GITHUB_OUTPUT
-        shell: bash
       - name: Upload native library
         uses: actions/upload-artifact@v4
         with:
@@ -305,13 +328,3 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run MIRI (core library tests only)
         run: cargo miri test -p sibna-core --lib 2>&1 | tail -100
-
-
-
-
-
-
-
-
-
-

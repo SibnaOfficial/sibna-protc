@@ -50,13 +50,13 @@ from .crypto import (
 )
 from .errors import CryptoError, ValidationError
 
-# NOTE on PQ hybrid ordering: the Rust core concatenates
-# dh1 || dh2 || dh3 || dh4 || ss_kem for the PQ variant
-# (`derive_pq_shared_secret`). The published spec §2.3 writes
-# `ss_kem || dh1 || dh2 || dh3 || dh4`. To keep Python interoperable with the
-# retained Rust implementation we match the Rust ordering exactly and document
-# the deviation here. Both orderings are identical in the classical (non-PQ)
-# case because ss_kem is absent.
+# NOTE on PQ hybrid ordering: both the published specification
+# (PROTOCOL_SPECIFICATION.md §2.3) and the Rust core concatenate
+# `dh1 || dh2 || dh3 || dh4 || ss_kem` for the PQ variant
+# (`core/src/crypto/kdf.rs::derive_pq_shared_secret`). Python matches this
+# ordering exactly. Both orderings are identical in the classical (non-PQ)
+# case because ss_kem is absent. The spec and both implementations agree, so
+# there is no ordering deviation to document.
 
 
 @dataclass

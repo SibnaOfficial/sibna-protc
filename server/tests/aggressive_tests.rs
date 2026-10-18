@@ -1,18 +1,12 @@
-use futures_util::SinkExt;
+use futures_util::{SinkExt, StreamExt};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sibna_server::run_server;
 use std::net::SocketAddr;
-use std::sync::Mutex;
 use std::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-
-// Serialize aggressive tests: spawn_test_server uses std::env::set_var for the
-// JWT secret, which is global mutable state and not thread-safe. Concurrent
-// tests would overwrite each other's secret, causing 401 errors.
-static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize, Deserialize)]
 struct Claims {
@@ -64,12 +58,11 @@ async fn spawn_test_server(jwt_secret: &str) -> SocketAddr {
 
 #[tokio::test]
 async fn test_aggressive_zombi_ws_flood() {
-    let _lock = TEST_MUTEX.lock().unwrap();
     let secret = "test_aggressive_secret";
     let addr = spawn_test_server(secret).await;
 
     let mut connections = Vec::new();
-    for i in 0..10 {
+    for i in 0..50 {
         let id = format!("{:064x}", i);
         let token = create_mock_jwt(&id, secret);
         let ws_url = format!("ws://{}/ws?token={}", addr, token);
@@ -97,7 +90,6 @@ async fn test_aggressive_zombi_ws_flood() {
 
 #[tokio::test]
 async fn test_aggressive_json_bomb_protection() {
-    let _lock = TEST_MUTEX.lock().unwrap();
     let secret = "test_bomb_secret";
     let addr = spawn_test_server(secret).await;
     let client = Client::new();
@@ -132,7 +124,6 @@ async fn test_aggressive_json_bomb_protection() {
 
 #[tokio::test]
 async fn test_aggressive_queue_flood_stress() {
-    let _lock = TEST_MUTEX.lock().unwrap();
     let secret = "test_queue_secret";
     let addr = spawn_test_server(secret).await;
     let client = Client::new();
@@ -141,7 +132,7 @@ async fn test_aggressive_queue_flood_stress() {
     let alice_token = create_mock_jwt("alice", secret);
 
     // ATTACK: Flood a single recipient with 1000 messages (Offline Queue stress)
-    for i in 0..10 {
+    for i in 0..500 {
         let req = json!({
             "recipient_id": "bob".repeat(16), // Invalid hex but server queues by ID string
             "payload_hex": "aabbcc".repeat(100),
@@ -164,13 +155,12 @@ async fn test_aggressive_queue_flood_stress() {
         // concurrent test load (multiple server instances running simultaneously
         // on the same machine). This keeps the test deterministic on Windows
         // without weakening the flood-stress assertions.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
 }
 
 #[tokio::test]
 async fn test_aggressive_prekey_race_condition() {
-    let _lock = TEST_MUTEX.lock().unwrap();
     let secret = "test_race_secret";
     let addr = spawn_test_server(secret).await;
     let client = Client::new();
@@ -180,7 +170,7 @@ async fn test_aggressive_prekey_race_condition() {
     let alice_token = create_mock_jwt("alice", secret);
 
     let mut handlers = Vec::new();
-    for i in 0..10 {
+    for i in 0..50 {
         let client_clone = client.clone();
         let token_clone = alice_token.clone();
         let upload_url = url_upload.clone();
@@ -215,8 +205,95 @@ async fn test_aggressive_prekey_race_condition() {
 }
 
 #[tokio::test]
+async fn test_delayed_queue_delivery_and_ack() {
+    // Regression test for delayed (offline-queued) message delivery:
+    // a message queued while the recipient is offline must be delivered when
+    // the recipient reconnects, and an explicit ACK must remove it from the
+    // queue so it is not redelivered after a reconnect.
+    let secret = "test_delayed_queue_secret";
+    let addr = spawn_test_server(secret).await;
+    let client = Client::new();
+    let url = format!("http://{}/v1/messages/send", addr);
+
+    let alice_token = create_mock_jwt("alice", secret);
+    let bob_token = create_mock_jwt("bob", secret);
+
+    // Alice sends to Bob while Bob is offline: message is queued (202).
+    let req = json!({
+        "recipient_id": "bob",
+        "payload_hex": "deadbeef",
+        "compressed": false,
+    });
+    let res = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", alice_token))
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        res.status().is_success() || res.status() == reqwest::StatusCode::ACCEPTED,
+        "queued message must be accepted: {}",
+        res.status()
+    );
+
+    // Bob connects and receives the queued (delayed) message.
+    let ws_url = format!("ws://{}/ws?token={}", addr, bob_token);
+    let (mut ws, _) = connect_async(&ws_url).await.expect("Bob WS connect");
+
+    let mut received = None;
+    for _ in 0..40 {
+        if let Some(Ok(msg)) = ws.next().await {
+            let text = match &msg {
+                Message::Text(t) => t.clone(),
+                Message::Binary(b) => String::from_utf8_lossy(b).into_owned(),
+                _ => continue,
+            };
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                if v.get("type").and_then(|t| t.as_str()) == Some("envelope") {
+                    received = Some(v);
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let envelope = received.expect("Bob should receive the queued delayed message");
+    assert_eq!(envelope["recipient_id"], "bob");
+
+    // Bob ACKs the message so it is removed from the queue.
+    let message_id = envelope["message_id"].as_str().unwrap();
+    ws.send(Message::Text(
+        serde_json::to_string(&serde_json::json!({ "type": "ack", "message_id": message_id })).unwrap(),
+    ))
+    .await
+    .unwrap();
+
+    // Bob reconnects: the ACKed message must NOT be redelivered.
+    drop(ws);
+    let (mut ws2, _) = connect_async(&ws_url).await.expect("Bob WS reconnect");
+    let mut redelivered = false;
+    for _ in 0..20 {
+        if let Some(Ok(msg)) = ws2.next().await {
+            let text = match &msg {
+                Message::Text(t) => t.clone(),
+                Message::Binary(b) => String::from_utf8_lossy(b).into_owned(),
+                _ => continue,
+            };
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                if v.get("type").and_then(|t| t.as_str()) == Some("envelope") {
+                    redelivered = true;
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!redelivered, "ACKed message must not be redelivered on reconnect");
+}
+
+#[tokio::test]
 async fn test_health_endpoint_version() {
-    let _lock = TEST_MUTEX.lock().unwrap();
     let secret = "test_health_secret";
     let addr = spawn_test_server(secret).await;
     let client = Client::new();

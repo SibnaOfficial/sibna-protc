@@ -42,31 +42,52 @@ impl HardwareRng for SoftwareRng {
 
 // ─── LZ4 Compression (low-bandwidth mode) ─────────────────────────────────
 
+/// Maximum decompressed output size enforced by `decompress` (20 MB).
+pub(crate) const MAX_DECOMPRESSED_SIZE: usize = 20 * 1024 * 1024;
+
 /// Compress a message payload using LZ4 for low-bandwidth links
 /// Suitable for: LoRa, satellite uplinks, 2G, underwater acoustic modems
 pub fn compress(data: &[u8]) -> Vec<u8> {
     lz4_flex::compress_prepend_size(data)
 }
 
-/// Decompress an LZ4-compressed payload
+/// Decompress an LZ4-compressed payload.
+///
+/// The LZ4 `decompress_size_prepended` frame always begins with a 4-byte
+/// little-endian declared uncompressed size. That size is used to size the
+/// output buffer, so it MUST be validated before any allocation or
+/// decompression. The previous implementation only checked the declared size
+/// when `data.len() > 4`, which let a 4-byte input skip the guard entirely and
+/// force an allocation sized by an attacker-controlled 4-byte length (a
+/// classic decompression-bomb / allocation DoS).
+///
+/// The declared size is enforced for every input that carries a full 4-byte
+/// header, and `lz4_flex::decompress_size_prepended` never writes more than
+/// the declared size into its buffer, so the actual output is bounded by the
+/// capped declared size. No unbounded allocation can occur.
 pub fn decompress(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
-    const MAX_DECOMPRESSED_SIZE: usize = 20 * 1024 * 1024; // 20 MB limit
-
-    // Check if the prepended size is too large (DoS protection)
-    if data.len() > 4 {
-        let mut size_bytes = [0u8; 4];
-        size_bytes.copy_from_slice(&data[..4]);
-        let uncompressed_size = u32::from_le_bytes(size_bytes) as usize;
-        if uncompressed_size > MAX_DECOMPRESSED_SIZE {
-            return Err(DecompressError::TooLarge);
-        }
+    // A valid LZ4 size-prepended stream always carries at least the 4-byte
+    // declared-size header. Reject anything shorter up front.
+    if data.len() < 4 {
+        return Err(DecompressError::InvalidData);
     }
 
+    let declared_size =
+        u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+
+    // Enforce the advertised-size limit BEFORE any allocation/decompression.
+    if declared_size > MAX_DECOMPRESSED_SIZE {
+        return Err(DecompressError::TooLarge);
+    }
+
+    // The decompressor allocates a buffer sized to the (capped) declared size
+    // and never writes more than that, so actual output cannot exceed the
+    // enforced limit regardless of the compressed stream contents.
     lz4_flex::decompress_size_prepended(data).map_err(|_| DecompressError::InvalidData)
 }
 
 /// Decompression error
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum DecompressError {
     InvalidData,
     TooLarge,
@@ -309,5 +330,110 @@ mod tests {
         let id = "deadbeef01234567";
         assert_eq!(mqtt_send_topic(id), format!("sibna/msg/{}", id));
         assert_eq!(mqtt_inbox_topic(id), format!("sibna/inbox/{}", id));
+    }
+
+    // ── Decompression boundary / adversarial tests (SIBNA-DECOMPRESS) ───────
+
+    #[test]
+    fn test_decompress_empty_input_rejected() {
+        assert!(decompress(&[]).is_err());
+    }
+
+    #[test]
+    fn test_decompress_short_header_rejected() {
+        // 1, 2, or 3 bytes cannot carry a valid 4-byte declared-size header.
+        for len in 0..4 {
+            assert!(decompress(&vec![0u8; len]).is_err(), "len={} should be rejected", len);
+        }
+    }
+
+    #[test]
+    fn test_decompress_roundtrip_within_limit() {
+        let data = b"SIBNA decompression boundary test payload.";
+        let compressed = compress(data);
+        let out = decompress(&compressed).unwrap();
+        assert_eq!(data, out.as_slice());
+    }
+
+    #[test]
+    fn test_decompress_oversized_declared_size_rejected() {
+        // Exactly 4 bytes: header only, declares 0xFFFFFFFF (~4 GiB). The old
+        // `data.len() > 4` guard skipped this case entirely.
+        let huge: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
+        assert_eq!(
+            decompress(&huge),
+            Err(DecompressError::TooLarge),
+            "4-byte input declaring ~4 GiB must be rejected before allocation"
+        );
+    }
+
+    #[test]
+    fn test_decompress_declared_size_at_limit_accepted() {
+        // Declared size exactly == MAX_DECOMPRESSED_SIZE must be accepted
+        // (boundary value). Use a valid minimal stream: declare the limit but
+        // the decompressor will error on invalid data -> InvalidData, not
+        // TooLarge, proving the cap was applied.
+        let at_limit: [u8; 4] = [
+            (MAX_DECOMPRESSED_SIZE as u32 & 0xFF) as u8,
+            ((MAX_DECOMPRESSED_SIZE as u32) >> 8 & 0xFF) as u8,
+            ((MAX_DECOMPRESSED_SIZE as u32) >> 16 & 0xFF) as u8,
+            ((MAX_DECOMPRESSED_SIZE as u32) >> 24 & 0xFF) as u8,
+        ];
+        let result = decompress(&at_limit);
+        // The stream is not valid LZ4, so we get InvalidData — but never
+        // TooLarge, because the declared size is within the cap.
+        assert!(
+            matches!(result, Err(DecompressError::InvalidData)),
+            "declared size == limit must not be rejected as TooLarge; got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_decompress_declared_size_above_limit_rejected() {
+        // Declared size = MAX + 1 must be rejected as TooLarge.
+        let over: [u8; 4] = [
+            (((MAX_DECOMPRESSED_SIZE + 1) as u32) & 0xFF) as u8,
+            ((((MAX_DECOMPRESSED_SIZE + 1) as u32) >> 8) & 0xFF) as u8,
+            ((((MAX_DECOMPRESSED_SIZE + 1) as u32) >> 16) & 0xFF) as u8,
+            ((((MAX_DECOMPRESSED_SIZE + 1) as u32) >> 24) & 0xFF) as u8,
+        ];
+        assert_eq!(decompress(&over), Err(DecompressError::TooLarge));
+    }
+
+    #[test]
+    fn test_decompress_truncated_stream_rejected() {
+        // Valid header declaring a modest size, but the stream is truncated
+        // before the declared amount of output can be produced.
+        let declared: [u8; 4] = [100, 0, 0, 0]; // declare 100 bytes
+        let truncated = [declared.as_slice(), &[0x04u8; 2]].concat();
+        assert!(decompress(&truncated).is_err());
+    }
+
+    #[test]
+    fn test_decompress_malformed_stream_rejected() {
+        // Header declares a small size, but payload is not valid LZ4.
+        let declared: [u8; 4] = [10, 0, 0, 0];
+        let garbage = [declared.as_slice(), &[0xFFu8; 16]].concat();
+        assert!(decompress(&garbage).is_err());
+    }
+
+    #[test]
+    fn test_decompress_empty_payload_roundtrip() {
+        let data = b"";
+        let compressed = compress(data);
+        let out = decompress(&compressed).unwrap();
+        assert_eq!(data, out.as_slice());
+    }
+
+    #[test]
+    fn test_parse_mqtt_payload_rejects_bad_compression() {
+        let recipient = [0x42u8; 32];
+        // Build a payload with the compressed flag set but invalid LZ4 bytes.
+        let mut raw = Vec::new();
+        raw.push(0x01); // compressed flag
+        raw.extend_from_slice(&recipient);
+        raw.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00]); // garbage
+        assert!(parse_mqtt_payload(&raw).is_err());
     }
 }

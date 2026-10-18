@@ -3,37 +3,50 @@
 #   Unified Rust <-> Python Double Ratchet interoperability test runner.
 # .DESCRIPTION
 #   Executes the full cross-implementation workflow in order:
-#     1. Clean up any stale temporary fixtures.
-#     2. Python generates fresh Double Ratchet ciphertext fixtures.
-#     3. Rust decrypts & verifies Python ciphertexts, writes Rust ciphertext fixtures.
-#     4. Rust negative tests: tampered ciphertext and incorrect associated data.
-#     5. Python decrypts & verifies Rust ciphertexts.
+#     1. Python generates fresh Double Ratchet ciphertext fixtures (Python -> Rust).
+#     2. Rust decrypts & verifies Python ciphertexts, writes Rust ciphertext fixtures
+#        (Rust -> Python), and runs negative tests.
+#     3. Python decrypts & verifies Rust-generated ciphertexts.
 #   All subprocess failures propagate as a nonzero exit code.
+#
+# PATH CONTRACT (must match the test participants):
+#   - Python tests write/read  ${TMP}/sibna_py_ratchet_ct.json
+#   - Rust   tests write/read  ${TMP}/sibna_rust_ratchet_ct.json
+#   where ${TMP} = ${TMPDIR:-/tmp} (POSIX) — the same OS temp dir used by
+#   Python's tempfile.gettempdir() and Rust's std::env::temp_dir().
 # .EXAMPLE
 #   bash run_interop.sh
 
 set -euo pipefail
 
-# Dedicated temporary fixture paths (matches Python tempfile.gettempdir() and
-# Rust std::env::temp_dir() on all platforms via TMPDIR env var)
-export TMPDIR="${TMPDIR:-$(python -c "import tempfile; print(tempfile.gettempdir())")}"
-PY_CT_PATH="${TMPDIR}/sibna_py_ratchet_ct.json"
-RUST_CT_PATH="${TMPDIR}/sibna_rust_ratchet_ct.json"
+# Consistent temporary fixture location shared by Python, Rust, and this runner.
+TMP="${TMPDIR:-/tmp}"
+PY_CT_PATH="${TMP}/sibna_py_ratchet_ct.json"
+RUST_CT_PATH="${TMP}/sibna_rust_ratchet_ct.json"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY_SDK_DIR="${REPO_ROOT}/sdks/python"
 CORE_DIR="${REPO_ROOT}/core"
 
+# Safe cleanup on exit (success or failure). Removes only the interop fixtures
+# we own, never the caller's broader temp directory.
+cleanup() {
+    rm -f "${PY_CT_PATH}" "${RUST_CT_PATH}"
+}
+trap cleanup EXIT
+
 echo "=== SIBNA Rust <-> Python Double Ratchet Interop Runner ==="
-echo "Python fixture path: ${PY_CT_PATH}"
-echo "Rust fixture path:   ${RUST_CT_PATH}"
+echo "Temp dir:          ${TMP}"
+echo "Python fixture:    ${PY_CT_PATH}"
+echo "Rust fixture:      ${RUST_CT_PATH}"
+echo "Repo root:         ${REPO_ROOT}"
 
 # ---- Step 0: Clean up stale fixtures ---------------------------------------
 echo ""
 echo "[0/5] Cleaning up stale temporary fixtures..."
-rm -f "${PY_CT_PATH}" "${RUST_CT_PATH}"
+cleanup
 
-# ---- Step 1: Python generates fresh ciphertexts ----------------------------
+# ---- Step 1: Python generates fresh ciphertexts (Python -> Rust) -----------
 echo ""
 echo "[1/5] Python: generating ciphertexts for Rust..."
 (
@@ -59,7 +72,7 @@ if [ ! -f "${RUST_CT_PATH}" ]; then
 fi
 echo "OK: Rust ciphertext fixture written."
 
-# ---- Step 4: Python decrypts Rust ciphertexts ------------------------------
+# ---- Step 4: Python decrypts Rust ciphertexts (Rust -> Python) -------------
 echo ""
 echo "[3/5] Python: decrypting Rust-generated ciphertexts..."
 (
@@ -67,11 +80,6 @@ echo "[3/5] Python: decrypting Rust-generated ciphertexts..."
     python -m pytest tests/test_ratchet_python_to_rust_interop.py::test_python_decrypts_rust_generated_ciphertexts -m interop -v
 )
 echo "OK: Python decrypted Rust ciphertexts."
-
-# ---- Step 5: Cleanup -------------------------------------------------------
-echo ""
-echo "[4/5] Cleaning up temporary fixtures..."
-rm -f "${PY_CT_PATH}" "${RUST_CT_PATH}"
 
 echo ""
 echo "=== ALL INTEROP TESTS PASSED ==="

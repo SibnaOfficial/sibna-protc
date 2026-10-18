@@ -5,11 +5,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
-## [v3.0.2] — 2026-10-16 (SDK Consolidation & Cross-Platform)
+## [3.0.2] — 2026-10-17 (Security, Correctness, Interoperability)
 
-### SDK Consolidation
+Release tag: `v3.0.2`. Wire protocol version remains `10`.
 
-- **SDK consolidation**: Removed C++, Dart, Flutter, Go, Java, and JavaScript SDKs. Python SDK is the sole official SDK.
+### Security Fixes — HIGH
+
+- **Decompression allocation DoS (core/src/iot.rs)** — `decompress()` only enforced the 20 MiB declared-size limit when `data.len() > 4`, letting a 4-byte attacker-controlled header force an unbounded allocation (decompression bomb). **Fix:** reject inputs shorter than 4 bytes and enforce the declared-size cap for every full 4-byte header before any allocation. Added regression tests for short headers, empty/truncated/malformed input, oversized declared length (at/above/below the 20 MiB boundary), and invalid MQTT compression payloads.
+
+- **Delayed-message rejection by client age check (core/src/ratchet/mod.rs, sdks/python/sibna/ratchet.py)** — both Rust and Python rejected any ratchet message older than 24 h by wall-clock age, breaking legitimate store-and-forward/offline delivery (server queues up to 7 days). **Fix:** removed the past-age rejection; keep `timestamp == 0` and future-timestamp (> now + 300 s) rejection. Expiration is enforced server-side by the queue TTL; replay is prevented by per-session message-number tracking. The previously-failing `test_decrypt_rust_fixture_ciphertexts` now passes.
+
+### Correctness
+
+- **Interop runner temp-path mismatch (run_interop.sh, run_interop.ps1)** — `run_interop.sh` created two separate `mktemp -d` directories that never matched the fixed OS temp paths used by the Python and Rust tests, so the runner always failed its artifact checks. **Fix:** both runners now use the OS temp dir (`${TMPDIR:-/tmp}` / `$env:TEMP`) consistent with the tests, stop on first failure, propagate exit codes, validate artifacts before consuming them, and clean up safely on exit. Genuine Rust↔Python ratchet interop verified in both directions.
+
+- **Rust test `unused_mut` warnings** — removed unneeded `mut` bindings in `core/tests/test_python_interop.rs` so the crate builds cleanly under `RUSTFLAGS=-D warnings`.
+
+- **Stale X3DH ordering note (sdks/python/sibna/x3dh.py)** — corrected a comment that claimed the PQ hybrid shared-secret ordering differed from the specification; spec §2.3, Rust, and Python all concatenate `dh1||dh2||dh3||dh4||ss_kem`.
+
+### Release Engineering
+
+- Bumped package/wire-consistent version to `3.0.2` across `Cargo.toml`, `pyproject.toml`, `sibna/__init__.py`, `sibna/constants.py`, and the server health endpoint. Wire protocol version remains `10`.
+
+## [Unreleased] — v3.1.0 Security & Interop Fixes
 
 ### Security Fixes — CRITICAL
 
@@ -17,29 +35,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 - **Python WebSocket JWT Leak (sdks/python)** — Async WebSocket client appended JWT to query string (`/ws?token=...`), leaking in access logs, browser history, Referer. **Fix:** token now sent via `Authorization: Bearer <jwt>` header in `ws_connect()`.
 
-- **Signed PreKey signature domain consistency (core/src/handshake/mod.rs)** — `PreKeyBundle::validate()` now verifies the SPK signature over `"SibnaSignedPreKey_v3" || signed_prekey`, consistent with `perform_handshake()` and Python's `verify_spk_signature()`.
-
 ### Documentation
 
-- `PROTOCOL_SPECIFICATION.md` — PQ hybrid KDF input ordering corrected to match implementation (`dh1 || dh2 || dh3 || dh4 || ss_kem`); Signed PreKey signature domain prefix (`"SibnaSignedPreKey_v3"`) made consistent across Rust `PreKeyBundle::validate()` and `perform_handshake()`.
-- `core/src/handshake/mod.rs:55` — stale comment corrected.
-
-### Cross-Platform CI
-
-- Added Windows and macOS CI jobs for clippy, test-core, test-proptest, build-verify, sdk-python, and server tests.
-- Added `run_interop.sh` bash script for cross-platform interoperability testing.
+- `CHANGELOG.md` — this entry
+- `README.md` — repository layout and component descriptions updated
+- `PROTOCOL_SPECIFICATION.md` — PQ hybrid KDF input ordering corrected to match implementation (`dh1 || dh2 || dh3 || dh4 || ss_kem`); Signed PreKey signature domain prefix (`"SibnaSignedPreKey_v3"`) made consistent across Rust `PreKeyBundle::validate()` and `perform_handshake()`
+- `core/src/handshake/mod.rs:55` — stale comment corrected
 
 ### Breaking Changes
 
 - **Python SDK**: WebSocket handshake now uses `Authorization: Bearer` header instead of query string; server must be updated.
-
----
-
-## [Unreleased]
-
-### Planned
-
-- None currently scheduled.
 
 ---
 

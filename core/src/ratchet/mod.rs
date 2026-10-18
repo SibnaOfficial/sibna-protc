@@ -78,15 +78,25 @@ impl RatchetHeader {
         if self.message_number > 1_000_000_000_000 {
             return Err(ProtocolError::InvalidMessage);
         }
-        let now = crate::crypto::current_timestamp()?;
-        // Reject messages more than 5 minutes in the future.
-        if self.timestamp > now + 300 {
+        // Reject a zero timestamp: it carries no authenticated creation time
+        // and must not be accepted as a legitimate message.
+        if self.timestamp == 0 {
             return Err(ProtocolError::InvalidMessage);
         }
-        // Reject messages older than 24 hours, including timestamp == 0.
-        if now > self.timestamp.saturating_add(86400) {
-            return Err(ProtocolError::MessageTooOld);
+        let now = crate::crypto::current_timestamp()?;
+        // Reject messages more than 5 minutes in the future (clock skew
+        // tolerance only). A message stamped in the future cannot have been
+        // authentically created yet.
+        if self.timestamp > now + 300 {
+            return Err(ProtocolError::MessageFromFuture);
         }
+        // NOTE: deliberately NO past-age rejection here. A legitimately delayed
+        // message (offline queue, store-and-forward, reconnect replay) must be
+        // decryptable regardless of how old its authenticated creation
+        // timestamp is. Expiration is enforced server-side by the queue TTL
+        // (7 days), and replay is prevented by per-session message-number
+        // tracking, not by wall-clock age. Rejecting by absolute age here
+        // would break delayed delivery and punish slow/restricted links.
         Ok(())
     }
 

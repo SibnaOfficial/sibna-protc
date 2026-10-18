@@ -35,7 +35,11 @@ SAFETY_NUMBER_DIGIT_COUNT = 80
 MAX_SKIPPED_MESSAGES = 2000
 MAX_CHAIN_MESSAGES = 4000
 MAX_MESSAGE_NUMBER = 1_000_000_000_000
-MAX_MESSAGE_AGE_SECS = 86_400  # 24 hours (ratchet header timestamp)
+# 24 hours — retained for API compatibility; no longer used by the client to
+# reject delayed messages (expiration is enforced server-side by the queue TTL;
+# replay is prevented by message-number tracking). See ratchet.py
+# _validate_timestamp for the rationale.
+MAX_MESSAGE_AGE_SECS = 86_400
 MAX_TIMESTAMP_FUTURE_SECS = 300  # 5 minutes future tolerance (ratchet header)
 MAX_AD_LEN = 256  # associated data (matches crypto layer)
 MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10 MiB

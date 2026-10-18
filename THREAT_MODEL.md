@@ -1,4 +1,4 @@
-# Threat Model - Sibna Protocol v3.0.2
+# Threat Model — Sibna Protocol v3.0.1
 
 ## 1. Assets
 
@@ -55,8 +55,20 @@ The protocol is analyzed against a **Dolev-Yao** adversary with the following ca
 | Identity verification | Safety numbers (SHA-512 fingerprint, 80 digits) | MITM detection (if verified out-of-band) |
 | Stored state | Argon2id + ChaCha20-Poly1305 encryption, HMAC-authenticated manifest | At-rest protection (partial) |
 | Replay protection | Time-bounded message number window | Replay attack mitigation |
+| Stored-state rollback | Sequence-number manifest with HMAC; load refuses when manifest is missing, the HMAC fails, the blob hash mismatches, or the payload sequence number is below the manifest sequence number | Protects integrity and detects single-file rollback; does NOT prevent restoration of an older (data + manifest) pair by an attacker who controls all local storage |
 
 ## 5. Limitations and Unverified Claims
+
+### Local-storage rollback (no trusted external freshness source)
+
+The storage manifest (sequence number + HMAC + blob hash) detects tampering with either the encrypted blob or the manifest in isolation, and refuses to load when they disagree. However, it does **not** provide complete rollback prevention against an attacker who can read and rewrite all local files:
+
+- If the attacker restores an older encrypted blob together with its matching (older) manifest, both the HMAC and the sequence-number check pass, and the older state is loaded. The HMAC is keyed by the storage encryption key, so this requires either key knowledge or file-level restore capability (not cryptographic forgery).
+- A manifest/sequence counter stored only beside the files it protects is not an independent freshness source: restoring an older copy of the data file, the manifest, and the counter together defeats rollback detection.
+
+**Complete rollback prevention against an attacker with full local-storage control cannot be guaranteed without a trusted external freshness source** (e.g., a server-maintained version record, a hardware monotonic counter, or a trusted timestamping service). The implementation documents this limitation rather than claiming a guarantee it cannot uphold. Callers that require stronger rollback resistance must supply such an external freshness mechanism.
+
+The remaining limitations below are unchanged.
 
 - **No independent audit**: The protocol and implementations have not undergone formal third-party cryptographic review.
 - **No formal verification**: The protocol has not been verified with ProVerif, Tamarin, or equivalent tools.

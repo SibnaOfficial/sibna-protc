@@ -1,8 +1,10 @@
 use futures_util::{SinkExt, StreamExt};
+use hex;
 use jsonwebtoken::{encode, EncodingKey, Header};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sibna_core::{Config, SecureContext};
 use sibna_server::run_server;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -215,12 +217,23 @@ async fn test_delayed_queue_delivery_and_ack() {
     let client = Client::new();
     let url = format!("http://{}/v1/messages/send", addr);
 
-    let alice_token = create_mock_jwt("alice", secret);
-    let bob_token = create_mock_jwt("bob", secret);
+    // Create proper Ed25519 identities for Alice and Bob
+    let ctx_alice = SecureContext::new(Config::default(), None).unwrap();
+    ctx_alice.generate_identity().unwrap();
+    let alice_id = ctx_alice.get_identity().unwrap().ed25519_public;
+    let alice_id_hex = hex::encode(alice_id);
+    let alice_token = create_mock_jwt(&alice_id_hex, secret);
+
+    let ctx_bob = SecureContext::new(Config::default(), None).unwrap();
+    ctx_bob.generate_identity().unwrap();
+    let bob_id = ctx_bob.get_identity().unwrap().ed25519_public;
+    let bob_id_hex = hex::encode(bob_id);
+    let bob_token = create_mock_jwt(&bob_id_hex, secret);
 
     // Alice sends to Bob while Bob is offline: message is queued (202).
+    // recipient_id must be the 64-char hex-encoded Ed25519 public key.
     let req = json!({
-        "recipient_id": "bob",
+        "recipient_id": bob_id_hex,
         "payload_hex": "deadbeef",
         "compressed": false,
     });
@@ -259,7 +272,7 @@ async fn test_delayed_queue_delivery_and_ack() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let envelope = received.expect("Bob should receive the queued delayed message");
-    assert_eq!(envelope["recipient_id"], "bob");
+    assert_eq!(envelope["recipient_id"], bob_id_hex);
 
     // Bob ACKs the message so it is removed from the queue.
     let message_id = envelope["message_id"].as_str().unwrap();

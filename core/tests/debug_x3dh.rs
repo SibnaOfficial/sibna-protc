@@ -1,7 +1,8 @@
-use sibna_core::crypto::*;
-use sibna_core::handshake::x3dh::*;
-use sibna_core::*;
+use sibna_core::handshake::x3dh::x3dh_initiator_v3;
 use x25519_dalek::{PublicKey, StaticSecret};
+use blake3::Hasher;
+use hkdf::Hkdf;
+use sha2::Sha256;
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|b| format!("{:02x}", b)).collect()
@@ -34,8 +35,6 @@ fn debug_x3dh() {
     println!("rust_transcript={}", hex(&transcript_hash));
 
     let combined_transcript: [u8; 32] = {
-        use hkdf::Hkdf;
-        use sha2::Sha256;
         let hk = Hkdf::<Sha256>::new(Some(&[0u8; 32]), &transcript_hash);
         let mut out = [0u8; 32];
         hk.expand(b"SibnaX3DH_TranscriptBind_v3", &mut out).unwrap();

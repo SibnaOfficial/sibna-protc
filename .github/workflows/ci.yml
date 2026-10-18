@@ -72,7 +72,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Run integration tests without PQC feature (PQC has known signature verification issues with fips203 0.4.3)
-      - run: cargo test --workspace --test '*' --no-default-features --features p2p
+      # Exclude test_python_interop which requires Python fixture generation (tested in sdk-interop job)
+      - run: cargo test --workspace --test '*' --no-default-features --features p2p -- --skip test_python_interop
 
   test-proptest:
     name: Property-Based Tests

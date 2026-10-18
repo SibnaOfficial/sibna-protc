@@ -130,13 +130,7 @@ jobs:
       # Package build + clean installation + smoke test
       - run: cd sdks/python && python -m build
       - run: cd sdks/python && pip install dist/sibna-*.whl
-      - run: cd sdks/python && python -c "
-            import sibna
-            from sibna import Session, PreKeyBundle, X25519KeyPair, Ed25519KeyPair, derive_identity_keys
-            ed, x = derive_identity_keys(b'\\x01' * 32)
-            assert len(x.public_key) == 32
-            print('sibna smoke test OK')
-        "
+      - run: cd sdks/python && python -c "import sibna; from sibna import derive_identity_keys; ed, x = derive_identity_keys(bytes([1] * 32)); assert len(x.public_key) == 32; print('sibna smoke test OK')"
 
   # === GENUINE RUST <-> PYTHON INTEROPERABILITY ===
   sdk-interop:

@@ -272,8 +272,11 @@ impl SignedPreKey {
         let secret = x25519_dalek::StaticSecret::random_from_rng(&mut rand_core::OsRng);
         let public = x25519_dalek::PublicKey::from(&secret);
 
-        // Sign the public key
-        let signature = identity.sign(public.as_bytes())?;
+        // Sign the public key with domain separation prefix
+        let mut spk_payload = Vec::with_capacity(20 + 32);
+        spk_payload.extend_from_slice(b"SibnaSignedPreKey_v3");
+        spk_payload.extend_from_slice(public.as_bytes());
+        let signature = identity.sign(&spk_payload)?;
 
         #[cfg(feature = "pqc")]
         let (pq_public, pq_secret) = {
@@ -321,7 +324,11 @@ impl SignedPreKey {
             .as_slice()
             .try_into()
             .map_err(|_| ProtocolError::InvalidSignature)?;
-        identity.verify(&self.public, &signature)
+        // Verify with domain separation prefix
+        let mut spk_payload = Vec::with_capacity(20 + 32);
+        spk_payload.extend_from_slice(b"SibnaSignedPreKey_v3");
+        spk_payload.extend_from_slice(&self.public);
+        identity.verify(&spk_payload, &signature)
     }
 
     /// Check if key has expired (older than 7 days)

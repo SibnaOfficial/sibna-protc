@@ -1,8 +1,8 @@
-use sibna_core::handshake::x3dh::x3dh_initiator_v3;
-use x25519_dalek::{PublicKey, StaticSecret};
 use blake3::Hasher;
 use hkdf::Hkdf;
 use sha2::Sha256;
+use sibna_core::handshake::x3dh::x3dh_initiator_v3;
+use x25519_dalek::{PublicKey, StaticSecret};
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|b| format!("{:02x}", b)).collect()

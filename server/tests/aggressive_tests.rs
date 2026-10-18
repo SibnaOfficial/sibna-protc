@@ -91,7 +91,9 @@ async fn spawn_test_server(jwt_secret: &str) -> SocketAddr {
             .send()
             .await
         {
-            if test_resp.status().is_success() || test_resp.status() == reqwest::StatusCode::ACCEPTED {
+            if test_resp.status().is_success()
+                || test_resp.status() == reqwest::StatusCode::ACCEPTED
+            {
                 break;
             }
         }

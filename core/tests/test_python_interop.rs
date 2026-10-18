@@ -11,6 +11,7 @@ use sibna_core::ratchet::DoubleRatchetSession;
 use sibna_core::{Config, HandshakeRole};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use x25519_dalek::{PublicKey, StaticSecret};
 
 fn hex_decode(hex: &str) -> Vec<u8> {
@@ -45,90 +46,106 @@ fn bob_spk_pub() -> PublicKey {
     PublicKey::from(&bob_spk_secret())
 }
 
-/// Generate Python-compatible ciphertext fixture if it doesn't exist.
+/// Generate Python-compatible ciphertext fixture using atomic write and one-time initialization.
 /// Uses the same fixed keys as the Python interop test.
+/// This function is safe for concurrent calls from multiple test threads.
 fn ensure_py_fixture() -> PathBuf {
-    let py_path = py_ct_path();
-    if py_path.exists() {
-        return py_path;
-    }
+    static INIT: OnceLock<PathBuf> = OnceLock::new();
 
-    // Generate the fixture using the same fixed keys as the Python test
-    let alice_id = StaticSecret::from([0x61u8; 32]);
-    let bob_id = StaticSecret::from([0x62u8; 32]);
-    let bob_id_pub = PublicKey::from(&bob_id);
-    let bob_spk = StaticSecret::from([0x63u8; 32]);
-    let bob_spk_pub = PublicKey::from(&bob_spk);
-    let bob_opk = StaticSecret::from([0x64u8; 32]);
-    let bob_opk_pub = PublicKey::from(&bob_opk);
-    let alice_eph = StaticSecret::from([0x65u8; 32]);
-    let alice_eph_pub = PublicKey::from(&alice_eph);
+    INIT.get_or_init(|| {
+        let py_path = py_ct_path();
 
-    // X3DH initiator (Alice) - use default device IDs and transcript hash
-    use sibna_core::handshake::x3dh::x3dh_initiator_v3;
-    let result = x3dh_initiator_v3(
-        &alice_id,
-        &alice_eph,
-        &bob_id_pub,
-        &bob_spk_pub,
-        Some(&bob_opk_pub),
-        #[cfg(feature = "pqc")]
-        None,
-        &[0u8; 16], // our_device_id
-        &[0u8; 16], // peer_device_id
-        &[0u8; 32], // transcript_hash_ext
-    )
-    .expect("X3DH initiator");
+        // Check if fixture already exists and is valid
+        if py_path.exists() {
+            if let Ok(content) = fs::read_to_string(&py_path) {
+                if serde_json::from_str::<Value>(&content).is_ok() {
+                    return py_path;
+                }
+            }
+            // Stale or corrupt fixture - will regenerate
+        }
 
-    // Alice encrypts messages
-    let alice = DoubleRatchetSession::from_shared_secret(
-        &result.shared_secret,
-        alice_eph,
-        bob_spk_pub,
-        Config::default(),
-        HandshakeRole::Initiator,
-    )
-    .expect("create Alice session");
+        // Generate the fixture using the same fixed keys as the Python test
+        let alice_id = StaticSecret::from([0x61u8; 32]);
+        let bob_id = StaticSecret::from([0x62u8; 32]);
+        let bob_id_pub = PublicKey::from(&bob_id);
+        let bob_spk = StaticSecret::from([0x63u8; 32]);
+        let bob_spk_pub = PublicKey::from(&bob_spk);
+        let bob_opk = StaticSecret::from([0x64u8; 32]);
+        let bob_opk_pub = PublicKey::from(&bob_opk);
+        let alice_eph = StaticSecret::from([0x65u8; 32]);
+        let alice_eph_pub = PublicKey::from(&alice_eph);
 
-    let messages = vec!["Hello Bob #0", "Hello Bob #1", "Hello Bob #2"];
-    let mut ciphertexts = Vec::new();
-    for msg in &messages {
-        let ct = alice
-            .encrypt(msg.as_bytes(), b"ad")
-            .expect("Rust encrypt failed");
-        ciphertexts.push(hex::encode(ct));
-    }
+        // X3DH initiator (Alice) - use default device IDs and transcript hash
+        use sibna_core::handshake::x3dh::x3dh_initiator_v3;
+        let result = x3dh_initiator_v3(
+            &alice_id,
+            &alice_eph,
+            &bob_id_pub,
+            &bob_spk_pub,
+            Some(&bob_opk_pub),
+            #[cfg(feature = "pqc")]
+            None,
+            &[0u8; 16], // our_device_id
+            &[0u8; 16], // peer_device_id
+            &[0u8; 32], // transcript_hash_ext
+        )
+        .expect("X3DH initiator");
 
-    // Verify Bob can decrypt (sanity check)
-    let bob = DoubleRatchetSession::from_shared_secret(
-        &result.shared_secret,
-        bob_spk,
-        alice_eph_pub,
-        Config::default(),
-        HandshakeRole::Responder,
-    )
-    .expect("create Bob session");
-    for (ct_hex, expected) in ciphertexts.iter().zip(messages.iter()) {
-        let ct = hex_decode(ct_hex);
-        let pt = bob
-            .decrypt(&ct, b"ad")
-            .expect("Python-style decrypt failed");
-        assert_eq!(pt, expected.as_bytes());
-    }
+        // Alice encrypts messages
+        let alice = DoubleRatchetSession::from_shared_secret(
+            &result.shared_secret,
+            alice_eph,
+            bob_spk_pub,
+            Config::default(),
+            HandshakeRole::Initiator,
+        )
+        .expect("create Alice session");
 
-    let output = serde_json::json!({
-        "ciphertexts": ciphertexts,
-        "expected_plaintexts": messages,
-        "associated_data": "ad",
-        "shared_secret": hex::encode(&result.shared_secret),
-        "alice_ephemeral_public": hex::encode(alice_eph_pub.as_bytes()),
-        "bob_signed_prekey_public": hex::encode(bob_spk_pub.as_bytes()),
-    });
+        let messages = vec!["Hello Bob #0", "Hello Bob #1", "Hello Bob #2"];
+        let mut ciphertexts = Vec::new();
+        for msg in &messages {
+            let ct = alice
+                .encrypt(msg.as_bytes(), b"ad")
+                .expect("Rust encrypt failed");
+            ciphertexts.push(hex::encode(ct));
+        }
 
-    fs::write(&py_path, serde_json::to_string_pretty(&output).unwrap())
-        .expect("write python ciphertext fixture");
+        // Verify Bob can decrypt (sanity check)
+        let bob = DoubleRatchetSession::from_shared_secret(
+            &result.shared_secret,
+            bob_spk,
+            alice_eph_pub,
+            Config::default(),
+            HandshakeRole::Responder,
+        )
+        .expect("create Bob session");
+        for (ct_hex, expected) in ciphertexts.iter().zip(messages.iter()) {
+            let ct = hex_decode(ct_hex);
+            let pt = bob
+                .decrypt(&ct, b"ad")
+                .expect("Python-style decrypt failed");
+            assert_eq!(pt, expected.as_bytes(), "sanity check decryption mismatch");
+        }
 
-    py_path
+        let output = serde_json::json!({
+            "ciphertexts": ciphertexts,
+            "expected_plaintexts": messages,
+            "associated_data": "ad",
+            "shared_secret": hex::encode(&result.shared_secret),
+            "alice_ephemeral_public": hex::encode(alice_eph_pub.as_bytes()),
+            "bob_signed_prekey_public": hex::encode(bob_spk_pub.as_bytes()),
+        });
+
+        // Atomic write: write to temp file, then rename
+        let tmp_path = py_path.with_extension("json.tmp");
+        fs::write(&tmp_path, serde_json::to_string_pretty(&output).unwrap())
+            .expect("write python ciphertext fixture failed");
+        fs::rename(&tmp_path, &py_path).expect("rename python ciphertext fixture failed");
+
+        py_path
+    })
+    .clone()
 }
 
 #[test]

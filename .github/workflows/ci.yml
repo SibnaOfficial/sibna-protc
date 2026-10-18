@@ -119,11 +119,11 @@ jobs:
         with:
           python-version: '3.13'
       # Linting, formatting, type checking, and packaging tooling.
-      - run: pip install black mypy build
+      # Install everything in one step so dependency resolution is consistent
+      # across all platforms (avoids conflicts between sequential installs).
+      - run: cd sdks/python && pip install -e ".[dev]" build
       - run: cd sdks/python && black --check sibna tests
       - run: cd sdks/python && mypy sibna
-      # Unit + protocol-conformance tests
-      - run: cd sdks/python && pip install -e ".[dev]"
       - run: cd sdks/python && python -m pytest tests/ -v
       # Version consistency (protocol, Rust workspace, Python package)
       - run: python scripts/version_check.py

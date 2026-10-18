@@ -514,11 +514,21 @@ async fn test_p2p_local_connect_and_handshake() {
 
     let mut cfg_a = P2pConfig::default();
     cfg_a.expected_peer_identity = Some(id_b);
-    let node_a = P2pNode::new(cfg_a, ctx_a).await.unwrap();
+    let node_a =
+        match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_a, ctx_a)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
+            Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
+        };
 
     let mut cfg_b = P2pConfig::default();
     cfg_b.expected_peer_identity = Some(id_a);
-    let node_b = P2pNode::new(cfg_b, ctx_b).await.unwrap();
+    let node_b =
+        match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_b, ctx_b)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
+            Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
+        };
     let addr_b = node_b.local_addr();
 
     // Run connection asynchronously with a bounded timeout to prevent
@@ -605,7 +615,12 @@ async fn test_mdns_discovery() {
     // Binding to 0.0.0.0 is often more reliable for mDNS registration
     cfg_a.bind_addr = "0.0.0.0:0".parse().unwrap();
 
-    let node_a = P2pNode::new(cfg_a, ctx_a).await.unwrap();
+    let node_a =
+        match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_a, ctx_a)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
+            Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
+        };
 
     // Give Alice's advertiser more time to fully register in the OS mDNS stack
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -618,7 +633,12 @@ async fn test_mdns_discovery() {
     cfg_b.node_name = Some("BobDevice".to_string());
     cfg_b.bind_addr = "0.0.0.0:0".parse().unwrap();
 
-    let node_b = P2pNode::new(cfg_b, ctx_b).await.unwrap();
+    let node_b =
+        match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_b, ctx_b)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
+            Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
+        };
 
     // Watch Bob's browser to discover Alice
     let mut browser = node_b.browse_peers().unwrap();
@@ -667,16 +687,12 @@ async fn test_hybrid_routing_fallback() {
 
     let mut cfg_a = P2pConfig::default();
     cfg_a.expected_peer_identity = Some(id_b_mock);
-    let node_a = match tokio::time::timeout(
-        Duration::from_secs(30),
-        P2pNode::new(cfg_a, ctx_a),
-    )
-    .await
-    {
-        Ok(Ok(n)) => n,
-        Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
-        Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
-    };
+    let node_a =
+        match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_a, ctx_a)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
+            Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
+        };
     router.set_p2p_node(node_a);
 
     // We mock a P2P session by manually establishing one

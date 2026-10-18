@@ -36,7 +36,12 @@ async fn setup_context(name: &str) -> SecureContext {
 
 async fn wait_for_server(client: &reqwest::Client, server_url: &str) -> bool {
     for _i in 0..60 {
-        match tokio::time::timeout(Duration::from_secs(5), client.get(format!("{}/health", server_url)).send()).await {
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            client.get(format!("{}/health", server_url)).send(),
+        )
+        .await
+        {
             Ok(Ok(r)) if r.status().is_success() => return true,
             _ => {}
         }
@@ -540,18 +545,26 @@ async fn run_all_security_audits() {
     })
     .await;
 
-    // Handle timeout result
-    match audit_result {
-        Ok(_) => {}
+    // Handle timeout result with guaranteed cleanup
+    let audit_result = match audit_result {
+        Ok(_) => {
+            // Cleanup on success
+            let _ = server.kill();
+            let _ = std::fs::remove_dir_all(&test_db_path);
+            Ok(())
+        }
         Err(_elapsed) => {
             eprintln!("SECURITY AUDIT TIMED OUT after 600 seconds");
-            panic!("Security audit timed out after 600 seconds");
+            // Cleanup on timeout too
+            let _ = server.kill();
+            let _ = std::fs::remove_dir_all(&test_db_path);
+            Err(())
         }
-    }
+    };
 
-    // Cleanup
-    let _ = server.kill();
-    let _ = std::fs::remove_dir_all(&test_db_path);
+    if audit_result.is_err() {
+        panic!("Security audit timed out after 600 seconds");
+    }
 
     println!("--- SIBNA PROTOCOL SECURITY AUDIT COMPLETE ---");
     println!(" 1. Standard Bundle Upload       PASS");

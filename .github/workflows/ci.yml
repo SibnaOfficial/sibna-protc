@@ -71,11 +71,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Run integration tests without PQC feature (PQC has known signature verification issues with fips203 0.4.3)
+      # Core integration tests use PQC feature (gen_interop_vectors/debug_x3dh need fips203)
+      # Sibna-tests integration tests run without PQC feature
       # Explicitly list test targets to run; exclude:
       # - test_python_interop: requires Python fixture generation (tested in sdk-interop job)
       # - offensive_test, advanced_offensive_test: weekly schedule only
       - run: cargo test --no-default-features --features p2p,pqc -p sibna-core --test integration --test gen_interop_vectors --test debug_x3dh --test proptest_properties --test statistical_timing_test -- --test-threads=1
+      # Build sibna-server binary required by sibna-tests attack_tests (needs target/debug/sibna-server)
+      - run: cargo build -p sibna-server --bin sibna-server
       - run: cargo test --no-default-features --features p2p -p sibna-tests --test integration_tests --test attack_tests --test multi_device_tests -- --test-threads=1
 
   test-proptest:

@@ -124,7 +124,7 @@ jobs:
       - run: cd sdks/python && pip install -e ".[dev]" build
       - run: cd sdks/python && black --check sibna tests
       - run: cd sdks/python && mypy sibna
-      - run: cd sdks/python && python -m pytest tests/ -v
+      - run: cd sdks/python && python -m pytest tests/ -v --tb=long
       # Version consistency (protocol, Rust workspace, Python package)
       - run: python scripts/version_check.py
       # Package build + clean installation + smoke test

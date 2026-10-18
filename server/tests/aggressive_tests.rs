@@ -54,7 +54,49 @@ async fn spawn_test_server(jwt_secret: &str) -> SocketAddr {
         }
     });
 
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // Wait for server to be ready by polling health endpoint
+    let client = reqwest::Client::new();
+    let health_url = format!("http://{}/health", addr);
+    for _ in 0..60 {
+        if let Ok(resp) = reqwest::get(&health_url).await {
+            if resp.status().is_success() {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Additional check: verify JWT auth works by trying to authenticate
+    let test_ctx = SecureContext::new(Config::default(), None).unwrap();
+    test_ctx.generate_identity().unwrap();
+    let test_id = test_ctx.get_identity().unwrap().ed25519_public;
+    let test_id_hex = hex::encode(test_id);
+    let test_token = create_mock_jwt(&test_id_hex, jwt_secret);
+    let test_url = format!("http://{}/v1/messages/send", addr);
+    let test_req = json!({
+        "recipient_id": hex::encode(&[0u8; 32]),
+        "payload_hex": "deadbeef",
+        "compressed": false,
+    });
+    let test_client = reqwest::Client::new();
+    for _ in 0..30 {
+        if let Ok(test_resp) = test_client
+            .post(&format!("http://{}/v1/messages/send", addr))
+            .header("Authorization", format!("Bearer {}", test_token))
+            .json(&json!({
+                "recipient_id": hex::encode(&[0u8; 32]),
+                "payload_hex": "deadbeef",
+                "compressed": false,
+            }))
+            .send()
+            .await
+        {
+            if test_resp.status().is_success() || test_resp.status() == reqwest::StatusCode::ACCEPTED {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     addr
 }
 
@@ -131,12 +173,23 @@ async fn test_aggressive_queue_flood_stress() {
     let client = Client::new();
     let url = format!("http://{}/v1/messages/send", addr);
 
-    let alice_token = create_mock_jwt("alice", secret);
+    // Create proper Ed25519 identities for Alice and Bob
+    let ctx_alice = SecureContext::new(Config::default(), None).unwrap();
+    ctx_alice.generate_identity().unwrap();
+    let alice_id = ctx_alice.get_identity().unwrap().ed25519_public;
+    let alice_id_hex = hex::encode(alice_id);
+    let alice_token = create_mock_jwt(&alice_id_hex, secret);
 
-    // ATTACK: Flood a single recipient with 1000 messages (Offline Queue stress)
+    // Bob's identity for recipient
+    let ctx_bob = SecureContext::new(Config::default(), None).unwrap();
+    ctx_bob.generate_identity().unwrap();
+    let bob_id = ctx_bob.get_identity().unwrap().ed25519_public;
+    let bob_id_hex = hex::encode(bob_id);
+
+    // ATTACK: Flood a single recipient with 500 messages (Offline Queue stress)
     for i in 0..500 {
         let req = json!({
-            "recipient_id": "bob".repeat(16), // Invalid hex but server queues by ID string
+            "recipient_id": bob_id_hex,
             "payload_hex": "aabbcc".repeat(100),
             "message_id": format!("msg_{}", i)
         });
@@ -149,8 +202,13 @@ async fn test_aggressive_queue_flood_stress() {
             .await
             .unwrap();
 
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
         assert!(
-            res.status().is_success() || res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+            status.is_success() || status == reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "Unexpected status {}: {}",
+            status,
+            body
         );
 
         // Small delay between requests to avoid overwhelming the server under

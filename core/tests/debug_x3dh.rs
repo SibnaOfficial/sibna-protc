@@ -1,4 +1,4 @@
-use blake3::Hasher;
+use blake3;
 use hkdf::Hkdf;
 use sha2::Sha256;
 use sibna_core::handshake::x3dh::x3dh_initiator_v3;

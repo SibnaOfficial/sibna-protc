@@ -264,7 +264,8 @@ async fn test_delayed_queue_delivery_and_ack() {
     // Bob ACKs the message so it is removed from the queue.
     let message_id = envelope["message_id"].as_str().unwrap();
     ws.send(Message::Text(
-        serde_json::to_string(&serde_json::json!({ "type": "ack", "message_id": message_id })).unwrap(),
+        serde_json::to_string(&serde_json::json!({ "type": "ack", "message_id": message_id }))
+            .unwrap(),
     ))
     .await
     .unwrap();
@@ -289,7 +290,10 @@ async fn test_delayed_queue_delivery_and_ack() {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(!redelivered, "ACKed message must not be redelivered on reconnect");
+    assert!(
+        !redelivered,
+        "ACKed message must not be redelivered on reconnect"
+    );
 }
 
 #[tokio::test]

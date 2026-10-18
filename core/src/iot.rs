@@ -72,8 +72,7 @@ pub fn decompress(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
         return Err(DecompressError::InvalidData);
     }
 
-    let declared_size =
-        u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    let declared_size = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
 
     // Enforce the advertised-size limit BEFORE any allocation/decompression.
     if declared_size > MAX_DECOMPRESSED_SIZE {
@@ -343,7 +342,11 @@ mod tests {
     fn test_decompress_short_header_rejected() {
         // 1, 2, or 3 bytes cannot carry a valid 4-byte declared-size header.
         for len in 0..4 {
-            assert!(decompress(&vec![0u8; len]).is_err(), "len={} should be rejected", len);
+            assert!(
+                decompress(&vec![0u8; len]).is_err(),
+                "len={} should be rejected",
+                len
+            );
         }
     }
 

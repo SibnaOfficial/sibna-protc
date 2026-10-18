@@ -7,6 +7,7 @@
 use sibna_core::crypto::{CryptoHandler, KeyGenerator};
 use sibna_core::ratchet::DoubleRatchetSession;
 use sibna_core::*;
+use std::time::Duration;
 use x25519_dalek::{PublicKey, StaticSecret};
 
 // ─────────────────────────────────────────────────────────────
@@ -520,22 +521,45 @@ async fn test_p2p_local_connect_and_handshake() {
     let node_b = P2pNode::new(cfg_b, ctx_b).await.unwrap();
     let addr_b = node_b.local_addr();
 
-    // Run connection asynchronously
+    // Run connection asynchronously with a bounded timeout to prevent
+    // hangs on platforms where mDNS or network discovery is unavailable.
     let b_task = tokio::spawn(async move { node_b.accept().await.unwrap() });
 
-    let peer_a = node_a
-        .connect(&format!("127.0.0.1:{}", addr_b.port()))
-        .await
-        .unwrap();
-    let peer_b = b_task.await.unwrap();
+    let peer_a = match tokio::time::timeout(
+        Duration::from_secs(30),
+        node_a.connect(&format!("127.0.0.1:{}", addr_b.port())),
+    )
+    .await
+    {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => panic!("P2P connect failed: {}", e),
+        Err(_) => panic!("P2P connect timed out after 30 seconds"),
+    };
+    let peer_b = match tokio::time::timeout(Duration::from_secs(30), b_task).await {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => panic!("P2P accept task failed: {}", e),
+        Err(_) => panic!("P2P accept task timed out after 30 seconds"),
+    };
 
     // Send messages back and forth
-    peer_a.send_message(b"hello from alice").await.unwrap();
-    let msg1 = peer_b.recv_message().await.unwrap();
+    peer_a
+        .send_message(b"hello from alice")
+        .await
+        .expect("Alice failed to send message");
+    let msg1 = peer_b
+        .recv_message()
+        .await
+        .expect("Bob failed to receive message");
     assert_eq!(msg1, b"hello from alice");
 
-    peer_b.send_message(b"hi alice, this is bob").await.unwrap();
-    let msg2 = peer_a.recv_message().await.unwrap();
+    peer_b
+        .send_message(b"hi alice, this is bob")
+        .await
+        .expect("Bob failed to send message");
+    let msg2 = peer_a
+        .recv_message()
+        .await
+        .expect("Alice failed to receive message");
     assert_eq!(msg2, b"hi alice, this is bob");
 }
 
@@ -547,7 +571,16 @@ async fn test_p2p_bundle_export_import() {
 
     let ctx = SecureContext::new(Config::default(), None).unwrap();
     ctx.generate_identity().unwrap();
-    let node = P2pNode::new(P2pConfig::default(), ctx).await.unwrap();
+    let node = match tokio::time::timeout(
+        Duration::from_secs(30),
+        P2pNode::new(P2pConfig::default(), ctx),
+    )
+    .await
+    {
+        Ok(Ok(n)) => n,
+        Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
+        Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
+    };
 
     let bytes = node.export_bundle();
     assert!(!bytes.is_empty());
@@ -634,13 +667,31 @@ async fn test_hybrid_routing_fallback() {
 
     let mut cfg_a = P2pConfig::default();
     cfg_a.expected_peer_identity = Some(id_b_mock);
-    let node_a = P2pNode::new(cfg_a, ctx_a).await.unwrap();
+    let node_a = match tokio::time::timeout(
+        Duration::from_secs(30),
+        P2pNode::new(cfg_a, ctx_a),
+    )
+    .await
+    {
+        Ok(Ok(n)) => n,
+        Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
+        Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
+    };
     router.set_p2p_node(node_a);
 
     // We mock a P2P session by manually establishing one
     let mut cfg_b_mock = P2pConfig::default();
     cfg_b_mock.expected_peer_identity = Some(id_a);
-    let node_b = P2pNode::new(cfg_b_mock, ctx_b_mock).await.unwrap();
+    let node_b = match tokio::time::timeout(
+        Duration::from_secs(30),
+        P2pNode::new(cfg_b_mock, ctx_b_mock),
+    )
+    .await
+    {
+        Ok(Ok(n)) => n,
+        Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
+        Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
+    };
     let addr_b = node_b.local_addr();
 
     // Note: Bob's P2P listener uses id_b_mock, NOT id_b. The earlier
@@ -651,10 +702,16 @@ async fn test_hybrid_routing_fallback() {
 
     // Alice connects
     let p2p_node = router.p2p_node().expect("P2P node not set");
-    let peer_for_alice = p2p_node
-        .connect(&format!("127.0.0.1:{}", addr_b.port()))
-        .await
-        .unwrap();
+    let peer_for_alice = match tokio::time::timeout(
+        Duration::from_secs(30),
+        p2p_node.connect(&format!("127.0.0.1:{}", addr_b.port())),
+    )
+    .await
+    {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => panic!("P2P connect failed: {}", e),
+        Err(_) => panic!("P2P connect timed out after 30 seconds"),
+    };
     let recipient_id = peer_for_alice.peer_id().to_vec();
     router.add_p2p_peer(peer_for_alice);
 

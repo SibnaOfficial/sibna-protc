@@ -54,7 +54,7 @@ impl MdnsDiscovery {
     /// A random session token is generated for this mDNS session.  The caller's
     /// long-term peer ID is **not** used — it is never broadcast over mDNS.
     pub async fn new(bind_addr: SocketAddr, node_name: Option<&str>) -> P2pResult<Self> {
-        let daemon = tokio::task::spawn_blocking(|| ServiceDaemon::new())
+        let daemon = tokio::task::spawn_blocking(ServiceDaemon::new)
             .await
             .map_err(|e| {
                 P2pError::Io(std::io::Error::new(

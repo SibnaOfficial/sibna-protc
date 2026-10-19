@@ -156,10 +156,10 @@ impl P2pNode {
                 }
             }
 
-            Some(super::discovery::MdnsDiscovery::new(
-                discover_addr,
-                config.node_name.as_deref(),
-            )?)
+            Some(
+                super::discovery::MdnsDiscovery::new(discover_addr, config.node_name.as_deref())
+                    .await?,
+            )
         } else {
             None
         };

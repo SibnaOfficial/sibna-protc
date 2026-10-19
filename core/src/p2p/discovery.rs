@@ -53,13 +53,21 @@ impl MdnsDiscovery {
     ///
     /// A random session token is generated for this mDNS session.  The caller's
     /// long-term peer ID is **not** used — it is never broadcast over mDNS.
-    pub fn new(bind_addr: SocketAddr, node_name: Option<&str>) -> P2pResult<Self> {
-        let daemon = ServiceDaemon::new().map_err(|e| {
-            P2pError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("mDNS init: {}", e),
-            ))
-        })?;
+    pub async fn new(bind_addr: SocketAddr, node_name: Option<&str>) -> P2pResult<Self> {
+        let daemon = tokio::task::spawn_blocking(|| ServiceDaemon::new())
+            .await
+            .map_err(|e| {
+                P2pError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("mDNS init task: {}", e),
+                ))
+            })?
+            .map_err(|e| {
+                P2pError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("mDNS init: {}", e),
+                ))
+            })?;
 
         // Generate a random session token (not the real peer ID).
         let mut token_bytes = [0u8; SESSION_TOKEN_LEN];
@@ -138,7 +146,7 @@ impl MdnsDiscovery {
         })?;
 
         // Expose a tokio stream to the user to abstract away mdns-sd threads
-        let (tx, rx) = mpsc::channel(100);
+        let (tx, rx) = mpsc::channel::<DiscoveredPeer>(100);
 
         let myself = self.instance_name.clone();
 

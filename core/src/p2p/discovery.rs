@@ -12,7 +12,7 @@
 //! The real peer identity is only exchanged during the encrypted X3DH handshake.
 
 use flume::RecvTimeoutError;
-use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use mdns_sd::{ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::RngCore;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -233,7 +233,9 @@ impl MdnsDiscovery {
 
                                 // Extract IP
                                 let ip = match info.get_addresses().iter().next() {
-                                    Some(ip) => *ip,
+                                    Some(ScopedIp::V4(ipv4)) => IpAddr::V4(*ipv4.addr()),
+                                    Some(ScopedIp::V6(ipv6)) => IpAddr::V6(*ipv6.addr()),
+                                    Some(_) => continue,
                                     None => continue,
                                 };
                                 let addr = SocketAddr::new(ip, info.get_port());

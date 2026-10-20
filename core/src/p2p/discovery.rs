@@ -15,12 +15,12 @@ use flume::RecvTimeoutError;
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::RngCore;
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use super::{P2pError, P2pResult};
 
@@ -56,6 +56,23 @@ fn stop_browse_with_retry(daemon: &ServiceDaemon, service_type: &str) -> bool {
             }
         }
     }
+}
+
+/// Known virtual interface name prefixes that should not be used for mDNS advertisement.
+const VIRTUAL_IFACE_PREFIXES: &[&str] = &[
+    "awdl",   // Apple Wireless Direct Link (macOS)
+    "bridge", // Network bridges
+    "docker", // Docker
+    "vbox",   // VirtualBox
+    "vmnet",  // VMware
+    "utun",   // macOS tunnel interfaces
+];
+
+/// Check if an interface name indicates a virtual/non-physical interface.
+fn is_virtual_interface(name: &str) -> bool {
+    VIRTUAL_IFACE_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
 }
 
 /// A discovered peer from the local network.
@@ -127,21 +144,8 @@ impl MdnsDiscovery {
 
         let host_name = format!("{}.local.", instance_name);
 
-        // If bind_addr is wildcard, we must resolve it to a real IP for mDNS advertisement
-        let ad_ip = if bind_addr.ip().is_unspecified() {
-            if_addrs::get_if_addrs()
-                .ok()
-                .and_then(|ifs: Vec<if_addrs::Interface>| {
-                    ifs.into_iter()
-                        .find(|iface: &if_addrs::Interface| {
-                            !iface.is_loopback() && matches!(iface.addr, if_addrs::IfAddr::V4(_))
-                        })
-                        .map(|iface| iface.addr.ip())
-                })
-                .unwrap_or_else(|| bind_addr.ip())
-        } else {
-            bind_addr.ip()
-        };
+        // Select the mDNS advertisement address.
+        let ad_ip = select_advertise_ip(bind_addr)?;
 
         // Register service
         let service_info = ServiceInfo::new(
@@ -161,9 +165,9 @@ impl MdnsDiscovery {
             ))
         })?;
 
-        debug!(
-            "mDNS advertiser started: {} -> {}",
-            instance_name, bind_addr
+        info!(
+            "mDNS advertiser started: {} -> {} (ad IP: {})",
+            instance_name, bind_addr, ad_ip
         );
 
         Ok(Self {
@@ -310,5 +314,61 @@ impl Drop for MdnsDiscovery {
                 self.full_service_name, e
             );
         }
+    }
+}
+
+/// Select the best IPv4 address for mDNS advertisement.
+///
+/// When `bind_addr` is a wildcard (`0.0.0.0`), we enumerate interfaces and
+/// select the first non-loopback, non-virtual IPv4 address. Virtual interfaces
+/// (e.g. `awdl0` on macOS, Docker bridges) are excluded because they often
+/// cannot send/receive multicast traffic between containers on CI runners.
+fn select_advertise_ip(bind_addr: SocketAddr) -> P2pResult<IpAddr> {
+    if !bind_addr.ip().is_unspecified() {
+        info!("mDNS using explicitly bound address: {}", bind_addr.ip());
+        return Ok(bind_addr.ip());
+    }
+
+    let interfaces = match if_addrs::get_if_addrs() {
+        Ok(ifs) => ifs,
+        Err(e) => {
+            warn!("Failed to enumerate network interfaces: {}", e);
+            return Ok(bind_addr.ip());
+        }
+    };
+
+    let mut candidates: Vec<(String, IpAddr)> = Vec::new();
+    let mut all_ifaces: Vec<String> = Vec::new();
+
+    for iface in &interfaces {
+        all_ifaces.push(format!("{} -> {:?}", iface.name, iface.addr));
+
+        if let if_addrs::IfAddr::V4(ref ipv4) = iface.addr {
+            let ip = ipv4.ip;
+            if ip.is_loopback() {
+                continue;
+            }
+            if is_virtual_interface(&iface.name) {
+                debug!(
+                    "Skipping virtual interface {} ({}) for mDNS advertisement",
+                    iface.name, ip
+                );
+                continue;
+            }
+            candidates.push((iface.name.clone(), IpAddr::V4(ip)));
+        }
+    }
+
+    debug!("Available interfaces: {:?}", all_ifaces);
+
+    if let Some((name, ip)) = candidates.first() {
+        info!("mDNS advertising on interface {} with address {}", name, ip);
+        Ok(*ip)
+    } else {
+        warn!(
+            "No suitable non-loopback IPv4 interface found for mDNS advertisement; using {}",
+            bind_addr.ip()
+        );
+        Ok(bind_addr.ip())
     }
 }

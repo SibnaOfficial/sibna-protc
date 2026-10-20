@@ -606,6 +606,8 @@ async fn test_mdns_discovery() {
     use sibna_core::{Config, SecureContext};
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 
+    eprintln!("TEST: Starting mDNS discovery test");
+
     // Alice
     let ctx_a = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
     ctx_a.generate_identity().unwrap();
@@ -615,14 +617,89 @@ async fn test_mdns_discovery() {
     // Binding to 0.0.0.0 is often more reliable for mDNS registration
     cfg_a.bind_addr = "0.0.0.0:0".parse().unwrap();
 
+    eprintln!("TEST: Creating Alice node...");
     let node_a =
         match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_a, ctx_a)).await {
             Ok(Ok(n)) => n,
             Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
             Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
         };
+    eprintln!("TEST: Alice node created at {}", node_a.local_addr());
 
     // Give Alice's advertiser more time to fully register in the OS mDNS stack
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    eprintln!("TEST: Waited 2 seconds for Alice mDNS registration");
+
+    // Bob
+    let ctx_b = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
+    ctx_b.generate_identity().unwrap();
+    let mut cfg_b = P2pConfig::default();
+    cfg_b.enable_mdns = true;
+    cfg_b.node_name = Some("BobDevice".to_string());
+    cfg_b.bind_addr = "0.0.0.0:0".parse().unwrap();
+
+    eprintln!("TEST: Creating Bob node...");
+    let node_b =
+        match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_b, ctx_b)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
+            Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
+        };
+    eprintln!("TEST: Bob node created at {}", node_b.local_addr());
+
+    // Watch Bob's browser to discover Alice
+    eprintln!("TEST: Starting peer browsing...");
+    let mut browser = node_b.browse_peers().unwrap();
+    eprintln!("TEST: Browser created, waiting for discovery...");
+
+    let discovered = tokio::time::timeout(std::time::Duration::from_secs(10), browser.recv()).await;
+    match &discovered {
+        Ok(_) => eprintln!("TEST: Discovery succeeded within 10s"),
+        Err(_) => eprintln!("TEST: Discovery timed out after 10s"),
+    }
+    let peer = discovered
+        .expect("Timeout waiting for mDNS discovery")
+        .expect("Channel closed");
+
+    eprintln!("TEST: Discovered peer: {} at {}", peer.name, peer.addr);
+
+    // Ensure we discovered Alice and the node name matches
+    assert!(peer.name.contains("AliceDevice"));
+    assert_eq!(peer.addr.port(), node_a.local_addr().port());
+
+    eprintln!("TEST: Test passed! (test function will now return)");
+}
+
+/// Regression test: dropping the returned receiver while `P2pNode` remains alive
+/// must not leave a blocking browse worker behind, and subsequent browse calls
+/// on the same node must still work.
+#[cfg(feature = "p2p")]
+#[tokio::test]
+async fn test_mdns_browse_receiver_drop() {
+    use sibna_core::p2p::{P2pConfig, P2pNode};
+    use sibna_core::{Config, SecureContext};
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+
+    eprintln!("TEST: Starting mDNS receiver-drop regression test");
+
+    // Alice
+    let ctx_a = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
+    ctx_a.generate_identity().unwrap();
+    let mut cfg_a = P2pConfig::default();
+    cfg_a.enable_mdns = true;
+    cfg_a.node_name = Some("AliceDevice".to_string());
+    cfg_a.bind_addr = "0.0.0.0:0".parse().unwrap();
+
+    eprintln!("TEST: Creating Alice node...");
+    let node_a =
+        match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_a, ctx_a)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
+            Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
+        };
+    eprintln!("TEST: Alice node created at {}", node_a.local_addr());
+
+    // Give Alice's advertiser time to register
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // Bob
@@ -633,24 +710,203 @@ async fn test_mdns_discovery() {
     cfg_b.node_name = Some("BobDevice".to_string());
     cfg_b.bind_addr = "0.0.0.0:0".parse().unwrap();
 
+    eprintln!("TEST: Creating Bob node...");
     let node_b =
         match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_b, ctx_b)).await {
             Ok(Ok(n)) => n,
             Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
             Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
         };
+    eprintln!("TEST: Bob node created at {}", node_b.local_addr());
 
-    // Watch Bob's browser to discover Alice
-    let mut browser = node_b.browse_peers().unwrap();
+    // Start browsing, then immediately drop the receiver while both nodes stay alive.
+    // The browse worker must detect the closed channel and stop browsing.
+    eprintln!("TEST: Starting peer browsing and dropping receiver...");
+    let browser = node_b.browse_peers().unwrap();
+    drop(browser);
+    eprintln!("TEST: Receiver dropped while P2pNode still alive");
 
-    let discovered = tokio::time::timeout(std::time::Duration::from_secs(10), browser.recv()).await;
+    // Give the background worker time to notice the closed channel and exit.
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    eprintln!("TEST: First browse worker should have exited after receiver drop");
+
+    // Start a NEW browse on the same node — it must still work, proving the
+    // stale worker did not leave the mDNS daemon in a stopped state.
+    eprintln!("TEST: Starting second browse after receiver drop...");
+    let mut browser2 = node_b.browse_peers().unwrap();
+    eprintln!("TEST: Second browse created, waiting for discovery...");
+
+    let discovered =
+        tokio::time::timeout(std::time::Duration::from_secs(10), browser2.recv()).await;
+    match &discovered {
+        Ok(_) => eprintln!("TEST: Second browse succeeded within 10s"),
+        Err(_) => eprintln!("TEST: Second browse timed out after 10s"),
+    }
     let peer = discovered
-        .expect("Timeout waiting for mDNS discovery")
-        .expect("Channel closed");
+        .expect("Second browse timed out waiting for mDNS discovery")
+        .expect("Second browse channel closed");
+
+    eprintln!(
+        "TEST: Second browse discovered peer: {} at {}",
+        peer.name, peer.addr
+    );
 
     // Ensure we discovered Alice and the node name matches
-    assert!(peer.name.contains("AliceDevice"));
+    assert!(
+        peer.name.contains("AliceDevice"),
+        "Second browse failed to discover AliceDevice after receiver drop"
+    );
     assert_eq!(peer.addr.port(), node_a.local_addr().port());
+
+    eprintln!("TEST: Receiver-drop regression test completed without hang");
+}
+
+/// Regression test: dropping `P2pNode` while discovery is active must stop the
+/// browse worker and unregister the mDNS service cleanly, without hanging.
+#[cfg(feature = "p2p")]
+#[tokio::test]
+async fn test_mdns_node_drop_during_discovery() {
+    use sibna_core::p2p::{P2pConfig, P2pNode};
+    use sibna_core::{Config, SecureContext};
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+
+    eprintln!("TEST: Starting mDNS node-drop regression test");
+
+    // Alice
+    let ctx_a = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
+    ctx_a.generate_identity().unwrap();
+    let mut cfg_a = P2pConfig::default();
+    cfg_a.enable_mdns = true;
+    cfg_a.node_name = Some("AliceDevice".to_string());
+    cfg_a.bind_addr = "0.0.0.0:0".parse().unwrap();
+
+    eprintln!("TEST: Creating Alice node...");
+    let node_a =
+        match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_a, ctx_a)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
+            Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
+        };
+    eprintln!("TEST: Alice node created at {}", node_a.local_addr());
+
+    // Give Alice's advertiser time to register
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // Bob
+    let ctx_b = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
+    ctx_b.generate_identity().unwrap();
+    let mut cfg_b = P2pConfig::default();
+    cfg_b.enable_mdns = true;
+    cfg_b.node_name = Some("BobDevice".to_string());
+    cfg_b.bind_addr = "0.0.0.0:0".parse().unwrap();
+
+    eprintln!("TEST: Creating Bob node...");
+    let node_b =
+        match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_b, ctx_b)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
+            Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
+        };
+    eprintln!("TEST: Bob node created at {}", node_b.local_addr());
+
+    // Start browsing, then drop Bob's node while discovery is active.
+    // The `MdnsDiscovery::Drop` must stop browsing and unregister cleanly.
+    eprintln!("TEST: Starting peer browsing...");
+    let _browser = node_b.browse_peers().unwrap();
+    eprintln!("TEST: Dropping Bob's P2pNode while discovery active...");
+    drop(node_b);
+    eprintln!("TEST: Bob's P2pNode dropped");
+
+    // Give the background worker time to stop browsing and unregister.
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    eprintln!("TEST: Node-drop regression test completed without hang");
+}
+
+/// Regression test: two concurrent `browse_peers()` calls on the same node
+/// must both receive discovery events without one worker prematurely
+/// stopping the other's browse via `stop_browse()`.
+#[cfg(feature = "p2p")]
+#[tokio::test]
+async fn test_mdns_concurrent_browse() {
+    use sibna_core::p2p::{P2pConfig, P2pNode};
+    use sibna_core::{Config, SecureContext};
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+
+    eprintln!("TEST: Starting mDNS concurrent-browse regression test");
+
+    // Alice
+    let ctx_a = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
+    ctx_a.generate_identity().unwrap();
+    let mut cfg_a = P2pConfig::default();
+    cfg_a.enable_mdns = true;
+    cfg_a.node_name = Some("AliceDevice".to_string());
+    cfg_a.bind_addr = "0.0.0.0:0".parse().unwrap();
+
+    eprintln!("TEST: Creating Alice node...");
+    let node_a =
+        match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_a, ctx_a)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
+            Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
+        };
+    eprintln!("TEST: Alice node created at {}", node_a.local_addr());
+
+    // Give Alice's advertiser time to register
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // Bob
+    let ctx_b = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
+    ctx_b.generate_identity().unwrap();
+    let mut cfg_b = P2pConfig::default();
+    cfg_b.enable_mdns = true;
+    cfg_b.node_name = Some("BobDevice".to_string());
+    cfg_b.bind_addr = "0.0.0.0:0".parse().unwrap();
+
+    eprintln!("TEST: Creating Bob node...");
+    let node_b =
+        match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_b, ctx_b)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
+            Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
+        };
+    eprintln!("TEST: Bob node created at {}", node_b.local_addr());
+
+    // Start TWO concurrent browsers on Bob. Both must receive Alice's
+    // discovery event without one worker stopping the other's browse.
+    eprintln!("TEST: Starting two concurrent browsers...");
+    let mut browser1 = node_b.browse_peers().unwrap();
+    let mut browser2 = node_b.browse_peers().unwrap();
+    eprintln!("TEST: Both browsers created");
+
+    // Wait for either browser to discover Alice
+    let discovered = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::select! {
+            p = browser1.recv() => p,
+            p = browser2.recv() => p,
+        }
+    })
+    .await;
+    let peer = discovered
+        .expect("Concurrent browse timed out waiting for mDNS discovery")
+        .expect("Concurrent browse channel closed");
+
+    eprintln!(
+        "TEST: Concurrent browse discovered peer: {} at {}",
+        peer.name, peer.addr
+    );
+
+    assert!(
+        peer.name.contains("AliceDevice"),
+        "Concurrent browse failed to discover AliceDevice"
+    );
+    assert_eq!(peer.addr.port(), node_a.local_addr().port());
+
+    // Drop both browsers; workers should exit cleanly without hang.
+    drop(browser1);
+    drop(browser2);
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    eprintln!("TEST: Concurrent-browse regression test completed without hang");
 }
 
 #[cfg(feature = "p2p")]

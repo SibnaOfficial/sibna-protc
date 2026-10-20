@@ -11,10 +11,14 @@
 //! every restart.  This prevents cross-session tracking by passive LAN observers.
 //! The real peer identity is only exchanged during the encrypted X3DH handshake.
 
+use flume::RecvTimeoutError;
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::RngCore;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
@@ -24,6 +28,35 @@ const SIBNA_SERVICE_TYPE: &str = "_sibna._tcp.local.";
 
 /// Length of the random session token in bytes (16 = 128 bits).
 const SESSION_TOKEN_LEN: usize = 16;
+
+/// How long the browse worker waits for an mDNS event before checking for shutdown.
+const BROWSE_POLL_INTERVAL_SECS: u64 = 1;
+
+/// Max retries for `stop_browse()` when the daemon command queue is full (`Error::Again`).
+const STOP_BROWSE_MAX_RETRIES: u32 = 3;
+
+/// Stop an mDNS browse operation, retrying on `Error::Again` (queue full).
+///
+/// The mdns-sd documentation states: "When an error is returned, the caller should
+/// retry only when the error is `Error::Again`, otherwise should log and move on."
+/// Returns `true` if the browse was stopped successfully, `false` otherwise.
+fn stop_browse_with_retry(daemon: &ServiceDaemon, service_type: &str) -> bool {
+    let mut retries = 0;
+    loop {
+        match daemon.stop_browse(service_type) {
+            Ok(()) => return true,
+            Err(mdns_sd::Error::Again) if retries < STOP_BROWSE_MAX_RETRIES => {
+                retries += 1;
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            Err(e) => {
+                warn!("Failed to stop mDNS browse: {}", e);
+                return false;
+            }
+        }
+    }
+}
 
 /// A discovered peer from the local network.
 #[derive(Debug, Clone)]
@@ -42,7 +75,12 @@ pub struct DiscoveredPeer {
 pub struct MdnsDiscovery {
     daemon: ServiceDaemon,
     service_type: String,
-    instance_name: String,
+    /// Full service instance name used for `unregister()` (e.g. "AliceDevice-XXXX._sibna._tcp.local.").
+    full_service_name: String,
+    /// Number of active browse operations. Used to coordinate `stop_browse()`
+    /// across concurrent `browse_peers()` calls so that one exiting worker does
+    /// not stop a browse that another worker is still using.
+    browse_count: Arc<AtomicUsize>,
 }
 
 impl MdnsDiscovery {
@@ -79,6 +117,9 @@ impl MdnsDiscovery {
         } else {
             format!("Sibna-{}", &session_hex[..12])
         };
+
+        // Full service instance name for mDNS unregistration.
+        let full_service_name = format!("{}.{}", instance_name, SIBNA_SERVICE_TYPE);
 
         let mut properties = HashMap::new();
         properties.insert("session".to_string(), session_hex);
@@ -128,7 +169,8 @@ impl MdnsDiscovery {
         Ok(Self {
             daemon,
             service_type: SIBNA_SERVICE_TYPE.to_string(),
-            instance_name,
+            full_service_name,
+            browse_count: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -137,6 +179,16 @@ impl MdnsDiscovery {
     /// Returns a `mpsc::Receiver` channel yielding `DiscoveredPeer` events
     /// as peers pop online or disappear. For this simple MVP, we just yield
     /// a continuous stream of fully resolved peer addresses.
+    ///
+    /// The background browse worker uses bounded waits (`recv_timeout`) so it
+    /// can detect when the returned receiver is dropped (`tx.is_closed()`) and
+    /// stop the mDNS browse operation via `ServiceDaemon::stop_browse()`.
+    /// Dropping the `MdnsDiscovery` itself also stops browsing and unregisters.
+    ///
+    /// Multiple concurrent `browse_peers()` calls are supported: an internal
+    /// reference counter ensures `stop_browse()` is only invoked when the last
+    /// active browse worker exits, preventing one worker from stopping another's
+    /// browse.
     pub fn browse_peers(&self) -> P2pResult<mpsc::Receiver<DiscoveredPeer>> {
         let receiver = self.daemon.browse(&self.service_type).map_err(|e| {
             P2pError::Io(std::io::Error::new(
@@ -145,60 +197,118 @@ impl MdnsDiscovery {
             ))
         })?;
 
-        // Expose a tokio stream to the user to abstract away mdns-sd threads
-        let (tx, rx) = mpsc::channel::<DiscoveredPeer>(100);
+        // Increment the active browse counter before spawning the worker.
+        self.browse_count.fetch_add(1, Ordering::SeqCst);
 
-        let myself = self.instance_name.clone();
+        // Expose a tokio stream to the user to abstract away mdns-sd threads
+        let (tx, rx) = mpsc::channel(100);
+
+        let myself = self.instance_name_for_logging();
+        let daemon = self.daemon.clone();
+        let service_type = self.service_type.clone();
+        let browse_count = self.browse_count.clone();
 
         tokio::task::spawn_blocking(move || {
-            while let Ok(event) = receiver.recv() {
-                match event {
-                    ServiceEvent::ServiceResolved(info) => {
-                        // Ignore our own broadcast
-                        if info.get_fullname().starts_with(&myself) {
-                            continue;
-                        }
+            let mut stopped = false;
+            loop {
+                match receiver.recv_timeout(Duration::from_secs(BROWSE_POLL_INTERVAL_SECS)) {
+                    Ok(event) => {
+                        match event {
+                            ServiceEvent::ServiceResolved(info) => {
+                                // Ignore our own broadcast
+                                if info.get_fullname().starts_with(&myself) {
+                                    continue;
+                                }
 
-                        // Extract session token (the random per-session identifier)
-                        let props = info.get_properties();
-                        let session_token = match props.get_property_val_str("session") {
-                            Some(val) => val.to_string(),
-                            None => continue,
-                        };
+                                // Extract session token (the random per-session identifier)
+                                let props = info.get_properties();
+                                let session_token = match props.get_property_val_str("session") {
+                                    Some(val) => val.to_string(),
+                                    None => continue,
+                                };
 
-                        // Extract IP
-                        let ip = match info.get_addresses().iter().next() {
-                            Some(ip) => *ip,
-                            None => continue,
-                        };
-                        let addr = SocketAddr::new(ip, info.get_port());
+                                // Extract IP
+                                let ip = match info.get_addresses().iter().next() {
+                                    Some(ip) => *ip,
+                                    None => continue,
+                                };
+                                let addr = SocketAddr::new(ip, info.get_port());
 
-                        let peer = DiscoveredPeer {
-                            session_token,
-                            addr,
-                            name: info.get_fullname().to_string(),
-                        };
+                                let peer = DiscoveredPeer {
+                                    session_token,
+                                    addr,
+                                    name: info.get_fullname().to_string(),
+                                };
 
-                        if tx.blocking_send(peer).is_err() {
-                            break; // channel closed
+                                if tx.blocking_send(peer).is_err() {
+                                    break; // channel closed
+                                }
+                            }
+                            ServiceEvent::ServiceRemoved(_, _name) => {
+                                // Could yield PeerRemoved events here for tracking
+                            }
+                            _ => {}
                         }
                     }
-                    ServiceEvent::ServiceRemoved(_, _name) => {
-                        // Could yield PeerRemoved events here for tracking
+                    Err(RecvTimeoutError::Disconnected) => break,
+                    Err(RecvTimeoutError::Timeout) => {
+                        if tx.is_closed() {
+                            break;
+                        }
                     }
-                    _ => {}
                 }
+            }
+            // Decrement the active browse counter. Only the last exiting worker
+            // calls stop_browse(), preventing it from stopping another worker's
+            // still-active browse.
+            let remaining = browse_count.fetch_sub(1, Ordering::SeqCst) - 1;
+            if remaining == 0 {
+                stop_browse_with_retry(&daemon, &service_type);
+                stopped = true;
+            }
+            if !stopped {
+                debug!(
+                    "mDNS browse worker exited; {} browse(s) still active",
+                    remaining
+                );
             }
         });
 
         Ok(rx)
     }
+
+    /// Returns the instance name prefix used to filter out our own broadcasts.
+    /// Kept private; used only by the browse worker.
+    fn instance_name_for_logging(&self) -> String {
+        // Derive from full_service_name by stripping the service type suffix.
+        // full_service_name = "instance_name._sibna._tcp.local."
+        self.full_service_name
+            .strip_suffix(&format!(".{}", SIBNA_SERVICE_TYPE))
+            .unwrap_or(&self.full_service_name)
+            .to_string()
+    }
 }
 
 impl Drop for MdnsDiscovery {
     fn drop(&mut self) {
-        if let Err(e) = self.daemon.unregister(&self.service_type) {
-            warn!("Failed to unregister mDNS service: {}", e);
+        // Stop browsing if any workers are still active.
+        let remaining = self.browse_count.load(Ordering::SeqCst);
+        if remaining > 0 {
+            stop_browse_with_retry(&self.daemon, &self.service_type);
+            debug!(
+                "mDNS discovery dropped with {} browse worker(s) still active; browse stopped",
+                remaining
+            );
+        }
+
+        // Unregister the service using the full instance name.  Fire-and-forget:
+        // we send the command and do not block waiting for the daemon's response.
+        // Waiting in a synchronous `Drop` could stall the calling executor thread.
+        if let Err(e) = self.daemon.unregister(&self.full_service_name) {
+            warn!(
+                "Failed to send mDNS unregister command for {}: {}",
+                self.full_service_name, e
+            );
         }
     }
 }

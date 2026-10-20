@@ -146,15 +146,11 @@ impl P2pNode {
         };
 
         // Initialize mDNS discovery if enabled.
+        // mDNS is a link-local protocol: advertise the actual local listening
+        // address, not the NAT-mapped public address (which is for external
+        // connectivity only).
         let discovery = if config.enable_mdns {
-            let mut discover_addr = listener.local_addr().unwrap_or(config.bind_addr);
-
-            // If we found a public address via NAT traversal, prefer it for broad reachability
-            if let Some(ref n) = nat {
-                if let Some(pub_addr) = n.public_addr {
-                    discover_addr = pub_addr;
-                }
-            }
+            let discover_addr = listener.local_addr().unwrap_or(config.bind_addr);
 
             Some(
                 super::discovery::MdnsDiscovery::new(discover_addr, config.node_name.as_deref())
@@ -196,6 +192,12 @@ impl P2pNode {
     }
 
     /// Browse the local network for other active P2P nodes.
+    ///
+    /// Returns a receiver that yields discovered peers. The browse operation
+    /// is automatically stopped when the returned receiver is dropped, or when
+    /// the `P2pNode` (and its `MdnsDiscovery`) is dropped. Multiple concurrent
+    /// `browse_peers()` calls are supported; `stop_browse()` is only invoked
+    /// when the last active browse worker exits.
     pub fn browse_peers(
         &self,
     ) -> P2pResult<tokio::sync::mpsc::Receiver<super::discovery::DiscoveredPeer>> {

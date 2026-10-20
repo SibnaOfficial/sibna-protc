@@ -189,20 +189,29 @@ impl MdnsDiscovery {
     /// stop the mDNS browse operation via `ServiceDaemon::stop_browse()`.
     /// Dropping the `MdnsDiscovery` itself also stops browsing and unregisters.
     ///
-    /// Multiple concurrent `browse_peers()` calls are supported: an internal
-    /// reference counter ensures `stop_browse()` is only invoked when the last
-    /// active browse worker exits, preventing one worker from stopping another's
-    /// browse.
+    /// Only one active browse is supported at a time. The underlying
+    /// `mdns-sd` daemon keeps a single browse subscription per service type;
+    /// calling `browse_peers()` while another browse is active returns an
+    /// error.
     pub fn browse_peers(&self) -> P2pResult<mpsc::Receiver<DiscoveredPeer>> {
+        // Only one active browse is supported; the mdns-sd daemon replaces
+        // the previous browse subscriber when a second browse for the same
+        // service type is requested.
+        if self.browse_count.load(Ordering::SeqCst) > 0 {
+            return Err(P2pError::InvalidMessage(
+                "mDNS browse already active on this node".to_string(),
+            ));
+        }
+
+        // Increment the active browse counter before spawning the worker.
+        self.browse_count.fetch_add(1, Ordering::SeqCst);
+
         let receiver = self.daemon.browse(&self.service_type).map_err(|e| {
             P2pError::Io(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 format!("mDNS browse: {}", e),
             ))
         })?;
-
-        // Increment the active browse counter before spawning the worker.
-        self.browse_count.fetch_add(1, Ordering::SeqCst);
 
         // Expose a tokio stream to the user to abstract away mdns-sd threads
         let (tx, rx) = mpsc::channel(100);

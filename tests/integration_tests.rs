@@ -822,17 +822,17 @@ async fn test_mdns_node_drop_during_discovery() {
     eprintln!("TEST: Node-drop regression test completed without hang");
 }
 
-/// Regression test: two concurrent `browse_peers()` calls on the same node
-/// must both receive discovery events without one worker prematurely
-/// stopping the other's browse via `stop_browse()`.
+/// Regression test: a second `browse_peers()` call while one is active must
+/// be rejected with a clear error, because the underlying `mdns-sd` daemon
+/// keeps only one browse subscription per service type.
 #[cfg(feature = "p2p")]
 #[tokio::test]
-async fn test_mdns_concurrent_browse() {
+async fn test_mdns_concurrent_browse_rejected() {
     use sibna_core::p2p::{P2pConfig, P2pNode};
     use sibna_core::{Config, SecureContext};
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 
-    eprintln!("TEST: Starting mDNS concurrent-browse regression test");
+    eprintln!("TEST: Starting mDNS concurrent-browse rejection test");
 
     // Alice
     let ctx_a = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
@@ -871,42 +871,45 @@ async fn test_mdns_concurrent_browse() {
         };
     eprintln!("TEST: Bob node created at {}", node_b.local_addr());
 
-    // Start TWO concurrent browsers on Bob. Both must receive Alice's
-    // discovery event without one worker stopping the other's browse.
-    eprintln!("TEST: Starting two concurrent browsers...");
-    let mut browser1 = node_b.browse_peers().unwrap();
-    let mut browser2 = node_b.browse_peers().unwrap();
-    eprintln!("TEST: Both browsers created");
+    // First browse should succeed
+    eprintln!("TEST: Starting first browser...");
+    let _browser1 = node_b.browse_peers().unwrap();
+    eprintln!("TEST: First browser created successfully");
 
-    // Wait for either browser to discover Alice
-    let discovered = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        tokio::select! {
-            p = browser1.recv() => p,
-            p = browser2.recv() => p,
-        }
-    })
-    .await;
-    let peer = discovered
-        .expect("Concurrent browse timed out waiting for mDNS discovery")
-        .expect("Concurrent browse channel closed");
-
-    eprintln!(
-        "TEST: Concurrent browse discovered peer: {} at {}",
-        peer.name, peer.addr
-    );
-
+    // Second browse while first is active must be rejected
+    eprintln!("TEST: Starting second browser (should be rejected)...");
+    let result = node_b.browse_peers();
     assert!(
-        peer.name.contains("AliceDevice"),
-        "Concurrent browse failed to discover AliceDevice"
+        result.is_err(),
+        "Second browse_peers() call while first is active should return an error"
     );
-    assert_eq!(peer.addr.port(), node_a.local_addr().port());
+    match result {
+        Err(sibna_core::P2pError::InvalidMessage(msg)) => {
+            assert!(
+                msg.contains("browse already active"),
+                "Error message should mention active browse, got: {msg}"
+            );
+        }
+        Err(e) => panic!("Expected InvalidMessage error, got {e:?}"),
+        Ok(_) => panic!("Second browse_peers() should have returned an error"),
+    }
+    eprintln!("TEST: Second browse correctly rejected with clear error");
 
-    // Drop both browsers; workers should exit cleanly without hang.
-    drop(browser1);
-    drop(browser2);
+    // Drop the first browser
+    drop(_browser1);
+    eprintln!("TEST: First browser dropped");
+
+    // Give the background worker time to notice the closed channel and exit.
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    eprintln!("TEST: Concurrent-browse regression test completed without hang");
+    // Now a new browse should succeed again
+    eprintln!("TEST: Starting third browser (after first was dropped)...");
+    let browser3 = node_b.browse_peers().unwrap();
+    eprintln!("TEST: Third browser created successfully");
+    drop(browser3);
+    eprintln!("TEST: Third browser dropped");
+
+    eprintln!("TEST: Concurrent-browse rejection test completed without hang");
 }
 
 #[cfg(feature = "p2p")]

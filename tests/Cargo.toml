@@ -28,6 +28,7 @@ serde = { version = "1.0", features = ["derive"] }
 rand = "0.8"
 ed25519-dalek = { workspace = true }
 tracing-subscriber = { workspace = true }
+mdns-sd = { workspace = true }
 
 [features]
 default = ["pqc", "p2p"]

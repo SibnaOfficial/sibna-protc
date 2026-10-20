@@ -183,27 +183,6 @@ impl MdnsDiscovery {
             instance_name, bind_addr, ad_ip
         );
 
-        // Check for daemon errors after registration (e.g. multicast socket
-        // creation failures on macOS CI runners where multicast is unavailable).
-        let mut monitor_errors = Vec::new();
-        let deadline = std::time::Instant::now() + Duration::from_millis(500);
-        while std::time::Instant::now() < deadline {
-            match monitor.recv_timeout(Duration::from_millis(50)) {
-                Ok(DaemonEvent::Error(e)) => {
-                    monitor_errors.push(e);
-                }
-                Ok(_) => {}
-                Err(flume::RecvTimeoutError::Disconnected) => break,
-                Err(flume::RecvTimeoutError::Timeout) => break,
-            }
-        }
-        if !monitor_errors.is_empty() {
-            return Err(P2pError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("mDNS daemon errors: {:?}", monitor_errors),
-            )));
-        }
-
         Ok(Self {
             daemon,
             service_type: SIBNA_SERVICE_TYPE.to_string(),
@@ -381,6 +360,52 @@ impl Drop for MdnsDiscovery {
 
         // Drop the monitor channel to signal the daemon monitor task to exit.
         drop(self.monitor.take());
+    }
+}
+
+/// Probe multicast DNS availability by sending a query and checking if any
+/// response is received (even our own). Returns `Ok(())` if multicast appears
+/// to be working, `Err` if no response is received within the timeout.
+///
+/// This is used to distinguish a genuine mDNS implementation bug from an
+/// environment where multicast is not routable between processes (e.g. some
+/// GitHub-hosted macOS CI runners).
+pub fn probe_multicast_availability(daemon: &ServiceDaemon) -> P2pResult<()> {
+    // Register a probe service and browse for it. If multicast is working,
+    // we should receive our own advertisement.
+    let service_info = ServiceInfo::new(
+        "_probe._tcp.local.",
+        "probe-instance",
+        "probe-instance.local.",
+        "127.0.0.1",
+        0,
+        None,
+    )
+    .map_err(|e| P2pError::InvalidMessage(format!("mDNS probe service info: {}", e)))?;
+
+    daemon.register(service_info).map_err(|e| {
+        P2pError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("mDNS probe register: {}", e),
+        ))
+    })?;
+
+    let receiver = daemon.browse("_probe._tcp.local.").map_err(|e| {
+        P2pError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("mDNS probe browse: {}", e),
+        ))
+    })?;
+
+    // Wait briefly for our own advertisement to come back.
+    match receiver.recv_timeout(Duration::from_millis(500)) {
+        Ok(ServiceEvent::ServiceResolved(_)) | Ok(_) => Ok(()),
+        Err(flume::RecvTimeoutError::Timeout) => Err(P2pError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "mDNS multicast appears to be unavailable on this network: \
+                 no response to probe query within 500ms",
+        ))),
+        Err(flume::RecvTimeoutError::Disconnected) => Ok(()),
     }
 }
 

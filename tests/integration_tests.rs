@@ -602,11 +602,27 @@ async fn test_p2p_bundle_export_import() {
 #[cfg(feature = "p2p")]
 #[tokio::test]
 async fn test_mdns_discovery() {
+    use sibna_core::p2p::discovery::probe_multicast_availability;
     use sibna_core::p2p::{P2pConfig, P2pNode};
     use sibna_core::{Config, SecureContext};
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 
     eprintln!("TEST: Starting mDNS discovery test");
+
+    // Probe multicast availability first. On GitHub-hosted macOS runners,
+    // multicast DNS is not routable between processes, so discovery cannot
+    // work. Fail fast with a clear diagnostic instead of hanging for 10s.
+    let probe_daemon = mdns_sd::ServiceDaemon::new().expect("mDNS daemon init");
+    match probe_multicast_availability(&probe_daemon) {
+        Ok(()) => eprintln!("TEST: Multicast probe succeeded"),
+        Err(e) => {
+            eprintln!("TEST: Multicast probe failed: {e}");
+            eprintln!(
+                "TEST: Skipping mDNS discovery test - multicast not available on this runner"
+            );
+            return;
+        }
+    }
 
     // Alice
     let ctx_a = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();

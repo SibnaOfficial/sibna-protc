@@ -12,7 +12,7 @@
 //! The real peer identity is only exchanged during the encrypted X3DH handshake.
 
 use flume::RecvTimeoutError;
-use mdns_sd::{ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo};
+use mdns_sd::{DaemonEvent, ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::RngCore;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -98,6 +98,10 @@ pub struct MdnsDiscovery {
     /// across concurrent `browse_peers()` calls so that one exiting worker does
     /// not stop a browse that another worker is still using.
     browse_count: Arc<AtomicUsize>,
+    /// Monitor channel for daemon lifecycle events (errors, shutdowns).
+    /// Used to detect daemon health issues early, e.g. when multicast sockets
+    /// cannot be created on the current platform.
+    monitor: Option<mdns_sd::Receiver<DaemonEvent>>,
 }
 
 impl MdnsDiscovery {
@@ -147,6 +151,15 @@ impl MdnsDiscovery {
         // Select the mDNS advertisement address.
         let ad_ip = select_advertise_ip(bind_addr)?;
 
+        // Create a monitor channel to detect daemon health issues early,
+        // e.g. when multicast sockets cannot be created on the current platform.
+        let monitor = daemon.monitor().map_err(|e| {
+            P2pError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("mDNS monitor init: {}", e),
+            ))
+        })?;
+
         // Register service
         let service_info = ServiceInfo::new(
             SIBNA_SERVICE_TYPE,
@@ -170,11 +183,33 @@ impl MdnsDiscovery {
             instance_name, bind_addr, ad_ip
         );
 
+        // Check for daemon errors after registration (e.g. multicast socket
+        // creation failures on macOS CI runners where multicast is unavailable).
+        let mut monitor_errors = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        while std::time::Instant::now() < deadline {
+            match monitor.recv_timeout(Duration::from_millis(50)) {
+                Ok(DaemonEvent::Error(e)) => {
+                    monitor_errors.push(e);
+                }
+                Ok(_) => {}
+                Err(flume::RecvTimeoutError::Disconnected) => break,
+                Err(flume::RecvTimeoutError::Timeout) => break,
+            }
+        }
+        if !monitor_errors.is_empty() {
+            return Err(P2pError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("mDNS daemon errors: {:?}", monitor_errors),
+            )));
+        }
+
         Ok(Self {
             daemon,
             service_type: SIBNA_SERVICE_TYPE.to_string(),
             full_service_name,
             browse_count: Arc::new(AtomicUsize::new(0)),
+            monitor: Some(monitor),
         })
     }
 
@@ -218,12 +253,18 @@ impl MdnsDiscovery {
         // Increment the active browse counter before spawning the worker.
         self.browse_count.fetch_add(1, Ordering::SeqCst);
 
-        let receiver = self.daemon.browse(&self.service_type).map_err(|e| {
-            P2pError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("mDNS browse: {}", e),
-            ))
-        })?;
+        let receiver = match self.daemon.browse(&self.service_type) {
+            Ok(r) => r,
+            Err(e) => {
+                // Decrement browse_count since browse failed; otherwise
+                // subsequent browse_peers() calls would be permanently blocked.
+                self.browse_count.fetch_sub(1, Ordering::SeqCst);
+                return Err(P2pError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("mDNS browse: {}", e),
+                )));
+            }
+        };
 
         // Expose a tokio stream to the user to abstract away mdns-sd threads
         let (tx, rx) = mpsc::channel(100);
@@ -337,6 +378,9 @@ impl Drop for MdnsDiscovery {
                 self.full_service_name, e
             );
         }
+
+        // Drop the monitor channel to signal the daemon monitor task to exit.
+        drop(self.monitor.take());
     }
 }
 

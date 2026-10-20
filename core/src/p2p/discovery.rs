@@ -192,11 +192,23 @@ impl MdnsDiscovery {
     /// Only one active browse is supported at a time. The underlying
     /// `mdns-sd` daemon keeps a single browse subscription per service type;
     /// calling `browse_peers()` while another browse is active returns an
-    /// error.
+    /// error. If a previous browse was just dropped, this method waits briefly
+    /// (up to 1 second) for the background worker to finish cleanup before
+    /// starting a new browse, since the `spawn_blocking` task may not exit
+    /// immediately when its receiver is dropped.
     pub fn browse_peers(&self) -> P2pResult<mpsc::Receiver<DiscoveredPeer>> {
-        // Only one active browse is supported; the mdns-sd daemon replaces
-        // the previous browse subscriber when a second browse for the same
-        // service type is requested.
+        // Wait briefly for any previous browse worker to finish cleanup.
+        // The mdns-sd daemon supports only one browse subscription per service
+        // type, so we must wait for the previous worker to call stop_browse()
+        // before starting a new one. The worker detects a dropped receiver
+        // on its next recv_timeout() tick (max 1 second), so this wait is
+        // short in practice.
+        let mut waited_ms = 0;
+        while self.browse_count.load(Ordering::SeqCst) > 0 && waited_ms < 1000 {
+            std::thread::sleep(Duration::from_millis(50));
+            waited_ms += 50;
+        }
+
         if self.browse_count.load(Ordering::SeqCst) > 0 {
             return Err(P2pError::InvalidMessage(
                 "mDNS browse already active on this node".to_string(),

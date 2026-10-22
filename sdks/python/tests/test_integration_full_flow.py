@@ -226,9 +226,13 @@ def _make_charlie(server_url: str) -> SibnaClient:
 
 def _make_bob_prekey_bundle() -> PreKeyBundle:
     """Create Bob's prekey bundle for X3DH handshake."""
+    from sibna.crypto import ml_kem_768_keypair
+
     bob_ed, bob_x = derive_identity_keys(BOB_SEED)
     bob_spk = X25519KeyPair.from_seed(bytes.fromhex("63" * 32))
     bob_opk = X25519KeyPair.from_seed(bytes.fromhex("64" * 32))
+    # Generate a genuine ML-KEM-768 keypair for PQ wire compatibility
+    bob_pq_pk, bob_pq_sk = ml_kem_768_keypair()
     return generate_peer_bundle(
         identity_ed=bob_ed,
         identity_x25519=bob_x,
@@ -236,6 +240,7 @@ def _make_bob_prekey_bundle() -> PreKeyBundle:
         onetime_prekey=bob_opk,
         device_id_bytes=bytes.fromhex("62" * 16),
         root_identity_key=bob_ed.public_key,
+        pq_keypair=(bob_pq_pk, bob_pq_sk),
     )
 
 

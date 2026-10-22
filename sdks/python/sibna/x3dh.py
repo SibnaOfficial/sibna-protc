@@ -118,6 +118,8 @@ class PreKeyBundle:
         signature(64) || has_onetime(1) || [onetime_prekey(32)] || bundle_id(16) ||
         timestamp(8 LE) || expiration(8 LE) || device_id(4 LE) ||
         root_identity_key(32) || device_signature(64)
+        PQ fields (presence byte, 1184-byte public key, 64-byte signature) —
+        included when ``pq_public_key`` is not None, matching the Rust wire format.
         """
         out = bytearray()
         out.extend(self.identity_key)
@@ -133,6 +135,14 @@ class PreKeyBundle:
         out.extend(self.device_id.to_bytes(4, "little"))
         out.extend(self.root_identity_key)
         out.extend(self.device_signature)
+
+        # PQ fields: presence byte, 1184-byte ML-KEM-768 public key, 64-byte Ed25519 signature
+        if self.pq_public_key is not None:
+            out.append(1)  # PQ presence byte
+            out.extend(self.pq_public_key)  # 1184 bytes
+            if self.pq_signed_prekey_signature is not None:
+                out.extend(self.pq_signed_prekey_signature)  # 64 bytes
+
         return bytes(out)
 
 
@@ -224,6 +234,29 @@ def prekey_bundle_from_bytes(data: bytes) -> PreKeyBundle:
     device_signature = signing_payload[offset : offset + 64]
     offset += 64
 
+    # PQ fields (presence byte, 1184-byte public key, 64-byte Ed25519 signature)
+    # Positioned after device_signature, matching the Rust wire format.
+    # If a PQ presence byte (non-zero) is present, the public key and signature
+    # must also be present and have exact lengths; otherwise raise.
+    if offset < len(signing_payload):
+        has_pq = signing_payload[offset] != 0
+        offset += 1
+        if has_pq:
+            if offset + 1184 > len(signing_payload):
+                raise ValidationError("truncated PQ public key")
+            pq_public_key = signing_payload[offset : offset + 1184]
+            offset += 1184
+            if offset + 64 > len(signing_payload):
+                raise ValidationError("truncated PQ signature")
+            pq_signed_prekey_signature = signing_payload[offset : offset + 64]
+            offset += 64
+        else:
+            pq_public_key = None
+            pq_signed_prekey_signature = None
+    else:
+        pq_public_key = None
+        pq_signed_prekey_signature = None
+
     # Verify we consumed all of signing_payload
     if offset != len(signing_payload):
         raise ValidationError(
@@ -240,8 +273,8 @@ def prekey_bundle_from_bytes(data: bytes) -> PreKeyBundle:
         device_id=device_id,
         root_identity_key=root_identity_key,
         device_signature=device_signature,
-        pq_public_key=None,
-        pq_signed_prekey_signature=None,
+        pq_public_key=pq_public_key,
+        pq_signed_prekey_signature=pq_signed_prekey_signature,
         bundle_signature=bundle_signature,
     )
     return bundle
@@ -550,8 +583,10 @@ def generate_peer_bundle(
         bundle_signature=b"",
     )
     if pq_keypair is not None:
-        # pq_keypair = (pk, sk)
+        # pq_keypair = (pk, sk) — use the Ed25519 identity key to sign the PQ public key,
+        # matching Rust's pq_signed_prekey_signature verification logic.
         bundle.pq_public_key = pq_keypair[0]
+        bundle.pq_signed_prekey_signature = identity_ed.sign(pq_keypair[0])
 
     # Sign the full serialization with the device identity key
     signing_bytes = bundle.signing_bytes()

@@ -131,6 +131,7 @@ jobs:
       - run: cargo build -p sibna-server --bin sibna-server
       # Verify the server binary exists before running integration tests
       - name: Verify server binary
+        shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             if [ -f target/debug/sibna-server.exe ]; then

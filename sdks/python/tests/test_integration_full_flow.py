@@ -149,9 +149,11 @@ def _start_server() -> subprocess.Popen:
     env = os.environ.copy()
     env["SIBNA_JWT_SECRET"] = JWT_SECRET
     env["SIBNA_SERVER_URL"] = server_url
+    # Server reads PORT from environment and binds to 0.0.0.0:PORT
+    env["PORT"] = str(port)
 
     proc = subprocess.Popen(
-        [str(server_bin), "--bind", f"127.0.0.1:{port}"],
+        [str(server_bin)],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -175,8 +177,18 @@ def _start_server() -> subprocess.Popen:
         except Exception:
             time.sleep(0.1)
 
-    proc.kill()
-    raise RuntimeError("sibna-server did not become ready within 10 seconds")
+    # Capture output before killing for better diagnostics
+    try:
+        proc.terminate()
+        out, err = proc.communicate(timeout=2)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, err = proc.communicate()
+    raise RuntimeError(
+        f"sibna-server did not become ready within 10 seconds.\n"
+        f"stdout: {out.decode(errors='replace')}\n"
+        f"stderr: {err.decode(errors='replace')}"
+    )
 
 
 def _stop_server(proc: subprocess.Popen) -> None:

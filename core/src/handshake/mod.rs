@@ -579,7 +579,6 @@ impl HandshakeMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::ml_kem_768_keypair;
     use ed25519_dalek::{Signer, SigningKey};
     use rand_core::OsRng;
 
@@ -713,9 +712,13 @@ mod tests {
         #[cfg(feature = "pqc")]
         {
             // Generate valid ML-KEM-768 keypair for PQC test
-            let (pq_pk, pq_sk) = ml_kem_768_keypair();
-            let pq_sig = signing_key.sign(&pq_pk).to_bytes();
-            bundle = bundle.with_pq_prekey(pq_pk, pq_sig);
+            use fips203::ml_kem_768;
+            use fips203::traits::{KeyGen, SerDes};
+
+            let (pq_pk, _pq_sk) = ml_kem_768::KG::try_keygen().unwrap();
+            let pq_pk_bytes = SerDes::into_bytes(pq_pk).to_vec();
+            let pq_sig = signing_key.sign(&pq_pk_bytes).to_bytes();
+            bundle = bundle.with_pq_prekey(pq_pk_bytes, pq_sig);
         }
 
         // Re-sign the bundle after PQ fields are set

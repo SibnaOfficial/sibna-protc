@@ -434,7 +434,7 @@ impl PreKeyBundle {
         signature.copy_from_slice(&data[offset..offset + 64]);
         offset += 64;
 
-        let x25519_identity_key = [0u8; 32];
+        let mut x25519_identity_key = [0u8; 32];
         x25519_identity_key.copy_from_slice(&data[offset..offset + 32]);
         offset += 32;
 
@@ -628,10 +628,14 @@ mod tests {
         dev_payload.extend_from_slice(&0u32.to_le_bytes());
         let device_signature = signing_key.sign(&dev_payload).to_bytes();
 
+        // Generate X25519 identity key for the test
+        let x25519_identity_key = [0x42u8; 32]; // Test value - in production this would be derived from X25519 key pair
+
         let mut bundle = PreKeyBundle::new(
             identity_key,
             signed_prekey,
             signature,
+            x25519_identity_key,
             None,
             0,
             identity_key,
@@ -650,11 +654,13 @@ mod tests {
         let identity_key = [0x42u8; 32];
         let signed_prekey = [0x24u8; 32];
         let signature = [0u8; 64]; // Invalid signature
+        let x25519_identity_key = [0x42u8; 32]; // Test value
 
         let bundle = PreKeyBundle::new(
             identity_key,
             signed_prekey,
             signature,
+            x25519_identity_key,
             None,
             0,
             identity_key,
@@ -679,10 +685,15 @@ mod tests {
         dev_payload.extend_from_slice(&0u32.to_le_bytes());
         let device_signature = signing_key.sign(&dev_payload).to_bytes();
 
+        // Generate X25519 identity key for the test
+        let x25519_identity_secret = StaticSecret::random_from_rng(&mut OsRng);
+        let x25519_identity_key = PublicKey::from(&x25519_identity_secret).to_bytes();
+
         let mut bundle = PreKeyBundle::new(
             identity_key,
             signed_prekey,
             signature,
+            x25519_identity_key,
             Some([0xABu8; 32]),
             0,
             identity_key,

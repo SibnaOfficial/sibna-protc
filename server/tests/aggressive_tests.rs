@@ -5,10 +5,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sibna_core::{Config, SecureContext};
 use sibna_server::run_server;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
 
 #[derive(Serialize, Deserialize)]
@@ -33,6 +34,33 @@ fn create_mock_jwt(id: &str, secret: &str) -> String {
         &EncodingKey::from_secret(secret.as_bytes()),
     )
     .unwrap()
+}
+
+/// Build the canonical envelope payload that the server verifies.
+/// Format: u64_be(len)||recipient_id || u64_be(len)||message_id ||
+///         u64_be(len)||payload_hex || u64_be(len)||sender_id
+fn build_canonical_payload(
+    recipient_id: &str,
+    message_id: &str,
+    payload_hex: &str,
+    sender_id: &str,
+) -> Vec<u8> {
+    let mut canonical = Vec::new();
+    let r = recipient_id.as_bytes();
+    let m = message_id.as_bytes();
+    let p = payload_hex.as_bytes();
+    let s = sender_id.as_bytes();
+
+    canonical.write_all(&(r.len() as u64).to_be_bytes()).unwrap();
+    canonical.write_all(r).unwrap();
+    canonical.write_all(&(m.len() as u64).to_be_bytes()).unwrap();
+    canonical.write_all(m).unwrap();
+    canonical.write_all(&(p.len() as u64).to_be_bytes()).unwrap();
+    canonical.write_all(p).unwrap();
+    canonical.write_all(&(s.len() as u64).to_be_bytes()).unwrap();
+    canonical.write_all(s).unwrap();
+
+    canonical
 }
 
 async fn spawn_test_server(jwt_secret: &str) -> SocketAddr {
@@ -189,30 +217,32 @@ async fn test_aggressive_queue_flood_stress() {
     let bob_id = ctx_bob.get_identity().unwrap().ed25519_public;
     let bob_id_hex = hex::encode(bob_id);
 
-    // ATTACK: Flood a single recipient with 500 messages (Offline Queue stress)
-    // Generate Alice's Ed25519 key pair for signing and JWT auth
+    // Generate Alice's Ed25519 signing key for envelope signatures.
+    // In production this would be the same key used for JWT auth, but for the test
+    // we generate a dedicated key and use its public key as the sender_id.
     let alice_sk = SigningKey::generate(&mut OsRng);
     let alice_vk = alice_sk.verifying_key();
-    let alice_id_hex = hex::encode(alice_vk.to_bytes());
-    let alice_token = create_mock_jwt(&alice_id_hex, secret);
-
-    // Bob's identity for recipient
-    let ctx_bob = SecureContext::new(Config::default(), None).unwrap();
-    ctx_bob.generate_identity().unwrap();
-    let bob_id = ctx_bob.get_identity().unwrap().ed25519_public;
-    let bob_id_hex = hex::encode(bob_id);
-
-    // Generators' Ed25519 key pairs for signing and JWT auth
-    let alice_vk = alice_sk.verifying_key();
+    let alice_sender_id = hex::encode(alice_vk.to_bytes());
+    // JWT subject must match the sender_id for auth to work
+    let alice_token = create_mock_jwt(&alice_sender_id, secret);
 
     // ATTACK: Flood a single recipient with 500 messages (Offline Queue stress)
     for i in 0..500 {
+        let message_id = format!("msg_{}", i);
+        let payload_hex = "aabbcc".repeat(100);
+
+        // Build the exact canonical payload the server verifies
+        let canonical = build_canonical_payload(&bob_id_hex, &message_id, &payload_hex, &alice_sender_id);
+        // Sign with Alice's private key
+        let signature = alice_sk.sign(&canonical).to_bytes();
+        let signature_hex = hex::encode(signature);
+
         let req = json!({
             "recipient_id": bob_id_hex,
-            "payload_hex": "aabbcc".repeat(100),
-            "message_id": format!("msg_{}", i),
-            "sender_id": alice_id_hex,
-            "signature_hex": hex::encode(alice_vk.to_bytes()),
+            "payload_hex": payload_hex,
+            "message_id": message_id,
+            "sender_id": alice_sender_id,
+            "signature_hex": signature_hex,
         });
 
         let res = client
@@ -309,15 +339,32 @@ async fn test_delayed_queue_delivery_and_ack() {
     let bob_id_hex = hex::encode(bob_id);
     let bob_token = create_mock_jwt(&bob_id_hex, secret);
 
+    // Generate Alice's Ed25519 signing key for envelope signatures.
+    let alice_sk = SigningKey::generate(&mut OsRng);
+    let alice_vk = alice_sk.verifying_key();
+    let alice_sender_id = hex::encode(alice_vk.to_bytes());
+    // JWT subject must match the sender_id for auth to work
+    let alice_token = create_mock_jwt(&alice_sender_id, secret);
+
     // Alice sends to Bob while Bob is offline: message is queued (202).
     // recipient_id must be the 64-char hex-encoded Ed25519 public key.
     // sender_id and signature_hex are required for server-side validation.
+    let message_id = "delayed_msg_001";
+    let payload_hex = "deadbeef";
+
+    // Build the exact canonical payload the server verifies
+    let canonical = build_canonical_payload(&bob_id_hex, message_id, payload_hex, &alice_sender_id);
+    // Sign with Alice's private key
+    let signature = alice_sk.sign(&canonical).to_bytes();
+    let signature_hex = hex::encode(signature);
+
     let req = json!({
         "recipient_id": bob_id_hex,
-        "payload_hex": "deadbeef",
+        "payload_hex": payload_hex,
         "compressed": false,
-        "sender_id": alice_id_hex,
-        "signature_hex": hex::encode(alice_vk.to_bytes()),
+        "sender_id": alice_sender_id,
+        "message_id": message_id,
+        "signature_hex": signature_hex,
     });
     let res = client
         .post(&url)

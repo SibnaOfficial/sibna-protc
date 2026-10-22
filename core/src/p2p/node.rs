@@ -101,6 +101,7 @@ impl P2pNode {
             identity.ed25519_public,
             spk_public,
             spk_sig,
+            identity.x25519_public,
             None,                    // no one-time prekey in P2P mode
             0,                       // device_id = 0 (master)
             identity.ed25519_public, // root key = self for standalone node

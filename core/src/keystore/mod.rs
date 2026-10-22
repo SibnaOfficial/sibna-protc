@@ -705,6 +705,7 @@ impl KeyStore {
             identity.ed25519_public,
             spk_pub,
             sig,
+            identity.x25519_public,
             opk,
             self.device_id,
             root_key,

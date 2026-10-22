@@ -139,73 +139,96 @@ class PreKeyBundle:
 def prekey_bundle_from_bytes(data: bytes) -> PreKeyBundle:
     """Deserialize a PreKeyBundle from the Rust wire format.
 
-    Matches ``PreKeyBundle::from_bytes()`` from the Rust core.
-    The wire format includes ``x25519_identity_key`` (32 bytes) after
-    ``bundle_signature``, consistent with the updated Rust serialization.
+    Wire format: ``signing_bytes()`` || ``bundle_signature`` (64 bytes).
+    ``signing_bytes()`` = ``identity_key``(32) || ``signed_prekey``(32) ||
+    ``x25519_identity_key``(32) || ``signature``(64) || ``has_onetime``(1) ||
+    [``onetime_prekey``(32)] || ``bundle_id``(16) || ``timestamp``(8 LE) ||
+    ``expiration``(8 LE) || ``device_id``(4 LE) || ``root_identity_key``(32) ||
+    ``device_signature``(64).
 
-    Raises ValidationError if the bundle is too short or if
+    Raises ValidationError if the bundle is too short, truncated, or if
     ``x25519_identity_key`` is missing.
     """
     import struct
 
-    # Minimum non-PQ wire format (no onetime_prekey, with x25519_identity_key):
-    # identity_key(32) + signed_prekey(32) + signature(64) + has_onetime(1)
-    # + bundle_id(16) + timestamp(8) + expiration(8) + device_id(4)
-    # + root_identity_key(32) + device_signature(64) + bundle_signature(64)
-    # + x25519_identity_key(32) = 357 bytes
-    # With onetime_prekey: 357 + 32 = 389 bytes
-    if len(data) < 357:  # minimum: no PQ + fixed fields + x25519_identity_key
+    # Minimum wire format (no onetime_prekey):
+    # signing_bytes(293) + bundle_signature(64) = 357 bytes
+    # With onetime_prekey: 293 + 32 + 64 = 389 bytes
+    if len(data) < 357:
         raise ValidationError("prekey bundle too short")
 
+    # Bundle signature is the last 64 bytes
+    bundle_signature = data[-64:]
+    signing_payload = data[:-64]
+
+    # signing_payload layout:
+    # identity_key(32) | signed_prekey(32) | x25519_identity_key(32) | signature(64) | has_onetime(1) | [onetime_prekey(32)] | bundle_id(16) | timestamp(8 LE) | expiration(8 LE) | device_id(4 LE) | root_identity_key(32) | device_signature(64)
+    if len(signing_payload) < 293:
+        raise ValidationError("signing payload too short")
+
+    offset = 0
     # identity_key (32)
-    identity_key = data[0:32]
+    identity_key = signing_payload[offset : offset + 32]
+    offset += 32
     # signed_prekey (32)
-    signed_prekey = data[32:64]
+    signed_prekey = signing_payload[offset : offset + 32]
+    offset += 32
+    # x25519_identity_key (32) - after signed_prekey, before signature
+    x25519_identity_key = signing_payload[offset : offset + 32]
+    offset += 32
     # signed_prekey_signature (64)
-    signed_prekey_signature = data[64:128]
+    signed_prekey_signature = signing_payload[offset : offset + 64]
+    offset += 64
     # has_onetime (1)
-    has_onetime = data[128]
-    offset = 129
+    if offset >= len(signing_payload):
+        raise ValidationError("truncated has_onetime")
+    has_onetime = signing_payload[offset]
+    offset += 1
     # onetime_prekey (32 if present)
     if has_onetime:
-        if offset + 32 > len(data):
+        if offset + 32 > len(signing_payload):
             raise ValidationError("truncated onetime_prekey")
-        onetime_prekey = data[offset : offset + 32]
+        onetime_prekey = signing_payload[offset : offset + 32]
         offset += 32
     else:
         onetime_prekey = None
     # bundle_id (16)
-    bundle_id = data[offset : offset + 16]
+    if offset + 16 > len(signing_payload):
+        raise ValidationError("truncated bundle_id")
+    bundle_id = signing_payload[offset : offset + 16]
     offset += 16
     # timestamp (8 LE)
-    timestamp = struct.unpack("<Q", data[offset : offset + 8])[0]
+    if offset + 8 > len(signing_payload):
+        raise ValidationError("truncated timestamp")
+    timestamp = struct.unpack("<Q", signing_payload[offset : offset + 8])[0]
     offset += 8
     # expiration (8 LE)
-    expiration = struct.unpack("<Q", data[offset : offset + 8])[0]
+    if offset + 8 > len(signing_payload):
+        raise ValidationError("truncated expiration")
+    expiration = struct.unpack("<Q", signing_payload[offset : offset + 8])[0]
     offset += 8
     # device_id (4 LE)
-    device_id_int = struct.unpack("<I", data[offset : offset + 4])[0]
+    if offset + 4 > len(signing_payload):
+        raise ValidationError("truncated device_id")
+    device_id_int = struct.unpack("<I", signing_payload[offset : offset + 4])[0]
     offset += 4
-    # device_id: int (matches Rust u32)
     device_id = device_id_int
     # root_identity_key (32)
-    root_identity_key = data[offset : offset + 32]
+    if offset + 32 > len(signing_payload):
+        raise ValidationError("truncated root_identity_key")
+    root_identity_key = signing_payload[offset : offset + 32]
     offset += 32
     # device_signature (64)
-    device_signature = data[offset : offset + 64]
+    if offset + 64 > len(signing_payload):
+        raise ValidationError("truncated device_signature")
+    device_signature = signing_payload[offset : offset + 64]
     offset += 64
-    # bundle_signature (64)
-    bundle_signature = data[offset : offset + 64]
-    offset += 64
-    # x25519_identity_key (32) — after bundle_signature in wire format
-    if offset + 32 > len(data):
-        raise ValidationError("truncated x25519_identity_key")
-    x25519_identity_key = data[offset : offset + 32]
-    offset += 32
 
-    # pq_public_key and pq_signed_prekey_signature are not part of the
-    # non-PQ wire format; they are ignored here (the caller must handle
-    # PQ bundles separately if needed).
+    # Verify we consumed all of signing_payload
+    if offset != len(signing_payload):
+        raise ValidationError(
+            f"trailing data in signing payload: {len(signing_payload) - offset} bytes"
+        )
 
     bundle = PreKeyBundle(
         identity_key=identity_key,

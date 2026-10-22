@@ -92,21 +92,46 @@ def _find_free_port() -> int:
 
 def _get_server_binary_path() -> Path:
     """Get the path to the sibna-server binary, handling platform-specific names."""
-    base = Path(__file__).resolve().parents[3] / "target"
     # Platform-specific executable name
     exe_name = "sibna-server.exe" if sys.platform == "win32" else "sibna-server"
 
-    # Check debug first, then release
-    debug_path = base / "debug" / exe_name
-    release_path = base / "release" / exe_name
+    # Determine the repository root (4 levels up from this test file)
+    repo_root = Path(__file__).resolve().parents[3]
 
-    if debug_path.exists():
-        return debug_path
-    if release_path.exists():
-        return release_path
+    # Check CARGO_TARGET_DIR first (if set by CI)
+    cargo_target_dir = os.environ.get("CARGO_TARGET_DIR")
+    search_bases = []
+    if cargo_target_dir:
+        search_bases.append(Path(cargo_target_dir))
+    # Default: repo_root/target
+    search_bases.append(repo_root / "target")
+    # Also check current working directory's target (for CI where cwd might differ)
+    search_bases.append(Path.cwd() / "target")
+    # Also check repo_root directly (in case target is symlinked)
+    search_bases.append(repo_root)
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique_bases = []
+    for base in search_bases:
+        resolved = base.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            unique_bases.append(resolved)
+
+    # Check debug first, then release for each base
+    checked = []
+    for base in unique_bases:
+        debug_path = base / "debug" / exe_name
+        release_path = base / "release" / exe_name
+        checked.append(str(debug_path))
+        checked.append(str(release_path))
+        if debug_path.exists():
+            return debug_path
+        if release_path.exists():
+            return release_path
 
     # Provide clear diagnostic with all checked paths
-    checked = [str(debug_path), str(release_path)]
     raise FileNotFoundError(
         f"sibna-server binary not found. Checked paths:\n  " + "\n  ".join(checked)
     )

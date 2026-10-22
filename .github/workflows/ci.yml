@@ -129,6 +129,30 @@ jobs:
           python-version: '3.13'
       # Build the Rust relay server required by integration tests
       - run: cargo build -p sibna-server --bin sibna-server
+      # Verify the server binary exists before running integration tests
+      - name: Verify server binary
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            if [ -f target/debug/sibna-server.exe ]; then
+              echo "Found target/debug/sibna-server.exe"
+            elif [ -f target/release/sibna-server.exe ]; then
+              echo "Found target/release/sibna-server.exe"
+            else
+              echo "ERROR: sibna-server.exe not found!"
+              find target -name "sibna-server*" 2>/dev/null || true
+              exit 1
+            fi
+          else
+            if [ -f target/debug/sibna-server ]; then
+              echo "Found target/debug/sibna-server"
+            elif [ -f target/release/sibna-server ]; then
+              echo "Found target/release/sibna-server"
+            else
+              echo "ERROR: sibna-server not found!"
+              find target -name "sibna-server*" 2>/dev/null || true
+              exit 1
+            fi
+          fi
       # Linting, formatting, type checking, and packaging tooling.
       # Install everything in one step so dependency resolution is consistent
       # across all platforms (avoids conflicts between sequential installs).

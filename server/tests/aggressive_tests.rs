@@ -8,6 +8,8 @@ use sibna_server::run_server;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use ed25519_dalek::{SigningKey, VerifyingKey};
+use rand_core::OsRng;
 
 #[derive(Serialize, Deserialize)]
 struct Claims {

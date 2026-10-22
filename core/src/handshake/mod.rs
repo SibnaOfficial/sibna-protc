@@ -678,7 +678,11 @@ mod tests {
         let signed_prekey_secret = StaticSecret::random_from_rng(&mut OsRng);
         let signed_prekey = PublicKey::from(&signed_prekey_secret).to_bytes();
 
-        let signature = signing_key.sign(&signed_prekey).to_bytes();
+        // SPK signature with domain separation: b"SibnaSignedPreKey_v3" || signed_prekey
+        let mut spk_payload = Vec::with_capacity(20 + signed_prekey.len());
+        spk_payload.extend_from_slice(b"SibnaSignedPreKey_v3");
+        spk_payload.extend_from_slice(&signed_prekey);
+        let signature = signing_key.sign(&spk_payload).to_bytes();
 
         let mut dev_payload = Vec::with_capacity(36);
         dev_payload.extend_from_slice(&identity_key);
@@ -723,6 +727,7 @@ mod tests {
         assert_eq!(bundle.device_signature, parsed.device_signature);
         assert_eq!(bundle.bundle_signature, parsed.bundle_signature);
         assert!(parsed.validate().is_ok());
+    }
 
     #[test]
     fn test_handshake_metrics() {

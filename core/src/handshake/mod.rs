@@ -579,6 +579,7 @@ impl HandshakeMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::ml_kem_768_keypair;
     use ed25519_dalek::{Signer, SigningKey};
     use rand_core::OsRng;
 
@@ -704,12 +705,23 @@ mod tests {
             device_signature,
         );
 
+        // Sign the complete bundle with the identity signing key
+        bundle
+            .sign_bundle(|data| Ok(signing_key.sign(data).to_bytes()))
+            .unwrap();
+
         #[cfg(feature = "pqc")]
         {
-            let pq_pk = vec![0u8; 1184];
-            let pq_sig = [0u8; 64];
+            // Generate valid ML-KEM-768 keypair for PQC test
+            let (pq_pk, pq_sk) = ml_kem_768_keypair();
+            let pq_sig = signing_key.sign(&pq_pk).to_bytes();
             bundle = bundle.with_pq_prekey(pq_pk, pq_sig);
         }
+
+        // Re-sign the bundle after PQ fields are set
+        bundle
+            .sign_bundle(|data| Ok(signing_key.sign(data).to_bytes()))
+            .unwrap();
 
         let bytes = bundle.to_bytes();
         let parsed = PreKeyBundle::from_bytes(&bytes).unwrap();

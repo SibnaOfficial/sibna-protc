@@ -1,5 +1,7 @@
+use ed25519_dalek::{Signer, SigningKey};
 use futures_util::{SinkExt, StreamExt};
 use jsonwebtoken::{encode, EncodingKey, Header};
+use rand::rngs::OsRng;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -9,8 +11,6 @@ use std::io::Write;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use ed25519_dalek::{Signer, SigningKey};
-use rand::rngs::OsRng;
 
 #[derive(Serialize, Deserialize)]
 struct Claims {
@@ -51,13 +51,21 @@ fn build_canonical_payload(
     let p = payload_hex.as_bytes();
     let s = sender_id.as_bytes();
 
-    canonical.write_all(&(r.len() as u64).to_be_bytes()).unwrap();
+    canonical
+        .write_all(&(r.len() as u64).to_be_bytes())
+        .unwrap();
     canonical.write_all(r).unwrap();
-    canonical.write_all(&(m.len() as u64).to_be_bytes()).unwrap();
+    canonical
+        .write_all(&(m.len() as u64).to_be_bytes())
+        .unwrap();
     canonical.write_all(m).unwrap();
-    canonical.write_all(&(p.len() as u64).to_be_bytes()).unwrap();
+    canonical
+        .write_all(&(p.len() as u64).to_be_bytes())
+        .unwrap();
     canonical.write_all(p).unwrap();
-    canonical.write_all(&(s.len() as u64).to_be_bytes()).unwrap();
+    canonical
+        .write_all(&(s.len() as u64).to_be_bytes())
+        .unwrap();
     canonical.write_all(s).unwrap();
 
     canonical
@@ -204,12 +212,6 @@ async fn test_aggressive_queue_flood_stress() {
     let client = Client::new();
     let url = format!("http://{}/v1/messages/send", addr);
 
-    // Create proper Ed25519 identities for Alice and Bob
-    let ctx_alice = SecureContext::new(Config::default(), None).unwrap();
-    ctx_alice.generate_identity().unwrap();
-    let alice_id = ctx_alice.get_identity().unwrap().ed25519_public;
-    let alice_id_hex = hex::encode(alice_id);
-
     // Bob's identity for recipient
     let ctx_bob = SecureContext::new(Config::default(), None).unwrap();
     ctx_bob.generate_identity().unwrap();
@@ -231,7 +233,8 @@ async fn test_aggressive_queue_flood_stress() {
         let payload_hex = "aabbcc".repeat(100);
 
         // Build the exact canonical payload the server verifies
-        let canonical = build_canonical_payload(&bob_id_hex, &message_id, &payload_hex, &alice_sender_id);
+        let canonical =
+            build_canonical_payload(&bob_id_hex, &message_id, &payload_hex, &alice_sender_id);
         // Sign with Alice's private key
         let signature = alice_sk.sign(&canonical).to_bytes();
         let signature_hex = hex::encode(signature);
@@ -325,12 +328,7 @@ async fn test_delayed_queue_delivery_and_ack() {
     let client = Client::new();
     let url = format!("http://{}/v1/messages/send", addr);
 
-    // Create proper Ed25519 identities for Alice and Bob
-    let ctx_alice = SecureContext::new(Config::default(), None).unwrap();
-    ctx_alice.generate_identity().unwrap();
-    let alice_id = ctx_alice.get_identity().unwrap().ed25519_public;
-    let alice_id_hex = hex::encode(alice_id);
-
+    // Bob's identity for recipient
     let ctx_bob = SecureContext::new(Config::default(), None).unwrap();
     ctx_bob.generate_identity().unwrap();
     let bob_id = ctx_bob.get_identity().unwrap().ed25519_public;

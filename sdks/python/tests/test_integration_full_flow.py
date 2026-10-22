@@ -75,7 +75,6 @@ from sibna import (
 from sibna.envelope import make_signed_envelope, verify_signed_envelope
 from sibna.errors import AuthError, NetworkError
 
-
 SERVER_URL = os.environ.get("SIBNA_SERVER_URL", "http://localhost:0")
 JWT_SECRET = os.environ.get("SIBNA_JWT_SECRET", "test-secret-0123456789abcdef")
 

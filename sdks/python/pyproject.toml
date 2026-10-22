@@ -40,7 +40,7 @@ dev = [
     "pytest-cov>=4.0",
     "pytest-asyncio>=1.0",
     "mypy>=1.0",
-    "black>=24.0",
+    "black==26.10.1",
     "types-requests>=2.31",
 ]
 

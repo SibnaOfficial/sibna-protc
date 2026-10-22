@@ -188,11 +188,29 @@ async fn test_aggressive_queue_flood_stress() {
     let bob_id_hex = hex::encode(bob_id);
 
     // ATTACK: Flood a single recipient with 500 messages (Offline Queue stress)
+    // Generate Alice's Ed25519 key pair for signing and JWT auth
+    let alice_sk = SigningKey::generate(&mut OsRng);
+    let alice_vk = alice_sk.verifying_key();
+    let alice_id_hex = alice_vk.to_bytes().hex();
+    let alice_token = create_mock_jwt(&alice_id_hex, secret);
+
+    // Bob's identity for recipient
+    let ctx_bob = SecureContext::new(Config::default(), None).unwrap();
+    ctx_bob.generate_identity().unwrap();
+    let bob_id = ctx_bob.get_identity().unwrap().ed25519_public;
+    let bob_id_hex = hex::encode(bob_id);
+
+    // Generators' Ed25519 key pairs for signing and JWT auth
+    let alice_vk = alice_sk.verifying_key();
+
+    // ATTACK: Flood a single recipient with 500 messages (Offline Queue stress)
     for i in 0..500 {
         let req = json!({
             "recipient_id": bob_id_hex,
             "payload_hex": "aabbcc".repeat(100),
-            "message_id": format!("msg_{}", i)
+            "message_id": format!("msg_{}", i),
+            "sender_id": alice_id_hex,
+            "signature_hex": alice_vk.to_bytes().hex(),
         });
 
         let res = client
@@ -291,10 +309,13 @@ async fn test_delayed_queue_delivery_and_ack() {
 
     // Alice sends to Bob while Bob is offline: message is queued (202).
     // recipient_id must be the 64-char hex-encoded Ed25519 public key.
+    // sender_id and signature_hex are required for server-side validation.
     let req = json!({
         "recipient_id": bob_id_hex,
         "payload_hex": "deadbeef",
         "compressed": false,
+        "sender_id": alice_id_hex,
+        "signature_hex": alice_vk.to_bytes().hex(),
     });
     let res = client
         .post(&url)

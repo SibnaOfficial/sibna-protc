@@ -168,15 +168,24 @@ class SibnaClient:
     # ── PreKeys ─────────────────────────────────────────────────────
 
     def upload_prekey(self, bundle_hex: str, is_last_resort: bool = False) -> None:
+        headers: Dict[str, str] = {}
+        if self.jwt_token:
+            headers["Authorization"] = f"Bearer {self.jwt_token}"
         r = self._session.post(
             f"{self.server}/v1/prekeys/upload",
             json={"bundle_hex": bundle_hex, "is_last_resort": is_last_resort},
+            headers=headers,
             timeout=self.timeout,
         )
         self._check_response(r, "prekeys/upload")
 
     def fetch_prekeys(self, root_id_hex: str) -> List[str]:
-        r = self._session.get(f"{self.server}/v1/prekeys/{root_id_hex}", timeout=self.timeout)
+        headers: Dict[str, str] = {}
+        if self.jwt_token:
+            headers["Authorization"] = f"Bearer {self.jwt_token}"
+        r = self._session.get(
+            f"{self.server}/v1/prekeys/{root_id_hex}", headers=headers, timeout=self.timeout
+        )
         self._check_response(r, "prekeys/fetch")
         return cast(List[str], r.json()["bundles_hex"])
 
@@ -200,19 +209,30 @@ class SibnaClient:
                 "payload_hex": payload_hex,
                 "compressed": compress,
             }
-        r = self._session.post(f"{self.server}/v1/messages/send", json=body, timeout=self.timeout)
+
+        headers: Dict[str, str] = {}
+        if self.jwt_token:
+            headers["Authorization"] = f"Bearer {self.jwt_token}"
+
+        r = self._session.post(
+            f"{self.server}/v1/messages/send",
+            json=body,
+            headers=headers,
+            timeout=self.timeout,
+        )
         self._check_response(r, "messages/send")
         return r.status_code
 
     def fetch_inbox(self) -> List[Dict[str, Any]]:
         if not self.identity or not self.jwt_token:
             raise AuthError("Must authenticate before fetching inbox.")
+        headers: Dict[str, str] = {}
+        if self.jwt_token:
+            headers["Authorization"] = f"Bearer {self.jwt_token}"
         r = self._session.get(
             f"{self.server}/v1/messages/inbox",
-            params={
-                "identity_key_hex": self.identity.public_key_hex,
-                "token": self.jwt_token,
-            },
+            headers=headers,
+            params={"identity_key_hex": self.identity.public_key_hex},
             timeout=self.timeout,
         )
         self._check_response(r, "messages/inbox")

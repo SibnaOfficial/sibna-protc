@@ -7,14 +7,15 @@ Canonical signed payload matches the Rust relay server
     canonical = u64_be(len(recipient_id)) || recipient_id_bytes
              || u64_be(len(message_id))   || message_id_bytes
              || u64_be(len(payload_hex))  || payload_hex_bytes
+             || u64_be(len(sender_id))    || sender_id_bytes
 
 Length-prefix encoding prevents field-boundary reinterpretation attacks.
 
-The envelope is signed by the sender's Ed25519 identity key over the SHA-512
-of the canonical payload. The relay verifies this signature before routing.
+The envelope is signed by the sender's Ed25519 identity key over the canonical
+payload directly. The relay verifies this signature before routing.
 
-Signed fields (authenticated): recipient_id, message_id, payload_hex.
-The signature binds these three fields together so an attacker cannot swap or
+Signed fields (authenticated): recipient_id, message_id, payload_hex, sender_id.
+The signature binds these four fields together so an attacker cannot swap or
 reinterpret field boundaries.
 
 Fields intentionally NOT covered by the signature:
@@ -33,16 +34,14 @@ Fields intentionally NOT covered by the signature:
   integrity breach. It is authenticated indirectly: a mismatched flag makes
   the sealed payload fail to decrypt.
 
-- `sender_id`: used as the Ed25519 verification key. An attacker who changes
-  it causes verification to fail against the wrong key, so it is implicitly
-  bound to a valid signature.
+- `receiver_id`: not part of the envelope (the relay routes by recipient_id
+  from the URL/query, not from the envelope content).
 
 See PROTOCOL_SPECIFICATION.md §4 for the canonical form.
 """
 
 from __future__ import annotations
 
-import hashlib
 import struct
 import uuid
 from typing import Any, Dict, Protocol
@@ -68,11 +67,25 @@ class Signer(Protocol):
 ENVELOPE_MAX_AGE_SECS = 300
 
 
-def _canonical_payload(recipient_id: str, message_id: str, payload_hex: str) -> bytes:
-    """Build the length-prefixed canonical signed payload."""
+def _canonical_payload(
+    recipient_id: str, message_id: str, payload_hex: str, sender_id: str
+) -> bytes:
+    """Build the length-prefixed canonical signed payload (4 fields).
+
+    Matches Rust canonical form (server/src/main.rs::send_message_handler and
+    server/src/ws.rs::route_message):
+        u64_be(len(recipient_id)) || recipient_id_bytes
+        || u64_be(len(message_id))   || message_id_bytes
+        || u64_be(len(payload_hex))  || payload_hex_bytes
+        || u64_be(len(sender_id))    || sender_id_bytes
+    Length-prefix encoding prevents field-boundary reinterpretation attacks.
+    The four-field canonical (recipient_id, message_id, payload_hex, sender_id)
+    is signed by the sender's Ed25519 identity key.
+    """
     r = recipient_id.encode()
     m = message_id.encode()
     p = payload_hex.encode()
+    s = sender_id.encode()
     out = bytearray()
     out.extend(struct.pack(">Q", len(r)))
     out.extend(r)
@@ -80,6 +93,8 @@ def _canonical_payload(recipient_id: str, message_id: str, payload_hex: str) -> 
     out.extend(m)
     out.extend(struct.pack(">Q", len(p)))
     out.extend(p)
+    out.extend(struct.pack(">Q", len(s)))
+    out.extend(s)
     return bytes(out)
 
 
@@ -93,8 +108,8 @@ def make_signed_envelope(
 ) -> Dict[str, Any]:
     """Create a signed, sealed envelope.
 
-    The signature covers ``SHA-512(canonical)`` where canonical is the
-    length-prefixed encoding of recipient_id, message_id, and payload_hex.
+    The signature covers the canonical payload directly (not SHA-512 of canonical).
+    The canonical payload includes recipient_id, message_id, payload_hex, and sender_id.
     ``timestamp`` and ``compressed`` are transport metadata and are NOT part
     of the signed canonical payload (see module docstring).
     """
@@ -105,14 +120,14 @@ def make_signed_envelope(
 
         timestamp = int(time.time())
 
-    canonical = _canonical_payload(recipient_id, message_id, payload_hex)
-    signing_hash = hashlib.sha512(canonical).digest()
-    signature = identity.sign(signing_hash)
+    sender_id = identity.public_key.hex()
+    canonical = _canonical_payload(recipient_id, message_id, payload_hex, sender_id)
+    signature = identity.sign(canonical)
 
     return {
         "recipient_id": recipient_id,
         "payload_hex": payload_hex,
-        "sender_id": identity.public_key.hex(),
+        "sender_id": sender_id,
         "timestamp": timestamp,
         "message_id": message_id,
         "signature_hex": signature.hex(),
@@ -126,12 +141,12 @@ def verify_signed_envelope(envelope: Dict[str, Any]) -> bool:
     Returns True if the signature is valid, False otherwise. Always call
     before processing.
 
-    The signature authenticates recipient_id, message_id, and payload_hex.
-    Age/freshness is deliberately NOT enforced here: delayed (offline-queued)
-    envelopes may carry creation timestamps far in the past and must still be
-    verifiable. Expiration is enforced server-side by the queue TTL, and
-    replay is prevented by message-ID deduplication plus client ratchet
-    sequence-number tracking.
+    The signature authenticates all four canonical fields: recipient_id,
+    message_id, payload_hex, and sender_id. Age/freshness is deliberately
+    NOT enforced here: delayed (offline-queued) envelopes may carry creation
+    timestamps far in the past and must still be verifiable. Expiration is
+    enforced server-side by the queue TTL, and replay is prevented by
+    message-ID deduplication plus client ratchet sequence-number tracking.
     """
     try:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -145,11 +160,13 @@ def verify_signed_envelope(envelope: Dict[str, Any]) -> bool:
         sender_id = bytes.fromhex(envelope["sender_id"])
         signature = bytes.fromhex(envelope["signature_hex"])
 
-        canonical = _canonical_payload(recipient_id, message_id, payload_hex)
-        signing_hash = hashlib.sha512(canonical).digest()
+        canonical = _canonical_payload(
+            recipient_id, message_id, payload_hex, envelope["sender_id"]
+        )
+        # Signature is over the canonical payload directly (not SHA-512 of canonical)
 
         vk = Ed25519PublicKey.from_public_bytes(sender_id)
-        vk.verify(signature, signing_hash)
+        vk.verify(signature, canonical)
 
         return True
     except (InvalidSignature, ValueError, KeyError, TypeError):

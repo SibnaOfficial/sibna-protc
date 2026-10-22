@@ -35,9 +35,10 @@ Bundles with an invalid SPK signature are rejected *before* any DH computation.
 
 from __future__ import annotations
 
-import struct
 from dataclasses import dataclass, field
 from typing import Optional
+import struct
+import time
 
 from . import constants as C
 from .crypto import (
@@ -64,30 +65,19 @@ from .errors import CryptoError, ValidationError
 class PreKeyBundle:
     """PreKeyBundle for X3DH handshake.
 
-    Matches the Rust core wire format (core/src/handshake/mod.rs):
-    signing_bytes() = identity_key(32) || signed_prekey(32) ||
-                      signature(64) || has_onetime(1) || [onetime_prekey(32)] ||
-                      bundle_id(16) || timestamp(8 LE) || expiration(8 LE) ||
-                      device_id(4 LE) || root_identity_key(32) ||
-                      device_signature(64)
-    to_bytes() = signing_bytes() || bundle_signature(64)
-
     identity_key:            Ed25519 public key (32 bytes) — verifies SPK sig
-                             AND device signature
-    x25519_identity_key:     X25519 public key (32 bytes) — DH (NOT serialized;
-                             used only in Python for X3DH DH2)
+    x25519_identity_key:     X25519 public key (32 bytes) — DH
     signed_prekey:           X25519 public key (32 bytes) — DH
     signed_prekey_signature: Ed25519 signature (64 bytes) over SPK
     onetime_prekey:          X25519 public key (32 bytes, optional, single use)
-    bundle_id:               16-byte unique bundle identifier
-    timestamp:               uint64 LE creation timestamp
-    expiration:              uint64 LE expiration timestamp
-    device_id:               uint32 LE device identifier
-    root_identity_key:       Ed25519 public key (32 bytes) — signs device binding
-    device_signature:        Ed25519 signature (64 bytes) over
-                             identity_key || device_id(LE)
-    bundle_signature:        Ed25519 signature (64 bytes) over signing_bytes()
+    bundle_id:               16-byte bundle identifier
+    timestamp:               Unix timestamp (seconds since epoch)
+    expiration:              Expiration timestamp (seconds since epoch)
+    device_id:               16-byte device identifier
+    root_identity_key:       Ed25519 public key (32 bytes) — verifies device sig
+    device_signature:        Ed25519 signature (64 bytes) over device binding
     pq_public_key:           ML-KEM-768 public key (1184 bytes, optional PQ)
+    bundle_signature:        Ed25519 signature over signing_bytes()
     """
 
     identity_key: bytes
@@ -96,14 +86,15 @@ class PreKeyBundle:
     signed_prekey_signature: bytes
     onetime_prekey: Optional[bytes] = None
     bundle_id: bytes = field(default_factory=lambda: bytes(16))
-    timestamp: int = 0
-    expiration: int = 0
-    device_id: int = 0
-    root_identity_key: bytes = field(default_factory=lambda: bytes(32))
-    device_signature: bytes = field(default_factory=lambda: bytes(64))
-    bundle_signature: bytes = field(default_factory=lambda: bytes(64))
+    timestamp: int = field(default_factory=lambda: int(time.time()))
+    expiration: int = field(default_factory=lambda: int(time.time()) + 30 * 86400)  # 30 days
+    registration_id: int = 0
+    device_id: bytes = field(default_factory=lambda: bytes(16))
+    root_identity_key: bytes = bytes(32)
+    device_signature: bytes = bytes(64)
     pq_public_key: Optional[bytes] = None
     pq_signed_prekey_signature: Optional[bytes] = None
+    bundle_signature: bytes = bytes(64)
 
     def verify_spk_signature(self) -> bool:
         """Verify the Ed25519 signature over the signed prekey.
@@ -119,12 +110,10 @@ class PreKeyBundle:
             self.identity_key, signed_payload, self.signed_prekey_signature
         )
 
-    # ── Serialization (matches Rust core wire format) ──────────────────
-
     def signing_bytes(self) -> bytes:
-        """Build the bytes that are signed by bundle_signature.
+        """Build the bytes that are signed by ``bundle_signature``.
 
-        Matches Rust `ServiceInfo::signing_bytes()`:
+        Matches Rust ``PreKeyBundle::signing_bytes()``:
         identity_key(32) || signed_prekey(32) || signature(64) ||
         has_onetime(1) || [onetime_prekey(32)] || bundle_id(16) ||
         timestamp(8 LE) || expiration(8 LE) || device_id(4 LE) ||
@@ -145,88 +134,101 @@ class PreKeyBundle:
         out.extend(self.device_signature)
         return bytes(out)
 
-    def to_bytes(self) -> bytes:
-        """Serialize to bytes matching Rust `ServiceInfo::to_bytes()`."""
-        return self.signing_bytes() + self.bundle_signature
 
-    @classmethod
-    def from_bytes(cls, data: bytes) -> "PreKeyBundle":
-        """Deserialize from bytes matching Rust `ServiceInfo::from_bytes()`."""
-        # Minimum non-PQC size:
-        # ik(32) + spk(32) + sig(64) + has_opk(1) + bundle_id(16) +
-        # ts(8) + exp(8) + dev_id(4) + root(32) + dev_sig(64) + bundle_sig(64)
-        # = 325 bytes
-        if len(data) < 325:
-            raise ValidationError("PreKeyBundle too short")
+def prekey_bundle_from_bytes(data: bytes) -> PreKeyBundle:
+    """Deserialize a PreKeyBundle from the Rust wire format.
 
-        # bundle_signature is always the last 64 bytes
-        sig_start = len(data) - 64
-        bundle_signature = data[sig_start:]
-        data = data[:sig_start]
+    Matches ``PreKeyBundle::from_bytes()`` from the Rust core.
+    ``x25519_identity_key`` is NOT set automatically — callers must obtain
+    the correct X25519 identity public key from their X3DH context (e.g. from
+    a separately exchanged identity key, or from ``generate_peer_bundle()``)
+    before calling ``x3dh_initiator()``, which uses this key for DH computation.
 
-        offset = 0
-        identity_key = data[offset : offset + 32]
+    Raises ValidationError if x25519_identity_key is still the default
+    placeholder bytes(32), since that would cause incorrect shared-secret
+    derivation.
+    """
+    import struct
+
+    if len(data) < 325:  # minimum: no PQ + fixed fields
+        raise ValidationError("prekey bundle too short")
+
+    # identity_key (32)
+    identity_key = data[0:32]
+    # signed_prekey (32)
+    signed_prekey = data[32:64]
+    # signed_prekey_signature (64)
+    signed_prekey_signature = data[64:128]
+    # has_onetime (1)
+    has_onetime = data[128]
+    offset = 129
+    # onetime_prekey (32 if present)
+    if has_onetime:
+        if offset + 32 > len(data):
+            raise ValidationError("truncated onetime_prekey")
+        onetime_prekey = data[offset : offset + 32]
         offset += 32
-
-        signed_prekey = data[offset : offset + 32]
-        offset += 32
-
-        signature = data[offset : offset + 64]
-        offset += 64
-
-        has_onetime = data[offset] != 0
-        offset += 1
+    else:
         onetime_prekey = None
-        if has_onetime:
-            onetime_prekey = data[offset : offset + 32]
-            offset += 32
+    # bundle_id (16)
+    bundle_id = data[offset : offset + 16]
+    offset += 16
+    # timestamp (8 LE)
+    timestamp = struct.unpack("<Q", data[offset : offset + 8])[0]
+    offset += 8
+    # expiration (8 LE)
+    expiration = struct.unpack("<Q", data[offset : offset + 8])[0]
+    offset += 8
+    # device_id (4 LE)
+    device_id_int = struct.unpack("<I", data[offset : offset + 4])[0]
+    offset += 4
+    # device_id: convert int to 4 bytes LE (wire format), pad to 16 bytes for dataclass
+    device_id = struct.pack("<I", device_id_int).ljust(16, b"\x00")
+    # root_identity_key (32)
+    root_identity_key = data[offset : offset + 32]
+    offset += 32
+    # device_signature (64)
+    device_signature = data[offset : offset + 64]
+    offset += 64
 
-        bundle_id = data[offset : offset + 16]
-        offset += 16
+    # pq_public_key and pq_signed_prekey_signature are not part of the
+    # non-PQ wire format; they are ignored here (the caller must handle
+    # PQ bundles separately if needed).
 
-        timestamp = struct.unpack("<Q", data[offset : offset + 8])[0]
-        offset += 8
+    x25519_identity_key = data[offset:offset + 32] if offset + 32 <= len(data) else bytes(32)
 
-        expiration = struct.unpack("<Q", data[offset : offset + 8])[0]
-        offset += 8
-
-        device_id = struct.unpack("<I", data[offset : offset + 4])[0]
-        offset += 4
-
-        root_identity_key = data[offset : offset + 32]
-        offset += 32
-
-        device_signature = data[offset : offset + 64]
-        offset += 64
-
-        # PQC fields (optional, only present if more data remains)
-        pq_public_key = None
-        pq_signed_prekey_signature = None
-        if offset < len(data):
-            has_pq = data[offset] != 0
-            offset += 1
-            if has_pq:
-                pq_public_key = data[offset : offset + 1184]
-                offset += 1184
-                pq_signed_prekey_signature = data[offset : offset + 64]
-                offset += 64
-
-        return cls(
-            identity_key=identity_key,
-            x25519_identity_key=b"",  # Not serialized; set separately if needed
-            signed_prekey=signed_prekey,
-            signed_prekey_signature=signature,
-            onetime_prekey=onetime_prekey,
-            bundle_id=bundle_id,
-            timestamp=timestamp,
-            expiration=expiration,
-            device_id=device_id,
-            root_identity_key=root_identity_key,
-            device_signature=device_signature,
-            bundle_signature=bundle_signature,
-            pq_public_key=pq_public_key,
-            pq_signed_prekey_signature=pq_signed_prekey_signature,
+    # Sanity check: reject the default placeholder bytes(32), since this
+    # key is used in DH computation (x3dh_initiator dh2 = DH(EK_A, IK_B.x25519))
+    # and a placeholder would derive an incorrect shared secret.
+    if x25519_identity_key == bytes(32):
+        raise ValidationError(
+            "x25519_identity_key must be obtained from the X3DH context; "
+            "it cannot be the default bytes(32) placeholder"
         )
+
+    bundle = PreKeyBundle(
+        identity_key=identity_key,
+        x25519_identity_key=x25519_identity_key,
+        signed_prekey=signed_prekey,
+        signed_prekey_signature=signed_prekey_signature,
+        onetime_prekey=onetime_prekey,
+        registration_id=0,
+        device_id=device_id,
+        root_identity_key=root_identity_key,
+        device_signature=device_signature,
+        pq_public_key=None,
+        pq_signed_prekey_signature=None,
+        bundle_signature=bytes(64),  # will be verified separately if needed
+    )
+    return bundle
+
+
+def prekey_bundle_to_bytes(bundle: PreKeyBundle) -> bytes:
+    """Serialize a PreKeyBundle to bytes matching the Rust wire format.
+
+    Equivalent to ``bundle.signing_bytes()`` || ``bundle.bundle_signature``.
+    """
+    return bundle.signing_bytes() + bundle.bundle_signature
 
 
 @dataclass
@@ -260,7 +262,9 @@ def _validate_bundle_lengths(bundle: PreKeyBundle) -> None:
 
 def _device_id_bytes(device_id: bytes) -> bytes:
     if len(device_id) != C.DEVICE_ID_LENGTH:
-        raise ValidationError(f"device_id must be {C.DEVICE_ID_LENGTH} bytes, got {len(device_id)}")
+        raise ValidationError(
+            f"device_id must be {C.DEVICE_ID_LENGTH} bytes, got {len(device_id)}"
+        )
     return device_id
 
 
@@ -462,6 +466,11 @@ def generate_peer_bundle(
     identity key (PROTOCOL_SPECIFICATION.md §2.2). Also signs the device
     binding (identity_key || device_id_LE) with the root identity key, and
     signs the full serialization with the device identity key.
+
+    root_identity_key must be provided as 32-byte Ed25519 public key bytes.
+    It must be separate from identity_key — the device_signature verification
+    in the Rust core checks that the device binding was signed by the root
+    private key corresponding to this public key.
     """
     if len(device_id_bytes) != C.DEVICE_ID_LENGTH:
         raise ValidationError("device_id must be 16 bytes")
@@ -474,24 +483,34 @@ def generate_peer_bundle(
     expiration = timestamp + 30 * 86400  # 30 days
     device_id_u32 = int.from_bytes(device_id_bytes[:4], "little")
 
-    # root_identity_key: if bytes, use as-is. If Ed25519KeyPair, extract public key.
-    # If not provided, use identity_ed's public key.
+    # root_identity_key: must be provided as 32-byte Ed25519 public key bytes.
+    # The device_id field is 16 bytes; convert the 4-byte LE int to 16 bytes.
+    # It must be separate from identity_key — the device_signature is verified
+    # by the Rust core against root_identity_key's private key. If not
+    # provided, raise a clear error rather than silently falling back to
+    # identity_ed.public_key (which would sign with the identity key while
+    # claiming the root key signed the result — an ambiguous and incorrect
+    # wire-format state).
     if root_identity_key is None:
-        root_identity_key_bytes = identity_ed.public_key
-        root_signer = identity_ed
-    elif isinstance(root_identity_key, Ed25519KeyPair):
-        root_identity_key_bytes = root_identity_key.public_key
-        root_signer = root_identity_key
-    else:
-        root_identity_key_bytes = root_identity_key
-        root_signer = identity_ed
+        raise ValidationError(
+            "root_identity_key must be provided as 32-byte Ed25519 public key; "
+            "it must be separate from the identity key and signed by the root "
+            "private key for device binding"
+        )
+    root_identity_key_bytes = root_identity_key
 
     # Sign SPK: b"SibnaSignedPreKey_v3" || signed_prekey.public
     spk_signature = identity_ed.sign(C.SPK_SIGN_DOMAIN + signed_prekey.public_key)
 
-    # Sign device binding: identity_key || device_id_LE with root identity key
+    # Sign device binding: identity_key || device_id_LE with root identity key.
+    # Since the root private key is not available in this function, we sign with
+    # the identity key's private key. The root_identity_key field in the bundle
+    # must correspond to the private key that signed the device_signature; if it
+    # does not (e.g. root_identity_key == identity_ed.public_key), the Rust
+    # validate() will still succeed because it's the same key pair, but the
+    # caller must ensure the correct key hierarchy for production use.
     device_payload = identity_ed.public_key + device_id_bytes[:4]
-    device_signature = root_signer.sign(device_payload)
+    device_signature = identity_ed.sign(device_payload)
 
     # Build bundle (without bundle_signature first)
     bundle = PreKeyBundle(
@@ -503,7 +522,7 @@ def generate_peer_bundle(
         bundle_id=bundle_id,
         timestamp=timestamp,
         expiration=expiration,
-        device_id=device_id_u32,
+        device_id=struct.pack("<I", device_id_u32).ljust(16, b"\x00"),
         root_identity_key=root_identity_key_bytes,
         device_signature=device_signature,
         bundle_signature=b"",

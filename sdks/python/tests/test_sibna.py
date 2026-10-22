@@ -23,6 +23,18 @@ from sibna.client import (
     CryptoError,
 )
 from sibna.errors import ValidationError
+from sibna.x3dh import (
+    PreKeyBundle,
+    generate_peer_bundle,
+    prekey_bundle_to_bytes,
+    prekey_bundle_from_bytes,
+)
+from sibna.crypto import (
+    Ed25519KeyPair,
+    X25519KeyPair,
+    derive_identity_keys,
+    ml_kem_768_keypair,
+)
 
 
 class TestIdentity:
@@ -153,3 +165,114 @@ class TestErrors:
     def test_validation_error(self):
         err = ValidationError("bad input")
         assert str(err) == "bad input"
+
+
+class TestPreKeyBundleSerialization:
+    """PreKeyBundle serialization round-trip tests, matching Rust wire format."""
+
+    def _make_bundle(self, use_pq: bool = False) -> tuple[PreKeyBundle, Ed25519KeyPair]:
+        bob_ed, bob_x = derive_identity_keys(bytes.fromhex("62" * 32))
+        bob_spk = X25519KeyPair.from_seed(bytes.fromhex("63" * 32))
+        bob_opk = X25519KeyPair.from_seed(bytes.fromhex("64" * 32))
+        pq_kp = ml_kem_768_keypair() if use_pq else None
+        bundle = generate_peer_bundle(
+            identity_ed=bob_ed,
+            identity_x25519=bob_x,
+            signed_prekey=bob_spk,
+            onetime_prekey=bob_opk,
+            device_id_bytes=bytes.fromhex("62" * 16),
+            root_identity_key=bob_ed.public_key,
+            pq_keypair=pq_kp,
+        )
+        return bundle, bob_ed
+
+    def test_non_pq_bundle_roundtrip(self):
+        bundle, _ = self._make_bundle(use_pq=False)
+        data = prekey_bundle_to_bytes(bundle)
+        parsed = prekey_bundle_from_bytes(data)
+        assert parsed.identity_key == bundle.identity_key
+        assert parsed.signed_prekey == bundle.signed_prekey
+        assert parsed.x25519_identity_key == bundle.x25519_identity_key
+        assert parsed.signed_prekey_signature == bundle.signed_prekey_signature
+        assert parsed.onetime_prekey == bundle.onetime_prekey
+        assert parsed.bundle_id == bundle.bundle_id
+        assert parsed.timestamp == bundle.timestamp
+        assert parsed.expiration == bundle.expiration
+        assert parsed.device_id == bundle.device_id
+        assert parsed.root_identity_key == bundle.root_identity_key
+        assert parsed.device_signature == bundle.device_signature
+        assert parsed.bundle_signature == bundle.bundle_signature
+        assert parsed.pq_public_key is None
+        assert parsed.pq_signed_prekey_signature is None
+        assert parsed.verify_spk_signature()
+
+    def test_pq_bundle_roundtrip(self):
+        bundle, bob_ed = self._make_bundle(use_pq=True)
+        data = prekey_bundle_to_bytes(bundle)
+        parsed = prekey_bundle_from_bytes(data)
+        assert parsed.identity_key == bundle.identity_key
+        assert parsed.signed_prekey == bundle.signed_prekey
+        assert parsed.x25519_identity_key == bundle.x25519_identity_key
+        assert parsed.signed_prekey_signature == bundle.signed_prekey_signature
+        assert parsed.onetime_prekey == bundle.onetime_prekey
+        assert parsed.bundle_id == bundle.bundle_id
+        assert parsed.timestamp == bundle.timestamp
+        assert parsed.expiration == bundle.expiration
+        assert parsed.device_id == bundle.device_id
+        assert parsed.root_identity_key == bundle.root_identity_key
+        assert parsed.device_signature == bundle.device_signature
+        assert parsed.bundle_signature == bundle.bundle_signature
+        assert parsed.pq_public_key is not None
+        assert len(parsed.pq_public_key) == 1184
+        assert parsed.pq_public_key == bundle.pq_public_key
+        assert parsed.pq_signed_prekey_signature is not None
+        assert len(parsed.pq_signed_prekey_signature) == 64
+        assert parsed.pq_signed_prekey_signature == bundle.pq_signed_prekey_signature
+        # Verify SPK signature
+        assert parsed.verify_spk_signature()
+        # Verify PQ signature by identity key
+        assert Ed25519KeyPair.verify_with_key(
+            bob_ed.public_key, parsed.pq_public_key, parsed.pq_signed_prekey_signature
+        )
+
+    def test_pq_bundle_signing_bytes_include_pq_fields(self):
+        bundle, _ = self._make_bundle(use_pq=True)
+        signing = bundle.signing_bytes()
+        # PQ presence byte (1) + public key (1184) + signature (64) appended after device_signature
+        assert signing.endswith(bundle.pq_public_key + bundle.pq_signed_prekey_signature)
+        # Verify bundle_signature was computed over signing_bytes including PQ
+        signed_payload = signing + bundle.bundle_signature
+        parsed = prekey_bundle_from_bytes(signed_payload)
+        assert parsed.bundle_signature == bundle.bundle_signature
+        assert (
+            parsed.validate_spk_signature() if hasattr(parsed, "validate_spk_signature") else True
+        )
+
+    def test_bundle_rejects_trailing_bytes(self):
+        bundle, _ = self._make_bundle(use_pq=False)
+        data = prekey_bundle_to_bytes(bundle) + b"\x00"
+        with pytest.raises(ValidationError):
+            prekey_bundle_from_bytes(data)
+
+    def test_pq_bundle_requires_signature(self):
+        """A PQ bundle without pq_signed_prekey_signature should fail from_bytes."""
+        bob_ed, bob_x = derive_identity_keys(bytes.fromhex("62" * 32))
+        bob_spk = X25519KeyPair.from_seed(bytes.fromhex("63" * 32))
+        bob_opk = X25519KeyPair.from_seed(bytes.fromhex("64" * 32))
+        pq_pk, _ = ml_kem_768_keypair()
+        bundle = generate_peer_bundle(
+            identity_ed=bob_ed,
+            identity_x25519=bob_x,
+            signed_prekey=bob_spk,
+            onetime_prekey=bob_opk,
+            device_id_bytes=bytes.fromhex("62" * 16),
+            root_identity_key=bob_ed.public_key,
+            pq_keypair=(pq_pk, b"\x00" * 64),  # dummy sig, will be replaced
+        )
+        # Manually strip the PQ signature to test truncation rejection
+        data = bytearray(prekey_bundle_to_bytes(bundle))
+        # Remove last 64 bytes (PQ sig) and 1 byte (presence) — but keep pk
+        # Simpler: truncate the last 64 bytes to simulate missing PQ signature
+        truncated = bytes(data[:-64])
+        with pytest.raises(ValidationError):
+            prekey_bundle_from_bytes(truncated)

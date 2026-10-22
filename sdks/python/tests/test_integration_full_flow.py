@@ -72,7 +72,8 @@ from sibna import (
     derive_identity_keys,
     generate_peer_bundle,
 )
-from sibna.x3dh import prekey_bundle_to_bytes, prekey_bundle_from_bytes
+from sibna.x3dh import prekey_bundle_to_bytes, prekey_bundle_from_bytes, x3dh_initiator
+from sibna.crypto import ml_kem_768_keypair
 from sibna.envelope import make_signed_envelope, verify_signed_envelope
 from sibna.errors import AuthError, NetworkError
 
@@ -509,6 +510,69 @@ class TestFullFlowHTTP:
         ct2 = bytes.fromhex(ciphertexts[1])
         pt2 = bob_session.decrypt(ct2, associated_data=b"ooo")
         assert pt2 == messages[1], f"Out-of-order decrypt failed: {pt2}"
+
+    def test_hybrid_pq_x3dh_roundtrip(self):
+        """Hybrid X3DH: Alice encapsulates ML-KEM-768, Bob decapsulates; shared secrets match.
+
+        Uses the existing Session API with use_pq=True on the initiator side
+        and our_pq_secret_key/peer_pq_ciphertext on the responder side.
+        Does NOT claim the message flow is post-quantum — the X3DH DH shared
+        secret still dominates; the ML-KEM component is mixed in via HKDF.
+        """
+        alice_ed, alice_x = derive_identity_keys(ALICE_SEED)
+        bob_ed, bob_x = derive_identity_keys(BOB_SEED)
+        bob_spk = X25519KeyPair.from_seed(bytes.fromhex("63" * 32))
+        bob_opk = X25519KeyPair.from_seed(bytes.fromhex("64" * 32))
+        bob_pq_pk, bob_pq_sk = ml_kem_768_keypair()
+
+        bob_bundle = generate_peer_bundle(
+            identity_ed=bob_ed,
+            identity_x25519=bob_x,
+            signed_prekey=bob_spk,
+            onetime_prekey=bob_opk,
+            device_id_bytes=bytes.fromhex("62" * 16),
+            root_identity_key=bob_ed.public_key,
+            pq_keypair=(bob_pq_pk, bob_pq_sk),
+        )
+
+        # Alice: X3DH initiator with PQ — encapsulates ML-KEM-768 ciphertext
+        alice_ephemeral = X25519KeyPair()
+        result = x3dh_initiator(
+            identity_keypair=alice_x,
+            ephemeral_keypair=alice_ephemeral,
+            peer_bundle=bob_bundle,
+            our_device_id=bytes.fromhex("61" * 16),
+            peer_device_id=bytes.fromhex("62" * 16),
+            use_pq=True,
+        )
+        assert result.pq_ciphertext is not None, "PQ ciphertext must be present for hybrid mode"
+
+        alice_session = Session.from_shared_secret(
+            shared_secret=result.shared_secret,
+            local_dh_private=alice_ephemeral.private_key_bytes,
+            remote_dh_public=bob_bundle.signed_prekey,
+            role_is_initiator=True,
+        )
+
+        # Bob: X3DH responder with PQ decapsulation
+        bob_session = Session()
+        bob_session.initiate_as_responder(
+            identity=bob_x,
+            signed_prekey=bob_spk,
+            onetime_prekey=bob_opk,
+            peer_identity=alice_x.public_key,
+            peer_ephemeral=alice_ephemeral.public_key,
+            our_device_id=bytes.fromhex("62" * 16),
+            peer_device_id=bytes.fromhex("61" * 16),
+            our_pq_secret_key=bob_pq_sk,
+            peer_pq_ciphertext=result.pq_ciphertext,
+        )
+
+        # Verify both sides derive matching shared secrets
+        plaintext = b"Hybrid PQ X3DH shared secret matches"
+        alice_ct = alice_session.encrypt(plaintext, associated_data=b"pq-hybrid")
+        bob_decrypted = bob_session.decrypt(alice_ct, associated_data=b"pq-hybrid")
+        assert bob_decrypted == plaintext
 
 
 class TestWebSocketFlow:

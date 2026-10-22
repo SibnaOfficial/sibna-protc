@@ -276,6 +276,9 @@ def prekey_bundle_from_bytes(data: bytes) -> PreKeyBundle:
         pq_public_key=pq_public_key,
         pq_signed_prekey_signature=pq_signed_prekey_signature,
         bundle_signature=bundle_signature,
+        bundle_id=bundle_id,
+        timestamp=timestamp,
+        expiration=expiration,
     )
     return bundle
 

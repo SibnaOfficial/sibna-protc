@@ -72,6 +72,7 @@ from sibna import (
     derive_identity_keys,
     generate_peer_bundle,
 )
+from sibna.x3dh import prekey_bundle_to_bytes, prekey_bundle_from_bytes
 from sibna.envelope import make_signed_envelope, verify_signed_envelope
 from sibna.errors import AuthError, NetworkError
 
@@ -306,7 +307,7 @@ class TestFullFlowHTTP:
         bob_spk = X25519KeyPair.from_seed(bytes.fromhex("63" * 32))
         bob_opk = X25519KeyPair.from_seed(bytes.fromhex("64" * 32))
         bob_bundle = _make_bob_prekey_bundle()
-        bundle_hex = bob_bundle.to_bytes().hex()
+        bundle_hex = prekey_bundle_to_bytes(bob_bundle).hex()
         bob.upload_prekey(bundle_hex)
 
         # ── Alice fetches Bob's prekeys ──
@@ -314,7 +315,7 @@ class TestFullFlowHTTP:
         assert len(fetched) > 0, "No prekeys fetched for Bob"
 
         # Parse the fetched bundle back into a Python PreKeyBundle
-        fetched_bundle = PreKeyBundle.from_bytes(bytes.fromhex(fetched[0]))
+        fetched_bundle = prekey_bundle_from_bytes(bytes.fromhex(fetched[0]))
         assert fetched_bundle.verify_spk_signature(), "Fetched bundle SPK signature invalid"
 
         # ── Alice establishes X3DH session with Bob ──
@@ -374,7 +375,7 @@ class TestFullFlowHTTP:
         bob_spk = X25519KeyPair.from_seed(bytes.fromhex("63" * 32))
         bob_opk = X25519KeyPair.from_seed(bytes.fromhex("64" * 32))
         bob_bundle = _make_bob_prekey_bundle()
-        bob.upload_prekey(bob_bundle.to_bytes().hex())
+        bob.upload_prekey(prekey_bundle_to_bytes(bob_bundle).hex())
 
         # ── Alice establishes session and sends ──
         alice_session, alice_ephemeral_pub = _alice_x3dh_with_bob(bob_bundle)
@@ -420,7 +421,7 @@ class TestFullFlowHTTP:
         bob_spk = X25519KeyPair.from_seed(bytes.fromhex("63" * 32))
         bob_opk = X25519KeyPair.from_seed(bytes.fromhex("64" * 32))
         bob_bundle = _make_bob_prekey_bundle()
-        bob.upload_prekey(bob_bundle.to_bytes().hex())
+        bob.upload_prekey(prekey_bundle_to_bytes(bob_bundle).hex())
 
         alice_session, alice_ephemeral_pub = _alice_x3dh_with_bob(bob_bundle)
         plaintext = b"Replay test message"
@@ -468,7 +469,7 @@ class TestFullFlowHTTP:
         bob_spk = X25519KeyPair.from_seed(bytes.fromhex("63" * 32))
         bob_opk = X25519KeyPair.from_seed(bytes.fromhex("64" * 32))
         bob_bundle = _make_bob_prekey_bundle()
-        bob.upload_prekey(bob_bundle.to_bytes().hex())
+        bob.upload_prekey(prekey_bundle_to_bytes(bob_bundle).hex())
 
         alice_session, alice_ephemeral_pub = _alice_x3dh_with_bob(bob_bundle)
 
@@ -529,7 +530,7 @@ class TestWebSocketFlow:
         bob_spk = X25519KeyPair.from_seed(bytes.fromhex("63" * 32))
         bob_opk = X25519KeyPair.from_seed(bytes.fromhex("64" * 32))
         bob_bundle = _make_bob_prekey_bundle()
-        bob.upload_prekey(bob_bundle.to_bytes().hex())
+        bob.upload_prekey(prekey_bundle_to_bytes(bob_bundle).hex())
 
         # Alice establishes X3DH session with Bob
         alice_session, alice_ephemeral_pub = _alice_x3dh_with_bob(bob_bundle)

@@ -38,7 +38,11 @@ pub struct SealedEnvelope {
     pub message_id: String,
     /// Timestamp (unix seconds)
     pub timestamp: i64,
-    /// Ed25519 signature of (recipient_id + message_id + payload_hex) signed by sender's identity key.
+    /// Sender identity key hex (32 bytes = 64 hex chars). Part of the signed
+    /// canonical payload so the sender is authenticated.
+    pub sender_id: String,
+    /// Ed25519 signature of (recipient_id + message_id + payload_hex + sender_id)
+    /// signed by sender's identity key.
     /// Hex-encoded, 64 bytes. Required for message authenticity.
     pub signature_hex: String,
 }
@@ -269,20 +273,24 @@ async fn route_message(state: &AppState, sender_id: &str, mut envelope: SealedEn
         use std::io::Write;
 
         let mut canonical: Vec<u8> = Vec::with_capacity(
-            3 * 8
+            4 * 8
                 + envelope.recipient_id.len()
                 + envelope.message_id.len()
-                + envelope.payload_hex.len(),
+                + envelope.payload_hex.len()
+                + envelope.sender_id.len(),
         );
         let r = envelope.recipient_id.as_bytes();
         let m = envelope.message_id.as_bytes();
         let p = envelope.payload_hex.as_bytes();
+        let s = envelope.sender_id.as_bytes();
         canonical.write_all(&(r.len() as u64).to_be_bytes()).ok();
         canonical.write_all(r).ok();
         canonical.write_all(&(m.len() as u64).to_be_bytes()).ok();
         canonical.write_all(m).ok();
         canonical.write_all(&(p.len() as u64).to_be_bytes()).ok();
         canonical.write_all(p).ok();
+        canonical.write_all(&(s.len() as u64).to_be_bytes()).ok();
+        canonical.write_all(s).ok();
 
         let key_bytes = match hex::decode(sender_id) {
             Ok(b) if b.len() == 32 => b,

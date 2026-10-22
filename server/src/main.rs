@@ -575,12 +575,18 @@ async fn delete_prekey_handler(
 
 #[derive(Deserialize)]
 struct SendMessageRequest {
-    /// Recipient identity_key hex
+    /// Recipient identity_key hex (32 bytes = 64 hex chars)
     recipient_id: String,
     /// Encrypted payload (hex) — server cannot read
     payload_hex: String,
+    /// Sender identity_key hex (32 bytes = 64 hex chars) — must match JWT subject
+    sender_id: String,
+    /// Ed25519 signature over canonical payload (recipient_id + message_id + payload_hex + sender_id)
+    signature_hex: String,
     /// LZ4 compressed?
     compressed: Option<bool>,
+    /// Unique message ID for deduplication
+    message_id: Option<String>,
 }
 
 async fn send_message_handler(
@@ -594,22 +600,107 @@ async fn send_message_handler(
         return r;
     }
 
+    // Validate that the sender_id in the request matches the authenticated JWT subject.
+    if req.sender_id != claims.sub {
+        return (
+            StatusCode::FORBIDDEN,
+            "Sender ID does not match authenticated JWT subject",
+        )
+            .into_response();
+    }
+
+    // Validate message_id
+    let message_id = req.message_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if message_id.is_empty() || message_id.len() > 128 {
+        return (StatusCode::BAD_REQUEST, "Invalid message_id").into_response();
+    }
+
+    // Validate recipient_id format (64 hex chars = 32-byte key)
+    if req.recipient_id.len() != 64 || !req.recipient_id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return (StatusCode::BAD_REQUEST, "Invalid recipient_id").into_response();
+    }
+
+    // Validate sender_id format (64 hex chars = 32-byte key)
+    if req.sender_id.len() != 64 || !req.sender_id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return (StatusCode::BAD_REQUEST, "Invalid sender_id").into_response();
+    }
+
+    // Validate payload_hex size (20 MB hex = 10 MB payload)
+    const MAX_PAYLOAD_HEX_LEN: usize = 20 * 1024 * 1024;
+    if req.payload_hex.len() > MAX_PAYLOAD_HEX_LEN {
+        return (StatusCode::BAD_REQUEST, "Payload too large").into_response();
+    }
+
+    // Verify Ed25519 signature over canonical payload.
+    // Canonical = u64_be(len)||recipient_id || u64_be(len)||message_id ||
+    //             u64_be(len)||payload_hex || u64_be(len)||sender_id
+    {
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+        use std::io::Write;
+
+        let mut canonical: Vec<u8> = Vec::with_capacity(
+            4 * 8
+                + req.recipient_id.len()
+                + message_id.len()
+                + req.payload_hex.len()
+                + req.sender_id.len(),
+        );
+        let r = req.recipient_id.as_bytes();
+        let m = message_id.as_bytes();
+        let p = req.payload_hex.as_bytes();
+        let s = req.sender_id.as_bytes();
+        canonical.write_all(&(r.len() as u64).to_be_bytes()).ok();
+        canonical.write_all(r).ok();
+        canonical.write_all(&(m.len() as u64).to_be_bytes()).ok();
+        canonical.write_all(m).ok();
+        canonical.write_all(&(p.len() as u64).to_be_bytes()).ok();
+        canonical.write_all(p).ok();
+        canonical.write_all(&(s.len() as u64).to_be_bytes()).ok();
+        canonical.write_all(s).ok();
+
+        let key_bytes = match hex::decode(&req.sender_id) {
+            Ok(b) if b.len() == 32 => b,
+            _ => return (StatusCode::BAD_REQUEST, "Invalid sender_id hex").into_response(),
+        };
+        let key_arr: [u8; 32] = match key_bytes.try_into() {
+            Ok(a) => a,
+            _ => return (StatusCode::BAD_REQUEST, "Invalid sender_id length").into_response(),
+        };
+        let verifying_key = match VerifyingKey::from_bytes(&key_arr) {
+            Ok(k) => k,
+            _ => return (StatusCode::BAD_REQUEST, "Invalid Ed25519 public key").into_response(),
+        };
+        let sig_bytes = match hex::decode(&req.signature_hex) {
+            Ok(b) if b.len() == 64 => b,
+            _ => return (StatusCode::BAD_REQUEST, "Invalid signature hex").into_response(),
+        };
+        let sig_arr: [u8; 64] = match sig_bytes.try_into() {
+            Ok(a) => a,
+            _ => return (StatusCode::BAD_REQUEST, "Invalid signature length").into_response(),
+        };
+        let signature = Signature::from_bytes(&sig_arr);
+        if verifying_key.verify(&canonical, &signature).is_err() {
+            return (StatusCode::UNAUTHORIZED, "Signature verification failed").into_response();
+        }
+    }
+
+    let timestamp = chrono::Utc::now().timestamp();
+
     let envelope = ws::SealedEnvelope {
         recipient_id: req.recipient_id.clone(),
         payload_hex: req.payload_hex,
         compressed: req.compressed.unwrap_or(false),
-        message_id: uuid::Uuid::new_v4().to_string(),
-        timestamp: chrono::Utc::now().timestamp(),
-        // HTTP REST fallback — no client-side signature required on this path.
-        // Only WS connections enforce Ed25519 message signing.
-        signature_hex: String::new(),
+        message_id,
+        timestamp,
+        sender_id: req.sender_id.clone(),
+        signature_hex: req.signature_hex.clone(),
     };
 
     // Try to push to connected WebSocket client
-    if let Some(client_tx) = state.rt.clients.get(&req.recipient_id) {
-        if let Ok(data) = serde_json::to_vec(&envelope) {
+    if let Some(client_tx) = state.rt.clients.get(&envelope.recipient_id) {
+        if let Ok(data) = serde_json::to_vec(&ws::WsMessage::Envelope(envelope.clone())) {
             if client_tx.send(data).is_ok() {
-                info!("Message delivered live to {}", &req.recipient_id[..16]);
+                info!("Message delivered live to {}", &envelope.recipient_id[..16]);
                 return StatusCode::OK.into_response();
             }
         }
@@ -623,7 +714,7 @@ async fn send_message_handler(
         state.db.tree_queue.insert(db_key.as_bytes(), bytes).ok();
         info!(
             "Message queued for offline recipient {}",
-            req.recipient_id.get(..16).unwrap_or(&req.recipient_id)
+            envelope.recipient_id.get(..16).unwrap_or(&envelope.recipient_id)
         );
     }
 

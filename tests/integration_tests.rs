@@ -755,16 +755,9 @@ async fn test_mdns_browse_receiver_drop() {
         tokio::time::timeout(std::time::Duration::from_secs(10), browser2.recv()).await;
 
     let peer = match discovered {
-        Ok(peer_result) => match peer_result {
-            Ok(peer) => peer,
-            Err(_) => {
-                eprintln!("TEST: Second browse channel error before discovery");
-                eprintln!("TEST: Receiver-drop lifecycle test completed (multicast unavailable)");
-                return;
-            }
-        },
-        Err(_) => {
-            eprintln!("TEST: Second browse timed out (multicast unavailable)");
+        Ok(Some(peer)) => peer,
+        Ok(None) | Err(_) => {
+            eprintln!("TEST: Second browse timed out or channel closed (multicast unavailable)");
             eprintln!("TEST: Receiver-drop lifecycle test completed (multicast unavailable)");
             return;
         }
@@ -783,7 +776,6 @@ async fn test_mdns_browse_receiver_drop() {
     assert_eq!(peer.addr.port(), node_a.local_addr().port());
 
     eprintln!("TEST: Receiver-drop regression test completed without hang");
-}
 }
 
 /// Regression test: dropping `P2pNode` while discovery is active must stop the

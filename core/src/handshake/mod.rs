@@ -197,6 +197,8 @@ pub struct PreKeyBundle {
     pub signed_prekey: [u8; 32],
     /// Signature of signed prekey
     pub signature: [u8; 64],
+    /// Peer's X25519 identity public key (authenticated by bundle signature)
+    pub x25519_identity_key: [u8; 32],
     /// One-time prekey (optional, X25519 public key)
     pub onetime_prekey: Option<[u8; 32]>,
     /// Unique identifier for this bundle
@@ -230,6 +232,7 @@ impl PreKeyBundle {
         identity_key: [u8; 32],
         signed_prekey: [u8; 32],
         signature: [u8; 64],
+        x25519_identity_key: [u8; 32],
         onetime_prekey: Option<[u8; 32]>,
         device_id: u32,
         root_identity_key: [u8; 32],
@@ -254,6 +257,7 @@ impl PreKeyBundle {
             identity_key,
             signed_prekey,
             signature,
+            x25519_identity_key,
             onetime_prekey,
             bundle_id,
             timestamp,
@@ -289,9 +293,10 @@ impl PreKeyBundle {
 
     /// Get bytes for signing/verifying the bundle
     pub fn signing_bytes(&self) -> Vec<u8> {
-        let mut result = Vec::with_capacity(200);
+        let mut result = Vec::with_capacity(232);
         result.extend_from_slice(&self.identity_key);
         result.extend_from_slice(&self.signed_prekey);
+        result.extend_from_slice(&self.x25519_identity_key);
         result.extend_from_slice(&self.signature);
         result.push(self.onetime_prekey.is_some() as u8);
         if let Some(ref opk) = self.onetime_prekey {
@@ -403,8 +408,8 @@ impl PreKeyBundle {
     /// Deserialize from bytes
     #[allow(unused_variables, unused_assignments)]
     pub fn from_bytes(data: &[u8]) -> ProtocolResult<Self> {
-        // Minimum non-PQC size: ik(32)+spk(32)+sig(64)+has_opk(1)+bundle_id(16)+ts(8)+exp(8)+dev_id(4)+root(32)+dev_sig(64)+bundle_sig(64) = 325 bytes
-        if data.len() < 325 {
+        // Minimum non-PQC size: ik(32)+spk(32)+x25519_ik(32)+sig(64)+has_opk(1)+bundle_id(16)+ts(8)+exp(8)+dev_id(4)+root(32)+dev_sig(64)+bundle_sig(64) = 357 bytes
+        if data.len() < 357 {
             return Err(ProtocolError::InvalidMessage);
         }
 
@@ -428,6 +433,10 @@ impl PreKeyBundle {
         let mut signature = [0u8; 64];
         signature.copy_from_slice(&data[offset..offset + 64]);
         offset += 64;
+
+        let x25519_identity_key = [0u8; 32];
+        x25519_identity_key.copy_from_slice(&data[offset..offset + 32]);
+        offset += 32;
 
         let has_onetime = data[offset] != 0;
         offset += 1;
@@ -512,6 +521,7 @@ impl PreKeyBundle {
             identity_key,
             signed_prekey,
             signature,
+            x25519_identity_key,
             onetime_prekey,
             bundle_id,
             timestamp,

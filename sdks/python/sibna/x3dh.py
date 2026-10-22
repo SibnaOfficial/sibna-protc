@@ -114,14 +114,15 @@ class PreKeyBundle:
         """Build the bytes that are signed by ``bundle_signature``.
 
         Matches Rust ``PreKeyBundle::signing_bytes()``:
-        identity_key(32) || signed_prekey(32) || signature(64) ||
-        has_onetime(1) || [onetime_prekey(32)] || bundle_id(16) ||
+        identity_key(32) || signed_prekey(32) || x25519_identity_key(32) ||
+        signature(64) || has_onetime(1) || [onetime_prekey(32)] || bundle_id(16) ||
         timestamp(8 LE) || expiration(8 LE) || device_id(4 LE) ||
         root_identity_key(32) || device_signature(64)
         """
         out = bytearray()
         out.extend(self.identity_key)
         out.extend(self.signed_prekey)
+        out.extend(self.x25519_identity_key)
         out.extend(self.signed_prekey_signature)
         out.extend(struct.pack(">?", self.onetime_prekey is not None))
         if self.onetime_prekey is not None:

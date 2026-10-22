@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use rand_core::OsRng;
+use rand::rngs::OsRng;
 
 #[derive(Serialize, Deserialize)]
 struct Claims {
@@ -193,7 +193,7 @@ async fn test_aggressive_queue_flood_stress() {
     // Generate Alice's Ed25519 key pair for signing and JWT auth
     let alice_sk = SigningKey::generate(&mut OsRng);
     let alice_vk = alice_sk.verifying_key();
-    let alice_id_hex = alice_vk.to_bytes().hex();
+    let alice_id_hex = hex::encode(alice_vk.to_bytes());
     let alice_token = create_mock_jwt(&alice_id_hex, secret);
 
     // Bob's identity for recipient
@@ -212,7 +212,7 @@ async fn test_aggressive_queue_flood_stress() {
             "payload_hex": "aabbcc".repeat(100),
             "message_id": format!("msg_{}", i),
             "sender_id": alice_id_hex,
-            "signature_hex": alice_vk.to_bytes().hex(),
+            "signature_hex": hex::encode(alice_vk.to_bytes()),
         });
 
         let res = client
@@ -317,7 +317,7 @@ async fn test_delayed_queue_delivery_and_ack() {
         "payload_hex": "deadbeef",
         "compressed": false,
         "sender_id": alice_id_hex,
-        "signature_hex": alice_vk.to_bytes().hex(),
+        "signature_hex": hex::encode(alice_vk.to_bytes()),
     });
     let res = client
         .post(&url)

@@ -160,9 +160,7 @@ def verify_signed_envelope(envelope: Dict[str, Any]) -> bool:
         sender_id = bytes.fromhex(envelope["sender_id"])
         signature = bytes.fromhex(envelope["signature_hex"])
 
-        canonical = _canonical_payload(
-            recipient_id, message_id, payload_hex, envelope["sender_id"]
-        )
+        canonical = _canonical_payload(recipient_id, message_id, payload_hex, envelope["sender_id"])
         # Signature is over the canonical payload directly (not SHA-512 of canonical)
 
         vk = Ed25519PublicKey.from_public_bytes(sender_id)

@@ -1,5 +1,4 @@
 use futures_util::{SinkExt, StreamExt};
-use hex;
 use jsonwebtoken::{encode, EncodingKey, Header};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -74,17 +73,17 @@ async fn spawn_test_server(jwt_secret: &str) -> SocketAddr {
     let test_token = create_mock_jwt(&test_id_hex, jwt_secret);
     let _test_url = format!("http://{}/v1/messages/send", addr);
     let _test_req = json!({
-        "recipient_id": hex::encode(&[0u8; 32]),
+        "recipient_id": hex::encode([0u8; 32]),
         "payload_hex": "deadbeef",
         "compressed": false,
     });
     let _test_client = reqwest::Client::new();
     for _ in 0..30 {
         if let Ok(test_resp) = _test_client
-            .post(&format!("http://{}/v1/messages/send", addr))
+            .post(format!("http://{}/v1/messages/send", addr))
             .header("Authorization", format!("Bearer {}", test_token))
             .json(&json!({
-                "recipient_id": hex::encode(&[0u8; 32]),
+                "recipient_id": hex::encode([0u8; 32]),
                 "payload_hex": "deadbeef",
                 "compressed": false,
             }))

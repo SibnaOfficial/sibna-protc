@@ -471,7 +471,7 @@ pub fn probe_multicast_availability() -> P2pResult<()> {
                     std::io::ErrorKind::Other,
                     "mDNS multicast appears to be unavailable on this network: \
                      no ServiceResolved event for probe service within 2s",
-                )))
+                )));
             }
             Err(flume::RecvTimeoutError::Disconnected) => {
                 // Clean up on disconnect
@@ -481,7 +481,7 @@ pub fn probe_multicast_availability() -> P2pResult<()> {
                 return Err(P2pError::Io(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     "mDNS probe: channel disconnected",
-                )))
+                )));
             }
         }
     }

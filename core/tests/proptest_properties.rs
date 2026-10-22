@@ -96,9 +96,9 @@ proptest! {
         ad in any::<Vec<u8>>().prop_filter("len <= 256", |v| v.len() <= 256),
     ) {
         let shared_secret = [0x42u8; 32];
-        let sk1 = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let sk1 = StaticSecret::random_from_rng(rand_core::OsRng);
         let pk1 = PublicKey::from(&sk1);
-        let sk2 = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let sk2 = StaticSecret::random_from_rng(rand_core::OsRng);
         let pk2 = PublicKey::from(&sk2);
 
         let s1 = DoubleRatchetSession::from_shared_secret(
@@ -121,9 +121,9 @@ proptest! {
         use sibna_core::error::ProtocolError;
 
         let shared_secret = [0x42u8; 32];
-        let sk1 = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let sk1 = StaticSecret::random_from_rng(rand_core::OsRng);
         let pk1 = PublicKey::from(&sk1);
-        let sk2 = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let sk2 = StaticSecret::random_from_rng(rand_core::OsRng);
         let pk2 = PublicKey::from(&sk2);
 
         let s1 = DoubleRatchetSession::from_shared_secret(
@@ -148,9 +148,9 @@ proptest! {
         ),
     ) {
         let shared_secret = [0x42u8; 32];
-        let sk1 = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let sk1 = StaticSecret::random_from_rng(rand_core::OsRng);
         let pk1 = PublicKey::from(&sk1);
-        let sk2 = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let sk2 = StaticSecret::random_from_rng(rand_core::OsRng);
         let pk2 = PublicKey::from(&sk2);
 
         let s1 = DoubleRatchetSession::from_shared_secret(
@@ -177,9 +177,9 @@ proptest! {
         num_messages in 0..20usize,
     ) {
         let shared_secret = [0x42u8; 32];
-        let sk1 = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let sk1 = StaticSecret::random_from_rng(rand_core::OsRng);
         let pk1 = PublicKey::from(&sk1);
-        let sk2 = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let sk2 = StaticSecret::random_from_rng(rand_core::OsRng);
         let pk2 = PublicKey::from(&sk2);
 
         let s1 = DoubleRatchetSession::from_shared_secret(
@@ -211,13 +211,15 @@ proptest! {
     ) {
         use sibna_core::error::ProtocolError;
 
-        let mut config = Config::default();
-        config.max_skipped_messages = 100;
+        let config = Config {
+            max_skipped_messages: 100,
+            ..Default::default()
+        };
 
         let shared_secret = [0x42u8; 32];
-        let sk1 = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let sk1 = StaticSecret::random_from_rng(rand_core::OsRng);
         let pk1 = PublicKey::from(&sk1);
-        let sk2 = StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let sk2 = StaticSecret::random_from_rng(rand_core::OsRng);
         let pk2 = PublicKey::from(&sk2);
 
         let s1 = DoubleRatchetSession::from_shared_secret(

@@ -474,15 +474,16 @@ def generate_peer_bundle(
     expiration = timestamp + 30 * 86400  # 30 days
     device_id_u32 = int.from_bytes(device_id_bytes[:4], "little")
 
-    # root_identity_key: if bytes, convert to Ed25519KeyPair for signing.
-    # If not provided, use identity_ed.
+    # root_identity_key: if bytes, use as-is. If Ed25519KeyPair, extract public key.
+    # If not provided, use identity_ed's public key.
     if root_identity_key is None:
+        root_identity_key_bytes = identity_ed.public_key
         root_signer = identity_ed
     elif isinstance(root_identity_key, Ed25519KeyPair):
+        root_identity_key_bytes = root_identity_key.public_key
         root_signer = root_identity_key
     else:
-        # bytes: cannot sign with public key only; use identity_ed as fallback
-        # but record the public key bytes in the bundle
+        root_identity_key_bytes = root_identity_key
         root_signer = identity_ed
 
     # Sign SPK: b"SibnaSignedPreKey_v3" || signed_prekey.public
@@ -503,7 +504,7 @@ def generate_peer_bundle(
         timestamp=timestamp,
         expiration=expiration,
         device_id=device_id_u32,
-        root_identity_key=root_identity_key,
+        root_identity_key=root_identity_key_bytes,
         device_signature=device_signature,
         bundle_signature=b"",
     )

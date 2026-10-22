@@ -1,0 +1,618 @@
+diff --git a/core/Cargo.toml b/core/Cargo.toml
+index c39f584..73c4f8a 100644
+--- a/core/Cargo.toml
++++ b/core/Cargo.toml
+@@ -94,6 +94,7 @@ if-addrs = { workspace = true, optional = true }
+ igd = { workspace = true, optional = true }
+ stun = { workspace = true, optional = true }
+ hex = "0.4.3"
++flume = "0.11"
+ lz4_flex = { workspace = true }
+ chrono = { version = "0.4", features = ["serde"] }
+ 
+diff --git a/core/src/p2p/discovery.rs b/core/src/p2p/discovery.rs
+index bc62a2f..3e79bfd 100644
+--- a/core/src/p2p/discovery.rs
++++ b/core/src/p2p/discovery.rs
+@@ -11,10 +11,14 @@
+ //! every restart.  This prevents cross-session tracking by passive LAN observers.
+ //! The real peer identity is only exchanged during the encrypted X3DH handshake.
+ 
++use flume::RecvTimeoutError;
+ use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+ use rand::RngCore;
+ use std::collections::HashMap;
+ use std::net::SocketAddr;
++use std::sync::atomic::{AtomicUsize, Ordering};
++use std::sync::Arc;
++use std::time::Duration;
+ use tokio::sync::mpsc;
+ use tracing::{debug, warn};
+ 
+@@ -25,6 +29,35 @@ const SIBNA_SERVICE_TYPE: &str = "_sibna._tcp.local.";
+ /// Length of the random session token in bytes (16 = 128 bits).
+ const SESSION_TOKEN_LEN: usize = 16;
+ 
++/// How long the browse worker waits for an mDNS event before checking for shutdown.
++const BROWSE_POLL_INTERVAL_SECS: u64 = 1;
++
++/// Max retries for `stop_browse()` when the daemon command queue is full (`Error::Again`).
++const STOP_BROWSE_MAX_RETRIES: u32 = 3;
++
++/// Stop an mDNS browse operation, retrying on `Error::Again` (queue full).
++///
++/// The mdns-sd documentation states: "When an error is returned, the caller should
++/// retry only when the error is `Error::Again`, otherwise should log and move on."
++/// Returns `true` if the browse was stopped successfully, `false` otherwise.
++fn stop_browse_with_retry(daemon: &ServiceDaemon, service_type: &str) -> bool {
++    let mut retries = 0;
++    loop {
++        match daemon.stop_browse(service_type) {
++            Ok(()) => return true,
++            Err(mdns_sd::Error::Again) if retries < STOP_BROWSE_MAX_RETRIES => {
++                retries += 1;
++                std::thread::sleep(Duration::from_millis(10));
++                continue;
++            }
++            Err(e) => {
++                warn!("Failed to stop mDNS browse: {}", e);
++                return false;
++            }
++        }
++    }
++}
++
+ /// A discovered peer from the local network.
+ #[derive(Debug, Clone)]
+ pub struct DiscoveredPeer {
+@@ -42,7 +75,12 @@ pub struct DiscoveredPeer {
+ pub struct MdnsDiscovery {
+     daemon: ServiceDaemon,
+     service_type: String,
+-    instance_name: String,
++    /// Full service instance name used for `unregister()` (e.g. "AliceDevice-XXXX._sibna._tcp.local.").
++    full_service_name: String,
++    /// Number of active browse operations. Used to coordinate `stop_browse()`
++    /// across concurrent `browse_peers()` calls so that one exiting worker does
++    /// not stop a browse that another worker is still using.
++    browse_count: Arc<AtomicUsize>,
+ }
+ 
+ impl MdnsDiscovery {
+@@ -80,6 +118,9 @@ impl MdnsDiscovery {
+             format!("Sibna-{}", &session_hex[..12])
+         };
+ 
++        // Full service instance name for mDNS unregistration.
++        let full_service_name = format!("{}.{}", instance_name, SIBNA_SERVICE_TYPE);
++
+         let mut properties = HashMap::new();
+         properties.insert("session".to_string(), session_hex);
+         properties.insert("version".to_string(), "2".to_string());
+@@ -128,7 +169,8 @@ impl MdnsDiscovery {
+         Ok(Self {
+             daemon,
+             service_type: SIBNA_SERVICE_TYPE.to_string(),
+-            instance_name,
++            full_service_name,
++            browse_count: Arc::new(AtomicUsize::new(0)),
+         })
+     }
+ 
+@@ -137,6 +179,16 @@ impl MdnsDiscovery {
+     /// Returns a `mpsc::Receiver` channel yielding `DiscoveredPeer` events
+     /// as peers pop online or disappear. For this simple MVP, we just yield
+     /// a continuous stream of fully resolved peer addresses.
++    ///
++    /// The background browse worker uses bounded waits (`recv_timeout`) so it
++    /// can detect when the returned receiver is dropped (`tx.is_closed()`) and
++    /// stop the mDNS browse operation via `ServiceDaemon::stop_browse()`.
++    /// Dropping the `MdnsDiscovery` itself also stops browsing and unregisters.
++    ///
++    /// Multiple concurrent `browse_peers()` calls are supported: an internal
++    /// reference counter ensures `stop_browse()` is only invoked when the last
++    /// active browse worker exits, preventing one worker from stopping another's
++    /// browse.
+     pub fn browse_peers(&self) -> P2pResult<mpsc::Receiver<DiscoveredPeer>> {
+         let receiver = self.daemon.browse(&self.service_type).map_err(|e| {
+             P2pError::Io(std::io::Error::new(
+@@ -145,60 +197,118 @@ impl MdnsDiscovery {
+             ))
+         })?;
+ 
++        // Increment the active browse counter before spawning the worker.
++        self.browse_count.fetch_add(1, Ordering::SeqCst);
++
+         // Expose a tokio stream to the user to abstract away mdns-sd threads
+-        let (tx, rx) = mpsc::channel::<DiscoveredPeer>(100);
++        let (tx, rx) = mpsc::channel(100);
+ 
+-        let myself = self.instance_name.clone();
++        let myself = self.instance_name_for_logging();
++        let daemon = self.daemon.clone();
++        let service_type = self.service_type.clone();
++        let browse_count = self.browse_count.clone();
+ 
+         tokio::task::spawn_blocking(move || {
+-            while let Ok(event) = receiver.recv() {
+-                match event {
+-                    ServiceEvent::ServiceResolved(info) => {
+-                        // Ignore our own broadcast
+-                        if info.get_fullname().starts_with(&myself) {
+-                            continue;
+-                        }
++            let mut stopped = false;
++            loop {
++                match receiver.recv_timeout(Duration::from_secs(BROWSE_POLL_INTERVAL_SECS)) {
++                    Ok(event) => {
++                        match event {
++                            ServiceEvent::ServiceResolved(info) => {
++                                // Ignore our own broadcast
++                                if info.get_fullname().starts_with(&myself) {
++                                    continue;
++                                }
++
++                                // Extract session token (the random per-session identifier)
++                                let props = info.get_properties();
++                                let session_token = match props.get_property_val_str("session") {
++                                    Some(val) => val.to_string(),
++                                    None => continue,
++                                };
++
++                                // Extract IP
++                                let ip = match info.get_addresses().iter().next() {
++                                    Some(ip) => *ip,
++                                    None => continue,
++                                };
++                                let addr = SocketAddr::new(ip, info.get_port());
+ 
+-                        // Extract session token (the random per-session identifier)
+-                        let props = info.get_properties();
+-                        let session_token = match props.get_property_val_str("session") {
+-                            Some(val) => val.to_string(),
+-                            None => continue,
+-                        };
+-
+-                        // Extract IP
+-                        let ip = match info.get_addresses().iter().next() {
+-                            Some(ip) => *ip,
+-                            None => continue,
+-                        };
+-                        let addr = SocketAddr::new(ip, info.get_port());
+-
+-                        let peer = DiscoveredPeer {
+-                            session_token,
+-                            addr,
+-                            name: info.get_fullname().to_string(),
+-                        };
+-
+-                        if tx.blocking_send(peer).is_err() {
+-                            break; // channel closed
++                                let peer = DiscoveredPeer {
++                                    session_token,
++                                    addr,
++                                    name: info.get_fullname().to_string(),
++                                };
++
++                                if tx.blocking_send(peer).is_err() {
++                                    break; // channel closed
++                                }
++                            }
++                            ServiceEvent::ServiceRemoved(_, _name) => {
++                                // Could yield PeerRemoved events here for tracking
++                            }
++                            _ => {}
+                         }
+                     }
+-                    ServiceEvent::ServiceRemoved(_, _name) => {
+-                        // Could yield PeerRemoved events here for tracking
++                    Err(RecvTimeoutError::Disconnected) => break,
++                    Err(RecvTimeoutError::Timeout) => {
++                        if tx.is_closed() {
++                            break;
++                        }
+                     }
+-                    _ => {}
+                 }
+             }
++            // Decrement the active browse counter. Only the last exiting worker
++            // calls stop_browse(), preventing it from stopping another worker's
++            // still-active browse.
++            let remaining = browse_count.fetch_sub(1, Ordering::SeqCst) - 1;
++            if remaining == 0 {
++                stop_browse_with_retry(&daemon, &service_type);
++                stopped = true;
++            }
++            if !stopped {
++                debug!(
++                    "mDNS browse worker exited; {} browse(s) still active",
++                    remaining
++                );
++            }
+         });
+ 
+         Ok(rx)
+     }
++
++    /// Returns the instance name prefix used to filter out our own broadcasts.
++    /// Kept private; used only by the browse worker.
++    fn instance_name_for_logging(&self) -> String {
++        // Derive from full_service_name by stripping the service type suffix.
++        // full_service_name = "instance_name._sibna._tcp.local."
++        self.full_service_name
++            .strip_suffix(&format!(".{}", SIBNA_SERVICE_TYPE))
++            .unwrap_or(&self.full_service_name)
++            .to_string()
++    }
+ }
+ 
+ impl Drop for MdnsDiscovery {
+     fn drop(&mut self) {
+-        if let Err(e) = self.daemon.unregister(&self.service_type) {
+-            warn!("Failed to unregister mDNS service: {}", e);
++        // Stop browsing if any workers are still active.
++        let remaining = self.browse_count.load(Ordering::SeqCst);
++        if remaining > 0 {
++            stop_browse_with_retry(&self.daemon, &self.service_type);
++            debug!(
++                "mDNS discovery dropped with {} browse worker(s) still active; browse stopped",
++                remaining
++            );
++        }
++
++        // Unregister the service using the full instance name.  Fire-and-forget:
++        // we send the command and do not block waiting for the daemon's response.
++        // Waiting in a synchronous `Drop` could stall the calling executor thread.
++        if let Err(e) = self.daemon.unregister(&self.full_service_name) {
++            warn!(
++                "Failed to send mDNS unregister command for {}: {}",
++                self.full_service_name, e
++            );
+         }
+     }
+ }
+diff --git a/core/src/p2p/node.rs b/core/src/p2p/node.rs
+index 367721a..45350f8 100644
+--- a/core/src/p2p/node.rs
++++ b/core/src/p2p/node.rs
+@@ -146,15 +146,11 @@ impl P2pNode {
+         };
+ 
+         // Initialize mDNS discovery if enabled.
++        // mDNS is a link-local protocol: advertise the actual local listening
++        // address, not the NAT-mapped public address (which is for external
++        // connectivity only).
+         let discovery = if config.enable_mdns {
+-            let mut discover_addr = listener.local_addr().unwrap_or(config.bind_addr);
+-
+-            // If we found a public address via NAT traversal, prefer it for broad reachability
+-            if let Some(ref n) = nat {
+-                if let Some(pub_addr) = n.public_addr {
+-                    discover_addr = pub_addr;
+-                }
+-            }
++            let discover_addr = listener.local_addr().unwrap_or(config.bind_addr);
+ 
+             Some(
+                 super::discovery::MdnsDiscovery::new(discover_addr, config.node_name.as_deref())
+@@ -196,6 +192,12 @@ impl P2pNode {
+     }
+ 
+     /// Browse the local network for other active P2P nodes.
++    ///
++    /// Returns a receiver that yields discovered peers. The browse operation
++    /// is automatically stopped when the returned receiver is dropped, or when
++    /// the `P2pNode` (and its `MdnsDiscovery`) is dropped. Multiple concurrent
++    /// `browse_peers()` calls are supported; `stop_browse()` is only invoked
++    /// when the last active browse worker exits.
+     pub fn browse_peers(
+         &self,
+     ) -> P2pResult<tokio::sync::mpsc::Receiver<super::discovery::DiscoveredPeer>> {
+diff --git a/tests/integration_tests.rs b/tests/integration_tests.rs
+index 557beb6..a1f16d3 100644
+--- a/tests/integration_tests.rs
++++ b/tests/integration_tests.rs
+@@ -606,6 +606,8 @@ async fn test_mdns_discovery() {
+     use sibna_core::{Config, SecureContext};
+     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+ 
++    eprintln!("TEST: Starting mDNS discovery test");
++
+     // Alice
+     let ctx_a = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
+     ctx_a.generate_identity().unwrap();
+@@ -615,15 +617,18 @@ async fn test_mdns_discovery() {
+     // Binding to 0.0.0.0 is often more reliable for mDNS registration
+     cfg_a.bind_addr = "0.0.0.0:0".parse().unwrap();
+ 
++    eprintln!("TEST: Creating Alice node...");
+     let node_a =
+         match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_a, ctx_a)).await {
+             Ok(Ok(n)) => n,
+             Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
+             Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
+         };
++    eprintln!("TEST: Alice node created at {}", node_a.local_addr());
+ 
+     // Give Alice's advertiser more time to fully register in the OS mDNS stack
+     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
++    eprintln!("TEST: Waited 2 seconds for Alice mDNS registration");
+ 
+     // Bob
+     let ctx_b = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
+@@ -633,24 +638,275 @@ async fn test_mdns_discovery() {
+     cfg_b.node_name = Some("BobDevice".to_string());
+     cfg_b.bind_addr = "0.0.0.0:0".parse().unwrap();
+ 
++    eprintln!("TEST: Creating Bob node...");
+     let node_b =
+         match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_b, ctx_b)).await {
+             Ok(Ok(n)) => n,
+             Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
+             Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
+         };
++    eprintln!("TEST: Bob node created at {}", node_b.local_addr());
+ 
+     // Watch Bob's browser to discover Alice
++    eprintln!("TEST: Starting peer browsing...");
+     let mut browser = node_b.browse_peers().unwrap();
++    eprintln!("TEST: Browser created, waiting for discovery...");
+ 
+     let discovered = tokio::time::timeout(std::time::Duration::from_secs(10), browser.recv()).await;
++    match &discovered {
++        Ok(_) => eprintln!("TEST: Discovery succeeded within 10s"),
++        Err(_) => eprintln!("TEST: Discovery timed out after 10s"),
++    }
+     let peer = discovered
+         .expect("Timeout waiting for mDNS discovery")
+         .expect("Channel closed");
+ 
++    eprintln!("TEST: Discovered peer: {} at {}", peer.name, peer.addr);
++
+     // Ensure we discovered Alice and the node name matches
+     assert!(peer.name.contains("AliceDevice"));
+     assert_eq!(peer.addr.port(), node_a.local_addr().port());
++
++    eprintln!("TEST: Test passed! (test function will now return)");
++}
++
++/// Regression test: dropping the returned receiver while `P2pNode` remains alive
++/// must not leave a blocking browse worker behind, and subsequent browse calls
++/// on the same node must still work.
++#[cfg(feature = "p2p")]
++#[tokio::test]
++async fn test_mdns_browse_receiver_drop() {
++    use sibna_core::p2p::{P2pConfig, P2pNode};
++    use sibna_core::{Config, SecureContext};
++    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
++
++    eprintln!("TEST: Starting mDNS receiver-drop regression test");
++
++    // Alice
++    let ctx_a = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
++    ctx_a.generate_identity().unwrap();
++    let mut cfg_a = P2pConfig::default();
++    cfg_a.enable_mdns = true;
++    cfg_a.node_name = Some("AliceDevice".to_string());
++    cfg_a.bind_addr = "0.0.0.0:0".parse().unwrap();
++
++    eprintln!("TEST: Creating Alice node...");
++    let node_a =
++        match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_a, ctx_a)).await {
++            Ok(Ok(n)) => n,
++            Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
++            Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
++        };
++    eprintln!("TEST: Alice node created at {}", node_a.local_addr());
++
++    // Give Alice's advertiser time to register
++    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
++
++    // Bob
++    let ctx_b = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
++    ctx_b.generate_identity().unwrap();
++    let mut cfg_b = P2pConfig::default();
++    cfg_b.enable_mdns = true;
++    cfg_b.node_name = Some("BobDevice".to_string());
++    cfg_b.bind_addr = "0.0.0.0:0".parse().unwrap();
++
++    eprintln!("TEST: Creating Bob node...");
++    let node_b =
++        match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_b, ctx_b)).await {
++            Ok(Ok(n)) => n,
++            Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
++            Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
++        };
++    eprintln!("TEST: Bob node created at {}", node_b.local_addr());
++
++    // Start browsing, then immediately drop the receiver while both nodes stay alive.
++    // The browse worker must detect the closed channel and stop browsing.
++    eprintln!("TEST: Starting peer browsing and dropping receiver...");
++    let browser = node_b.browse_peers().unwrap();
++    drop(browser);
++    eprintln!("TEST: Receiver dropped while P2pNode still alive");
++
++    // Give the background worker time to notice the closed channel and exit.
++    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
++    eprintln!("TEST: First browse worker should have exited after receiver drop");
++
++    // Start a NEW browse on the same node — it must still work, proving the
++    // stale worker did not leave the mDNS daemon in a stopped state.
++    eprintln!("TEST: Starting second browse after receiver drop...");
++    let mut browser2 = node_b.browse_peers().unwrap();
++    eprintln!("TEST: Second browse created, waiting for discovery...");
++
++    let discovered =
++        tokio::time::timeout(std::time::Duration::from_secs(10), browser2.recv()).await;
++    match &discovered {
++        Ok(_) => eprintln!("TEST: Second browse succeeded within 10s"),
++        Err(_) => eprintln!("TEST: Second browse timed out after 10s"),
++    }
++    let peer = discovered
++        .expect("Second browse timed out waiting for mDNS discovery")
++        .expect("Second browse channel closed");
++
++    eprintln!(
++        "TEST: Second browse discovered peer: {} at {}",
++        peer.name, peer.addr
++    );
++
++    // Ensure we discovered Alice and the node name matches
++    assert!(
++        peer.name.contains("AliceDevice"),
++        "Second browse failed to discover AliceDevice after receiver drop"
++    );
++    assert_eq!(peer.addr.port(), node_a.local_addr().port());
++
++    eprintln!("TEST: Receiver-drop regression test completed without hang");
++}
++
++/// Regression test: dropping `P2pNode` while discovery is active must stop the
++/// browse worker and unregister the mDNS service cleanly, without hanging.
++#[cfg(feature = "p2p")]
++#[tokio::test]
++async fn test_mdns_node_drop_during_discovery() {
++    use sibna_core::p2p::{P2pConfig, P2pNode};
++    use sibna_core::{Config, SecureContext};
++    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
++
++    eprintln!("TEST: Starting mDNS node-drop regression test");
++
++    // Alice
++    let ctx_a = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
++    ctx_a.generate_identity().unwrap();
++    let mut cfg_a = P2pConfig::default();
++    cfg_a.enable_mdns = true;
++    cfg_a.node_name = Some("AliceDevice".to_string());
++    cfg_a.bind_addr = "0.0.0.0:0".parse().unwrap();
++
++    eprintln!("TEST: Creating Alice node...");
++    let node_a =
++        match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_a, ctx_a)).await {
++            Ok(Ok(n)) => n,
++            Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
++            Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
++        };
++    eprintln!("TEST: Alice node created at {}", node_a.local_addr());
++
++    // Give Alice's advertiser time to register
++    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
++
++    // Bob
++    let ctx_b = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
++    ctx_b.generate_identity().unwrap();
++    let mut cfg_b = P2pConfig::default();
++    cfg_b.enable_mdns = true;
++    cfg_b.node_name = Some("BobDevice".to_string());
++    cfg_b.bind_addr = "0.0.0.0:0".parse().unwrap();
++
++    eprintln!("TEST: Creating Bob node...");
++    let node_b =
++        match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_b, ctx_b)).await {
++            Ok(Ok(n)) => n,
++            Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
++            Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
++        };
++    eprintln!("TEST: Bob node created at {}", node_b.local_addr());
++
++    // Start browsing, then drop Bob's node while discovery is active.
++    // The `MdnsDiscovery::Drop` must stop browsing and unregister cleanly.
++    eprintln!("TEST: Starting peer browsing...");
++    let _browser = node_b.browse_peers().unwrap();
++    eprintln!("TEST: Dropping Bob's P2pNode while discovery active...");
++    drop(node_b);
++    eprintln!("TEST: Bob's P2pNode dropped");
++
++    // Give the background worker time to stop browsing and unregister.
++    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
++    eprintln!("TEST: Node-drop regression test completed without hang");
++}
++
++/// Regression test: two concurrent `browse_peers()` calls on the same node
++/// must both receive discovery events without one worker prematurely
++/// stopping the other's browse via `stop_browse()`.
++#[cfg(feature = "p2p")]
++#[tokio::test]
++async fn test_mdns_concurrent_browse() {
++    use sibna_core::p2p::{P2pConfig, P2pNode};
++    use sibna_core::{Config, SecureContext};
++    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
++
++    eprintln!("TEST: Starting mDNS concurrent-browse regression test");
++
++    // Alice
++    let ctx_a = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
++    ctx_a.generate_identity().unwrap();
++    let mut cfg_a = P2pConfig::default();
++    cfg_a.enable_mdns = true;
++    cfg_a.node_name = Some("AliceDevice".to_string());
++    cfg_a.bind_addr = "0.0.0.0:0".parse().unwrap();
++
++    eprintln!("TEST: Creating Alice node...");
++    let node_a =
++        match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_a, ctx_a)).await {
++            Ok(Ok(n)) => n,
++            Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
++            Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
++        };
++    eprintln!("TEST: Alice node created at {}", node_a.local_addr());
++
++    // Give Alice's advertiser time to register
++    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
++
++    // Bob
++    let ctx_b = SecureContext::new(Config::default(), Some(b"SecurePass1")).unwrap();
++    ctx_b.generate_identity().unwrap();
++    let mut cfg_b = P2pConfig::default();
++    cfg_b.enable_mdns = true;
++    cfg_b.node_name = Some("BobDevice".to_string());
++    cfg_b.bind_addr = "0.0.0.0:0".parse().unwrap();
++
++    eprintln!("TEST: Creating Bob node...");
++    let node_b =
++        match tokio::time::timeout(Duration::from_secs(30), P2pNode::new(cfg_b, ctx_b)).await {
++            Ok(Ok(n)) => n,
++            Ok(Err(e)) => panic!("P2PNode::new failed: {}", e),
++            Err(_) => panic!("P2PNode::new timed out after 30 seconds"),
++        };
++    eprintln!("TEST: Bob node created at {}", node_b.local_addr());
++
++    // Start TWO concurrent browsers on Bob. Both must receive Alice's
++    // discovery event without one worker stopping the other's browse.
++    eprintln!("TEST: Starting two concurrent browsers...");
++    let mut browser1 = node_b.browse_peers().unwrap();
++    let mut browser2 = node_b.browse_peers().unwrap();
++    eprintln!("TEST: Both browsers created");
++
++    // Wait for either browser to discover Alice
++    let discovered = tokio::time::timeout(std::time::Duration::from_secs(10), async {
++        tokio::select! {
++            p = browser1.recv() => p,
++            p = browser2.recv() => p,
++        }
++    })
++    .await;
++    let peer = discovered
++        .expect("Concurrent browse timed out waiting for mDNS discovery")
++        .expect("Concurrent browse channel closed");
++
++    eprintln!(
++        "TEST: Concurrent browse discovered peer: {} at {}",
++        peer.name, peer.addr
++    );
++
++    assert!(
++        peer.name.contains("AliceDevice"),
++        "Concurrent browse failed to discover AliceDevice"
++    );
++    assert_eq!(peer.addr.port(), node_a.local_addr().port());
++
++    // Drop both browsers; workers should exit cleanly without hang.
++    drop(browser1);
++    drop(browser2);
++    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
++
++    eprintln!("TEST: Concurrent-browse regression test completed without hang");
+ }
+ 
+ #[cfg(feature = "p2p")]

@@ -1,4 +1,3 @@
-use blake3;
 use hkdf::Hkdf;
 use sha2::Sha256;
 use sibna_core::handshake::x3dh::x3dh_initiator_v3;
@@ -64,8 +63,5 @@ fn debug_x3dh() {
     )
     .unwrap();
     println!("rust_full_ss={}", hex(&full.shared_secret));
-    println!(
-        "rust_expected={}",
-        "e03c8496aba67b549b979041d142e146e7b4a16acd72d11d068ab2c1a7a9c204"
-    );
+    println!("rust_expected=e03c8496aba67b549b979041d142e146e7b4a16acd72d11d068ab2c1a7a9c204");
 }

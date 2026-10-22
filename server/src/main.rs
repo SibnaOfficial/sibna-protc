@@ -610,7 +610,9 @@ async fn send_message_handler(
     }
 
     // Validate message_id
-    let message_id = req.message_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let message_id = req
+        .message_id
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     if message_id.is_empty() || message_id.len() > 128 {
         return (StatusCode::BAD_REQUEST, "Invalid message_id").into_response();
     }
@@ -714,7 +716,10 @@ async fn send_message_handler(
         state.db.tree_queue.insert(db_key.as_bytes(), bytes).ok();
         info!(
             "Message queued for offline recipient {}",
-            envelope.recipient_id.get(..16).unwrap_or(&envelope.recipient_id)
+            envelope
+                .recipient_id
+                .get(..16)
+                .unwrap_or(&envelope.recipient_id)
         );
     }
 

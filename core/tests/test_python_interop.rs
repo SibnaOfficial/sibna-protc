@@ -3,7 +3,7 @@
 //! Order of execution:
 //!   1. Python: write sibna_py_ratchet_ct.json (Python-encrypted ciphertexts)
 //!   2. Rust:   read sibna_py_ratchet_ct.json, decrypt each ciphertext,
-//!              write sibna_rust_ratchet_ct.json (Rust-encrypted ciphertexts)
+//!      write sibna_rust_ratchet_ct.json (Rust-encrypted ciphertexts)
 //!   3. Python: read sibna_rust_ratchet_ct.json, decrypt each ciphertext
 
 use serde_json::Value;
@@ -303,7 +303,7 @@ fn test_rust_encrypts_writes_ciphertexts_for_python() {
         "ciphertexts": ciphertexts,
         "expected_plaintexts": messages,
         "associated_data": "ad",
-        "shared_secret": hex::encode(&shared_secret),
+        "shared_secret": hex::encode(shared_secret),
         "alice_ephemeral_public": hex::encode(alice_eph_pub().as_bytes()),
         "bob_signed_prekey_public": hex::encode(bob_spk_pub().as_bytes()),
     });

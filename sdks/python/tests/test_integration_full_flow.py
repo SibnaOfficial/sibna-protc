@@ -297,7 +297,7 @@ class TestFullFlowHTTP:
                 # Bob decrypts
                 bob_session = _bob_x3dh_with_alice(
                     bob_bundle,
-                    alice_ed.public_key,   # peer_identity = Alice's X25519 public key
+                    alice_ed.public_key,  # peer_identity = Alice's X25519 public key
                     alice_ephemeral_pub,
                     bob_spk,
                     bob_opk,
@@ -306,9 +306,9 @@ class TestFullFlowHTTP:
                 decrypted = bob_session.decrypt(
                     bytes.fromhex(envelope["payload_hex"]), associated_data=b"v3.0.2"
                 )
-                assert decrypted == plaintext, (
-                    f"Decryption mismatch: {decrypted!r} != {plaintext!r}"
-                )
+                assert (
+                    decrypted == plaintext
+                ), f"Decryption mismatch: {decrypted!r} != {plaintext!r}"
                 break
         assert found, "Alice's message not found in Bob's inbox"
 
@@ -404,12 +404,8 @@ class TestFullFlowHTTP:
 
         # Bob's inbox should contain only one copy (server deduplicates)
         messages = bob.fetch_inbox()
-        matching = [
-            m for m in messages if m.get("message_id") == "replay-test-0001"
-        ]
-        assert len(matching) == 1, (
-            f"Expected 1 copy of replayed message, got {len(matching)}"
-        )
+        matching = [m for m in messages if m.get("message_id") == "replay-test-0001"]
+        assert len(matching) == 1, f"Expected 1 copy of replayed message, got {len(matching)}"
 
     def test_out_of_order_ratchet_messages(self):
         """Out-of-order Double Ratchet messages are decrypted correctly."""
@@ -515,9 +511,7 @@ class TestWebSocketFlow:
         assert len(received) >= 1, "No envelope received via WebSocket"
         received_env = received[0]
         assert verify_signed_envelope(received_env), "WS envelope signature invalid"
-        assert (
-            received_env["sender_id"] == alice_ed.public_key.hex()
-        ), "WS sender_id mismatch"
+        assert received_env["sender_id"] == alice_ed.public_key.hex(), "WS sender_id mismatch"
 
         # Bob decrypts the received message
         bob_session = _bob_x3dh_with_alice(

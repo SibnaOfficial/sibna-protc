@@ -121,9 +121,14 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+      # Rust toolchain needed to build sibna-server for integration tests
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+      # Build the Rust relay server required by integration tests
+      - run: cargo build -p sibna-server --bin sibna-server
       # Linting, formatting, type checking, and packaging tooling.
       # Install everything in one step so dependency resolution is consistent
       # across all platforms (avoids conflicts between sequential installs).

@@ -75,7 +75,6 @@ from sibna import (
 from sibna.envelope import make_signed_envelope, verify_signed_envelope
 from sibna.errors import AuthError, NetworkError
 
-SERVER_URL = os.environ.get("SIBNA_SERVER_URL", "http://localhost:0")
 JWT_SECRET = os.environ.get("SIBNA_JWT_SECRET", "test-secret-0123456789abcdef")
 
 # Deterministic test identities (NOT for production use)
@@ -91,16 +90,34 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
+def _get_server_binary_path() -> Path:
+    """Get the path to the sibna-server binary, handling platform-specific names."""
+    base = Path(__file__).resolve().parents[3] / "target"
+    # Platform-specific executable name
+    exe_name = "sibna-server.exe" if sys.platform == "win32" else "sibna-server"
+
+    # Check debug first, then release
+    debug_path = base / "debug" / exe_name
+    release_path = base / "release" / exe_name
+
+    if debug_path.exists():
+        return debug_path
+    if release_path.exists():
+        return release_path
+
+    # Provide clear diagnostic with all checked paths
+    checked = [str(debug_path), str(release_path)]
+    raise FileNotFoundError(
+        f"sibna-server binary not found. Checked paths:\n  " + "\n  ".join(checked)
+    )
+
+
 def _start_server() -> subprocess.Popen:
     """Start the Rust relay server as a subprocess on a free port.
 
     Returns the Popen object. Raises if the server fails to start.
     """
-    server_bin = Path(__file__).resolve().parents[3] / "target" / "debug" / "sibna-server"
-    if not server_bin.exists():
-        server_bin = Path(__file__).resolve().parents[3] / "target" / "release" / "sibna-server"
-    if not server_bin.exists():
-        raise FileNotFoundError(f"sibna-server binary not found (looked in debug and release)")
+    server_bin = _get_server_binary_path()
 
     port = _find_free_port()
     server_url = f"http://127.0.0.1:{port}"
@@ -146,28 +163,27 @@ def _stop_server(proc: subprocess.Popen) -> None:
         proc.kill()
 
 
-def _make_alice() -> SibnaClient:
+def _make_client(server_url: str, seed: bytes) -> SibnaClient:
+    """Create and authenticate a client with deterministic identity."""
+    client = SibnaClient(server=server_url)
+    client.generate_identity(private_key_bytes=seed)
+    client.authenticate()
+    return client
+
+
+def _make_alice(server_url: str) -> SibnaClient:
     """Create and authenticate Alice client with deterministic identity."""
-    client = SibnaClient(server=SERVER_URL)
-    client.generate_identity(private_key_bytes=ALICE_SEED)
-    client.authenticate()
-    return client
+    return _make_client(server_url, ALICE_SEED)
 
 
-def _make_bob() -> SibnaClient:
+def _make_bob(server_url: str) -> SibnaClient:
     """Create and authenticate Bob client with deterministic identity."""
-    client = SibnaClient(server=SERVER_URL)
-    client.generate_identity(private_key_bytes=BOB_SEED)
-    client.authenticate()
-    return client
+    return _make_client(server_url, BOB_SEED)
 
 
-def _make_charlie() -> SibnaClient:
+def _make_charlie(server_url: str) -> SibnaClient:
     """Create and authenticate Charlie client with deterministic identity."""
-    client = SibnaClient(server=SERVER_URL)
-    client.generate_identity(private_key_bytes=CHARLIE_SEED)
-    client.authenticate()
-    return client
+    return _make_client(server_url, CHARLIE_SEED)
 
 
 def _make_bob_prekey_bundle() -> PreKeyBundle:
@@ -237,7 +253,7 @@ class TestFullFlowHTTP:
     @classmethod
     def setup_class(cls):
         cls.server_proc = _start_server()
-        cls.server_url = getattr(_start_server, "server_url", SERVER_URL)
+        cls.server_url = getattr(_start_server, "server_url")
 
     @classmethod
     def teardown_class(cls):
@@ -245,8 +261,8 @@ class TestFullFlowHTTP:
 
     def test_full_flow_alice_to_bob(self):
         """Alice sends an encrypted message to Bob via HTTP; Bob decrypts it."""
-        alice = _make_alice()
-        bob = _make_bob()
+        alice = _make_alice(self.server_url)
+        bob = _make_bob(self.server_url)
 
         # ── Bob uploads prekeys ──
         bob_ed, bob_x = derive_identity_keys(BOB_SEED)
@@ -313,8 +329,8 @@ class TestFullFlowHTTP:
 
     def test_offline_message_delivery(self):
         """Message sent while Bob is offline is stored and retrieved later."""
-        alice = _make_alice()
-        bob = _make_bob()
+        alice = _make_alice(self.server_url)
+        bob = _make_bob(self.server_url)
 
         # ── Bob uploads prekeys ──
         bob_ed, bob_x = derive_identity_keys(BOB_SEED)
@@ -360,8 +376,8 @@ class TestFullFlowHTTP:
 
     def test_replay_rejection(self):
         """Same message_id sent twice is deduplicated by the server."""
-        alice = _make_alice()
-        bob = _make_bob()
+        alice = _make_alice(self.server_url)
+        bob = _make_bob(self.server_url)
 
         bob_ed, bob_x = derive_identity_keys(BOB_SEED)
         bob_spk = X25519KeyPair.from_seed(bytes.fromhex("63" * 32))
@@ -388,7 +404,7 @@ class TestFullFlowHTTP:
         import requests
 
         r1 = alice._session.post(
-            f"{SERVER_URL}/v1/messages/send",
+            f"{self.server_url}/v1/messages/send",
             json=envelope1,
             timeout=alice.timeout,
         )
@@ -396,7 +412,7 @@ class TestFullFlowHTTP:
 
         # Second send with same message_id
         r2 = alice._session.post(
-            f"{SERVER_URL}/v1/messages/send",
+            f"{self.server_url}/v1/messages/send",
             json=envelope1,
             timeout=alice.timeout,
         )
@@ -408,8 +424,8 @@ class TestFullFlowHTTP:
 
     def test_out_of_order_ratchet_messages(self):
         """Out-of-order Double Ratchet messages are decrypted correctly."""
-        alice = _make_alice()
-        bob = _make_bob()
+        alice = _make_alice(self.server_url)
+        bob = _make_bob(self.server_url)
 
         bob_ed, bob_x = derive_identity_keys(BOB_SEED)
         bob_spk = X25519KeyPair.from_seed(bytes.fromhex("63" * 32))
@@ -458,7 +474,7 @@ class TestWebSocketFlow:
     @classmethod
     def setup_class(cls):
         cls.server_proc = _start_server()
-        cls.server_url = getattr(_start_server, "server_url", SERVER_URL)
+        cls.server_url = getattr(_start_server, "server_url")
 
     @classmethod
     def teardown_class(cls):
@@ -469,8 +485,8 @@ class TestWebSocketFlow:
         """Python client sends signed envelope via WebSocket; Python client receives and decrypts."""
         import aiohttp
 
-        alice = _make_alice()
-        bob = _make_bob()
+        alice = _make_alice(self.server_url)
+        bob = _make_bob(self.server_url)
 
         bob_ed, bob_x = derive_identity_keys(BOB_SEED)
         bob_spk = X25519KeyPair.from_seed(bytes.fromhex("63" * 32))
@@ -487,7 +503,7 @@ class TestWebSocketFlow:
         payload_hex = ciphertext.hex()
 
         # Alice connects via WebSocket and sends
-        ws_alice = _make_alice()
+        ws_alice = _make_alice(self.server_url)
         ws_alice.authenticate()
 
         received = []

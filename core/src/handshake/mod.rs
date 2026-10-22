@@ -430,13 +430,13 @@ impl PreKeyBundle {
         signed_prekey.copy_from_slice(&data[offset..offset + 32]);
         offset += 32;
 
-        let mut signature = [0u8; 64];
-        signature.copy_from_slice(&data[offset..offset + 64]);
-        offset += 64;
-
         let mut x25519_identity_key = [0u8; 32];
         x25519_identity_key.copy_from_slice(&data[offset..offset + 32]);
         offset += 32;
+
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(&data[offset..offset + 64]);
+        offset += 64;
 
         let has_onetime = data[offset] != 0;
         offset += 1;
@@ -712,9 +712,17 @@ mod tests {
 
         assert_eq!(bundle.identity_key, parsed.identity_key);
         assert_eq!(bundle.signed_prekey, parsed.signed_prekey);
+        assert_eq!(bundle.x25519_identity_key, parsed.x25519_identity_key);
         assert_eq!(bundle.signature, parsed.signature);
         assert_eq!(bundle.onetime_prekey, parsed.onetime_prekey);
-    }
+        assert_eq!(bundle.bundle_id, parsed.bundle_id);
+        assert_eq!(bundle.timestamp, parsed.timestamp);
+        assert_eq!(bundle.expiration, parsed.expiration);
+        assert_eq!(bundle.device_id, parsed.device_id);
+        assert_eq!(bundle.root_identity_key, parsed.root_identity_key);
+        assert_eq!(bundle.device_signature, parsed.device_signature);
+        assert_eq!(bundle.bundle_signature, parsed.bundle_signature);
+        assert!(parsed.validate().is_ok());
 
     #[test]
     fn test_handshake_metrics() {

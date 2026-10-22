@@ -9,7 +9,7 @@ use std::io::Write;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey};
 use rand::rngs::OsRng;
 
 #[derive(Serialize, Deserialize)]
@@ -209,7 +209,6 @@ async fn test_aggressive_queue_flood_stress() {
     ctx_alice.generate_identity().unwrap();
     let alice_id = ctx_alice.get_identity().unwrap().ed25519_public;
     let alice_id_hex = hex::encode(alice_id);
-    let alice_token = create_mock_jwt(&alice_id_hex, secret);
 
     // Bob's identity for recipient
     let ctx_bob = SecureContext::new(Config::default(), None).unwrap();
@@ -331,7 +330,6 @@ async fn test_delayed_queue_delivery_and_ack() {
     ctx_alice.generate_identity().unwrap();
     let alice_id = ctx_alice.get_identity().unwrap().ed25519_public;
     let alice_id_hex = hex::encode(alice_id);
-    let alice_token = create_mock_jwt(&alice_id_hex, secret);
 
     let ctx_bob = SecureContext::new(Config::default(), None).unwrap();
     ctx_bob.generate_identity().unwrap();

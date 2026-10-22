@@ -13,7 +13,7 @@
 
 use flume::RecvTimeoutError;
 use mdns_sd::{DaemonEvent, ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo};
-use rand::RngCore;
+use rand::{Rng, RngCore};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -370,42 +370,120 @@ impl Drop for MdnsDiscovery {
 /// This is used to distinguish a genuine mDNS implementation bug from an
 /// environment where multicast is not routable between processes (e.g. some
 /// GitHub-hosted macOS CI runners).
-pub fn probe_multicast_availability(daemon: &ServiceDaemon) -> P2pResult<()> {
-    // Register a probe service and browse for it. If multicast is working,
-    // we should receive our own advertisement.
+/// Probe multicast DNS availability using two independent daemon instances.
+///
+/// One daemon advertises a temporary service and the other browses for it.
+/// Returns `Ok(())` only when the browsing daemon receives `ServiceResolved`
+/// for the exact service instance advertised. Returns `Err` if no discovery
+/// event arrives within the timeout, indicating multicast is not routable
+/// between processes on this host.
+///
+/// This distinguishes a genuine mDNS implementation bug from an environment
+/// where multicast is not routable between processes (e.g. some GitHub-hosted
+/// macOS CI runners).
+pub fn probe_multicast_availability() -> P2pResult<()> {
+    // --- Advertiser daemon ---
+    let advertiser = ServiceDaemon::new().map_err(|e| {
+        P2pError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("mDNS probe advertiser init: {}", e),
+        ))
+    })?;
+
+    let instance_name = format!("probe-{}", rand::thread_rng().gen::<u32>());
+    let service_type = "_probe._tcp.local.";
+    let full_service_name = format!("{}.{}", instance_name, service_type);
+    let host_name = format!("{}.local.", instance_name);
+
     let service_info = ServiceInfo::new(
-        "_probe._tcp.local.",
-        "probe-instance",
-        "probe-instance.local.",
-        "127.0.0.1",
+        service_type,
+        &instance_name,
+        &host_name,
+        "", // Empty IP lets mdns-sd choose an appropriate interface
         0,
         None,
     )
     .map_err(|e| P2pError::InvalidMessage(format!("mDNS probe service info: {}", e)))?;
 
-    daemon.register(service_info).map_err(|e| {
+    advertiser.register(service_info).map_err(|e| {
         P2pError::Io(std::io::Error::new(
             std::io::ErrorKind::Other,
-            format!("mDNS probe register: {}", e),
+            format!("mDNS probe advertiser register: {}", e),
         ))
     })?;
 
-    let receiver = daemon.browse("_probe._tcp.local.").map_err(|e| {
+    info!("mDNS probe advertiser registered: {}", full_service_name);
+
+    // --- Browser daemon ---
+    let browser_daemon = ServiceDaemon::new().map_err(|e| {
+        P2pError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("mDNS probe browser init: {}", e),
+        ))
+    })?;
+
+    let receiver = browser_daemon.browse(service_type).map_err(|e| {
         P2pError::Io(std::io::Error::new(
             std::io::ErrorKind::Other,
             format!("mDNS probe browse: {}", e),
         ))
     })?;
 
-    // Wait briefly for our own advertisement to come back.
-    match receiver.recv_timeout(Duration::from_millis(500)) {
-        Ok(ServiceEvent::ServiceResolved(_)) | Ok(_) => Ok(()),
-        Err(flume::RecvTimeoutError::Timeout) => Err(P2pError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "mDNS multicast appears to be unavailable on this network: \
-                 no response to probe query within 500ms",
-        ))),
-        Err(flume::RecvTimeoutError::Disconnected) => Ok(()),
+    // Wait briefly for our own service to be resolved by the browsing daemon.
+    // Keep receiving until the exact expected ServiceResolved event arrives,
+    // the deadline expires, or the channel disconnects.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            // Clean up on timeout
+            let _ = browser_daemon.stop_browse(service_type);
+            let _ = advertiser.stop_browse(service_type);
+            let _ = advertiser.unregister(&full_service_name);
+            return Err(P2pError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "mDNS multicast appears to be unavailable on this network: \
+                 no ServiceResolved event for probe service within 2s",
+            )));
+        }
+        match receiver.recv_timeout(remaining) {
+            Ok(ServiceEvent::ServiceResolved(info)) => {
+                if info.get_fullname() == full_service_name {
+                    info!("mDNS probe multicast OK: resolved {}", info.get_fullname());
+                    // Clean up on success
+                    let _ = browser_daemon.stop_browse(service_type);
+                    let _ = advertiser.stop_browse(service_type);
+                    let _ = advertiser.unregister(&full_service_name);
+                    return Ok(());
+                }
+                // Wrong service instance - keep waiting
+            }
+            Ok(_) => {
+                // Other event type (ServiceRemoved, ServiceResolved for another
+                // service, etc.) - keep waiting
+            }
+            Err(flume::RecvTimeoutError::Timeout) => {
+                // Clean up on timeout
+                let _ = browser_daemon.stop_browse(service_type);
+                let _ = advertiser.stop_browse(service_type);
+                let _ = advertiser.unregister(&full_service_name);
+                return Err(P2pError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "mDNS multicast appears to be unavailable on this network: \
+                     no ServiceResolved event for probe service within 2s",
+                )))
+            }
+            Err(flume::RecvTimeoutError::Disconnected) => {
+                // Clean up on disconnect
+                let _ = browser_daemon.stop_browse(service_type);
+                let _ = advertiser.stop_browse(service_type);
+                let _ = advertiser.unregister(&full_service_name);
+                return Err(P2pError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "mDNS probe: channel disconnected",
+                )))
+            }
+        }
     }
 }
 

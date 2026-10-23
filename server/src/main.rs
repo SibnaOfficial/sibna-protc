@@ -200,7 +200,19 @@ pub async fn run_server(
     limiter.add_limit("auth_challenge".to_string(), prekey_limit.clone());
     limiter.add_limit("auth_prove".to_string(), prekey_limit.clone());
     limiter.add_limit("message_send".to_string(), prekey_limit.clone());
-    limiter.add_limit("inbox_fetch".to_string(), prekey_limit.clone());
+    // Inbox polling is a read-heavy operation that should be stricter than
+    // message sending and prekey operations. A dedicated limit ensures
+    // excessive polling is reliably rate-limited on all platforms, including
+    // those with coarse timer resolution (e.g., Windows).
+    let inbox_limit = sibna_core::rate_limit::OperationLimit {
+        max_per_second: 20,
+        max_per_minute: 200,
+        max_per_hour: 2000,
+        max_per_day: 10000,
+        cooldown: Duration::from_millis(300),
+        burst_size: 10,
+    };
+    limiter.add_limit("inbox_fetch".to_string(), inbox_limit);
 
     let rt_state = Arc::new(RuntimeState {
         limiter: Arc::new(limiter),

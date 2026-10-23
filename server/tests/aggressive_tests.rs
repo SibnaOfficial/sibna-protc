@@ -435,6 +435,94 @@ async fn test_delayed_queue_delivery_and_ack() {
 }
 
 #[tokio::test]
+async fn test_inbox_fetch_rate_limit() {
+    let secret = "test_inbox_rate_secret";
+    let addr = spawn_test_server(secret).await;
+    let client = Client::new();
+    let url_send = format!("http://{}/v1/messages/send", addr);
+    let url_inbox = format!("http://{}/v1/messages/inbox", addr);
+
+    // Bob's identity for recipient
+    let ctx_bob = SecureContext::new(Config::default(), None).unwrap();
+    ctx_bob.generate_identity().unwrap();
+    let bob_id = ctx_bob.get_identity().unwrap().ed25519_public;
+    let bob_id_hex = hex::encode(bob_id);
+    let bob_token = create_mock_jwt(&bob_id_hex, secret);
+
+    // Alice's identity for sender
+    let alice_sk = SigningKey::generate(&mut OsRng);
+    let alice_vk = alice_sk.verifying_key();
+    let alice_sender_id = hex::encode(alice_vk.to_bytes());
+    let alice_token = create_mock_jwt(&alice_sender_id, secret);
+
+    // Send a message to Bob so there is something in his inbox
+    let message_id = "inbox_rate_test_001";
+    let payload_hex = "deadbeef";
+    let canonical = build_canonical_payload(&bob_id_hex, message_id, payload_hex, &alice_sender_id);
+    let signature = alice_sk.sign(&canonical).to_bytes();
+    let signature_hex = hex::encode(signature);
+
+    let req = json!({
+        "recipient_id": bob_id_hex,
+        "payload_hex": payload_hex,
+        "compressed": false,
+        "sender_id": alice_sender_id,
+        "message_id": message_id,
+        "signature_hex": signature_hex,
+    });
+    let res = client
+        .post(&url_send)
+        .header("Authorization", format!("Bearer {}", alice_token))
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        res.status().is_success() || res.status() == reqwest::StatusCode::ACCEPTED,
+        "message must be accepted: {}",
+        res.status()
+    );
+
+    // Bob fetches inbox within quota — should succeed repeatedly
+    for _ in 0..10 {
+        let res = client
+            .get(&url_inbox)
+            .header("Authorization", format!("Bearer {}", bob_token))
+            .query(&[("identity_key_hex", &bob_id_hex)])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            reqwest::StatusCode::OK,
+            "inbox fetch within quota should succeed: {}",
+            res.status()
+        );
+    }
+
+    // Excessive polling should eventually be rate-limited (429)
+    let mut rate_limited = false;
+    for _ in 0..300 {
+        let res = client
+            .get(&url_inbox)
+            .header("Authorization", format!("Bearer {}", bob_token))
+            .query(&[("identity_key_hex", &bob_id_hex)])
+            .send()
+            .await
+            .unwrap();
+        if res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            rate_limited = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        rate_limited,
+        "excessive inbox polling should be rate-limited with HTTP 429"
+    );
+}
+
+#[tokio::test]
 async fn test_health_endpoint_version() {
     let secret = "test_health_secret";
     let addr = spawn_test_server(secret).await;

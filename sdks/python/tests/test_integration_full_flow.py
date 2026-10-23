@@ -245,10 +245,10 @@ def _make_bob_prekey_bundle() -> PreKeyBundle:
     )
 
 
-def _alice_x3dh_with_bob(bob_bundle: PreKeyBundle) -> tuple[Session, bytes]:
+def _alice_x3dh_with_bob(bob_bundle: PreKeyBundle) -> tuple[Session, bytes, bytes]:
     """Alice performs X3DH as initiator with Bob's prekey bundle.
 
-    Returns (alice_session, alice_ephemeral_public_key_bytes).
+    Returns (alice_session, alice_ephemeral_public_key_bytes, alice_x_public_key_bytes).
     Uses ALICE_SEED for both Ed25519 (sender_id) and X25519 (DH) keys.
     """
     alice_ed, alice_x = derive_identity_keys(ALICE_SEED)
@@ -262,7 +262,7 @@ def _alice_x3dh_with_bob(bob_bundle: PreKeyBundle) -> tuple[Session, bytes]:
         peer_device_id=bytes.fromhex("62" * 16),
         use_pq=False,
     )
-    return alice_session, alice_ephemeral.public_key
+    return alice_session, alice_ephemeral.public_key, alice_x.public_key
 
 
 def _bob_x3dh_with_alice(
@@ -325,7 +325,7 @@ class TestFullFlowHTTP:
         assert fetched_bundle.verify_spk_signature(), "Fetched bundle SPK signature invalid"
 
         # ── Alice establishes X3DH session with Bob ──
-        alice_session, alice_ephemeral_pub = _alice_x3dh_with_bob(fetched_bundle)
+        alice_session, alice_ephemeral_pub, alice_x_pub = _alice_x3dh_with_bob(fetched_bundle)
 
         # ── Alice encrypts a message ──
         plaintext = b"Hello Bob from Alice via Sibna Protocol v3.0.2!"
@@ -356,7 +356,7 @@ class TestFullFlowHTTP:
                 # Bob decrypts
                 bob_session = _bob_x3dh_with_alice(
                     bob_bundle,
-                    alice_ed.public_key,  # peer_identity = Alice's X25519 public key
+                    alice_x_pub,  # peer_identity = Alice's X25519 public key
                     alice_ephemeral_pub,
                     bob_spk,
                     bob_opk,
@@ -384,7 +384,7 @@ class TestFullFlowHTTP:
         bob.upload_prekey(prekey_bundle_to_bytes(bob_bundle).hex())
 
         # ── Alice establishes session and sends ──
-        alice_session, alice_ephemeral_pub = _alice_x3dh_with_bob(bob_bundle)
+        alice_session, alice_ephemeral_pub, alice_x_pub = _alice_x3dh_with_bob(bob_bundle)
         plaintext = b"Offline message for Bob"
         ciphertext = alice_session.encrypt(plaintext, associated_data=b"offline")
         payload_hex = ciphertext.hex()
@@ -405,7 +405,7 @@ class TestFullFlowHTTP:
                 found = True
                 bob_session = _bob_x3dh_with_alice(
                     bob_bundle,
-                    alice_ed.public_key,
+                    alice_x_pub,
                     alice_ephemeral_pub,
                     bob_spk,
                     bob_opk,
@@ -447,9 +447,14 @@ class TestFullFlowHTTP:
         # First send via raw HTTP with the pre-built envelope
         import requests
 
+        headers = {
+            "Authorization": f"Bearer {alice.jwt_token}",
+        }
+
         r1 = alice._session.post(
             f"{self.server_url}/v1/messages/send",
             json=envelope1,
+            headers=headers,
             timeout=alice.timeout,
         )
         assert r1.status_code in (200, 202), f"First send failed: {r1.status_code}"
@@ -458,6 +463,7 @@ class TestFullFlowHTTP:
         r2 = alice._session.post(
             f"{self.server_url}/v1/messages/send",
             json=envelope1,
+            headers=headers,
             timeout=alice.timeout,
         )
 
@@ -477,7 +483,7 @@ class TestFullFlowHTTP:
         bob_bundle = _make_bob_prekey_bundle()
         bob.upload_prekey(prekey_bundle_to_bytes(bob_bundle).hex())
 
-        alice_session, alice_ephemeral_pub = _alice_x3dh_with_bob(bob_bundle)
+        alice_session, alice_ephemeral_pub, alice_x_pub = _alice_x3dh_with_bob(bob_bundle)
 
         # Alice sends 3 messages
         messages = [b"Message 1", b"Message 2", b"Message 3"]
@@ -489,7 +495,7 @@ class TestFullFlowHTTP:
         # Bob decrypts out of order: message 3 first, then 1, then 2
         bob_session = _bob_x3dh_with_alice(
             bob_bundle,
-            alice_ed.public_key,
+            alice_x_pub,
             alice_ephemeral_pub,
             bob_spk,
             bob_opk,
@@ -590,10 +596,7 @@ class TestWebSocketFlow:
     @pytest.mark.asyncio
     async def test_websocket_python_to_python(self):
         """Python client sends signed envelope via WebSocket; Python client receives and decrypts."""
-        import aiohttp
-
-        alice = _make_alice(self.server_url)
-        bob = _make_bob(self.server_url)
+        from sibna.client import AsyncSibnaClient
 
         bob_ed, bob_x = derive_identity_keys(BOB_SEED)
         bob_spk = X25519KeyPair.from_seed(bytes.fromhex("63" * 32))
@@ -602,53 +605,86 @@ class TestWebSocketFlow:
         bob.upload_prekey(prekey_bundle_to_bytes(bob_bundle).hex())
 
         # Alice establishes X3DH session with Bob
-        alice_session, alice_ephemeral_pub = _alice_x3dh_with_bob(bob_bundle)
+        alice_session, alice_ephemeral_pub, alice_x_pub = _alice_x3dh_with_bob(bob_bundle)
 
         # Alice encrypts a message
         plaintext = b"Hello Bob via WebSocket!"
         ciphertext = alice_session.encrypt(plaintext, associated_data=b"websocket")
         payload_hex = ciphertext.hex()
 
-        # Alice connects via WebSocket and sends
-        ws_alice = _make_alice(self.server_url)
-        ws_alice.authenticate()
+        # Create async clients with deterministic identities
+        alice_ws = AsyncSibnaClient(server=self.server_url)
+        alice_ws.generate_identity(private_key_bytes=ALICE_SEED)
+        await alice_ws.authenticate()
 
-        received = []
+        bob_ws = AsyncSibnaClient(server=self.server_url)
+        bob_ws.generate_identity(private_key_bytes=BOB_SEED)
+        await bob_ws.authenticate()
 
-        async def on_message(envelope):
-            received.append(envelope)
+        # Bob's receive callback with deterministic synchronization
+        bob_received = asyncio.Event()
+        bob_envelope = []
 
-        await ws_alice.connect(on_message=on_message)
+        async def bob_on_message(envelope):
+            bob_envelope.append(envelope)
+            bob_received.set()
 
-        await ws_alice.send(
-            recipient_id=bob_ed.public_key.hex(),
-            payload_hex=payload_hex,
-            sign=True,
-        )
+        # Connect both clients as tasks (connect() is a long-running receive loop)
+        alice_connect_task = asyncio.create_task(alice_ws.connect())
+        bob_connect_task = asyncio.create_task(bob_ws.connect(bob_on_message))
 
-        # Wait for echo
-        await asyncio.sleep(2)
-        await ws_alice.close()
+        # Allow both WebSocket connections to establish
+        await asyncio.sleep(1)
 
-        assert len(received) >= 1, "No envelope received via WebSocket"
-        received_env = received[0]
-        assert verify_signed_envelope(received_env), "WS envelope signature invalid"
-        assert received_env["sender_id"] == alice_ed.public_key.hex(), "WS sender_id mismatch"
+        try:
+            # Alice sends the signed encrypted envelope to Bob's identity
+            await alice_ws.send(
+                recipient_id=bob_ed.public_key.hex(),
+                payload_hex=payload_hex,
+                sign=True,
+            )
 
-        # Bob decrypts the received message
-        bob_session = _bob_x3dh_with_alice(
-            bob_bundle,
-            alice_ed.public_key,
-            alice_ephemeral_pub,
-            bob_spk,
-            bob_opk,
-            bob_x,
-        )
-        decrypted = bob_session.decrypt(
-            bytes.fromhex(received_env["payload_hex"]),
-            associated_data=b"websocket",
-        )
-        assert decrypted == plaintext, f"WS decrypt failed: {decrypted}"
+            # Wait for Bob's receive callback with timeout
+            assert asyncio.wait_for(
+                bob_received.wait(), timeout=10
+            ), "Timed out waiting for WebSocket message"
+
+            assert len(bob_envelope) >= 1, "No envelope received via WebSocket"
+            received_env = bob_envelope[0]
+            assert verify_signed_envelope(received_env), "WS envelope signature invalid"
+            assert (
+                received_env["sender_id"] == alice_ws.identity.public_key_hex
+            ), "WS sender_id mismatch"
+
+            # Bob decrypts using his X3DH/Double Ratchet session with Alice's X25519 peer identity
+            bob_session = Session()
+            bob_session.initiate_as_responder(
+                identity=bob_x,
+                signed_prekey=bob_spk,
+                onetime_prekey=bob_opk,
+                peer_identity=alice_x_pub,
+                peer_ephemeral=alice_ephemeral_pub,
+                our_device_id=bytes.fromhex("62" * 16),
+                peer_device_id=bytes.fromhex("61" * 16),
+                use_pq=False,
+            )
+            decrypted = bob_session.decrypt(
+                bytes.fromhex(received_env["payload_hex"]),
+                associated_data=b"websocket",
+            )
+            assert decrypted == plaintext, f"WS decrypt failed: {decrypted}"
+        finally:
+            # Cancel listener tasks and close connections to prevent leaks
+            alice_connect_task.cancel()
+            bob_connect_task.cancel()
+            try:
+                await alice_ws.close()
+            except Exception:
+                pass
+            try:
+                await bob_ws.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

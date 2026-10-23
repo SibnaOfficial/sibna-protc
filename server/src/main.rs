@@ -200,6 +200,7 @@ pub async fn run_server(
     limiter.add_limit("auth_challenge".to_string(), prekey_limit.clone());
     limiter.add_limit("auth_prove".to_string(), prekey_limit.clone());
     limiter.add_limit("message_send".to_string(), prekey_limit);
+    limiter.add_limit("inbox_fetch".to_string(), prekey_limit);
 
     let rt_state = Arc::new(RuntimeState {
         limiter: Arc::new(limiter),

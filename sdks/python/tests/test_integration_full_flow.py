@@ -286,7 +286,6 @@ def _bob_x3dh_with_alice(
         peer_ephemeral=alice_ephemeral_public_key,
         our_device_id=bytes.fromhex("62" * 16),
         peer_device_id=bytes.fromhex("61" * 16),
-        use_pq=False,
     )
     return bob_session
 
@@ -334,7 +333,7 @@ class TestFullFlowHTTP:
         # ── Alice sends via HTTP ──
         payload_hex = ciphertext.hex()
         status = alice.send_message(
-            recipient_id=bob_ed.public_key.hex(),
+            recipient_id=bob.identity.public_key_hex,
             payload_hex=payload_hex,
             sign=True,
         )
@@ -349,8 +348,8 @@ class TestFullFlowHTTP:
         for envelope in messages:
             assert verify_signed_envelope(envelope), "Envelope signature invalid"
             assert (
-                envelope["sender_id"] == alice_ed.public_key.hex()
-            ), f"sender_id mismatch: {envelope['sender_id']} != {alice_ed.public_key.hex()}"
+                envelope["sender_id"] == alice.identity.public_key_hex
+            ), f"sender_id mismatch: {envelope['sender_id']} != {alice.identity.public_key_hex}"
             if envelope["payload_hex"] == payload_hex:
                 found = True
                 # Bob decrypts
@@ -390,7 +389,7 @@ class TestFullFlowHTTP:
         payload_hex = ciphertext.hex()
 
         status = alice.send_message(
-            recipient_id=bob_ed.public_key.hex(),
+            recipient_id=bob.identity.public_key_hex,
             payload_hex=payload_hex,
             sign=True,
         )
@@ -429,7 +428,7 @@ class TestFullFlowHTTP:
         bob_bundle = _make_bob_prekey_bundle()
         bob.upload_prekey(prekey_bundle_to_bytes(bob_bundle).hex())
 
-        alice_session, alice_ephemeral_pub = _alice_x3dh_with_bob(bob_bundle)
+        alice_session, alice_ephemeral_pub, alice_x_pub = _alice_x3dh_with_bob(bob_bundle)
         plaintext = b"Replay test message"
         ciphertext = alice_session.encrypt(plaintext, associated_data=b"replay")
         payload_hex = ciphertext.hex()
@@ -439,7 +438,7 @@ class TestFullFlowHTTP:
 
         envelope1 = make_signed_envelope(
             alice.identity,
-            recipient_id=bob_ed.public_key.hex(),
+            recipient_id=bob.identity.public_key_hex,
             payload_hex=payload_hex,
             message_id="replay-test-0001",
         )
@@ -602,6 +601,7 @@ class TestWebSocketFlow:
         bob_spk = X25519KeyPair.from_seed(bytes.fromhex("63" * 32))
         bob_opk = X25519KeyPair.from_seed(bytes.fromhex("64" * 32))
         bob_bundle = _make_bob_prekey_bundle()
+        bob = _make_bob(self.server_url)
         bob.upload_prekey(prekey_bundle_to_bytes(bob_bundle).hex())
 
         # Alice establishes X3DH session with Bob
@@ -646,10 +646,13 @@ class TestWebSocketFlow:
             _wait_for_ws(bob_ws, "Bob"),
         )
 
+        # Small delay to ensure receive loops are actively processing messages
+        await asyncio.sleep(0.5)
+
         try:
             # Alice sends the signed encrypted envelope to Bob's identity
             await alice_ws.send(
-                recipient_id=bob_ed.public_key.hex(),
+                recipient_id=bob.identity.public_key_hex,
                 payload_hex=payload_hex,
                 sign=True,
             )
@@ -674,7 +677,6 @@ class TestWebSocketFlow:
                 peer_ephemeral=alice_ephemeral_pub,
                 our_device_id=bytes.fromhex("62" * 16),
                 peer_device_id=bytes.fromhex("61" * 16),
-                use_pq=False,
             )
             decrypted = bob_session.decrypt(
                 bytes.fromhex(received_env["payload_hex"]),

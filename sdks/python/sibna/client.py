@@ -403,7 +403,7 @@ class AsyncSibnaClient:
                 "message_id": str(uuid.uuid4()),
                 "timestamp": int(time.time()),
             }
-        ws_msg = {"type": "envelope", "envelope": envelope}
+        ws_msg = {"type": "envelope", **envelope}
         await self._ws.send_bytes(json.dumps(ws_msg).encode())
 
     async def close(self) -> None:

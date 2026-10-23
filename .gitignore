@@ -30,6 +30,7 @@ brain/
 
 # Server Database
 **/sibna_server_db/
+**/sibna_server_db
 
 # Python
 __pycache__/

@@ -633,8 +633,18 @@ class TestWebSocketFlow:
         alice_connect_task = asyncio.create_task(alice_ws.connect())
         bob_connect_task = asyncio.create_task(bob_ws.connect(bob_on_message))
 
-        # Allow both WebSocket connections to establish
-        await asyncio.sleep(1)
+        # Wait for both WebSocket connections to be established
+        async def _wait_for_ws(client: AsyncSibnaClient, label: str) -> None:
+            for _ in range(100):  # 10 seconds max
+                if client._ws is not None:
+                    return
+                await asyncio.sleep(0.1)
+            raise TimeoutError(f"{label} WebSocket did not connect within 10 seconds")
+
+        await asyncio.gather(
+            _wait_for_ws(alice_ws, "Alice"),
+            _wait_for_ws(bob_ws, "Bob"),
+        )
 
         try:
             # Alice sends the signed encrypted envelope to Bob's identity
@@ -645,9 +655,7 @@ class TestWebSocketFlow:
             )
 
             # Wait for Bob's receive callback with timeout
-            assert asyncio.wait_for(
-                bob_received.wait(), timeout=10
-            ), "Timed out waiting for WebSocket message"
+            await asyncio.wait_for(bob_received.wait(), timeout=10)
 
             assert len(bob_envelope) >= 1, "No envelope received via WebSocket"
             received_env = bob_envelope[0]

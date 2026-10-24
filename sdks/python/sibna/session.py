@@ -198,7 +198,6 @@ class Session:
         return {
             "session_id": self._session_id,
             "root_key": r.root_key.hex(),
-            "dh_local_private": r.dh_local_private.hex() if r.dh_local_private else None,
             "dh_local_public": r.dh_local_public.hex() if r.dh_local_public else None,
             "dh_remote_public": r.dh_remote_public.hex() if r.dh_remote_public else None,
             "sending_chain_key": r.sending_chain.key.hex() if r.sending_chain else None,
@@ -210,6 +209,49 @@ class Session:
             "messages_received": r.messages_received,
             "role_is_initiator": self._role_is_initiator,
         }
+
+    @classmethod
+    def import_state(cls, state: dict[str, Any], config: Optional[SessionConfig] = None) -> "Session":
+        """Restore a session from a previously exported state dict.
+
+        The DH private scalar is deliberately NOT restored: it is regenerated
+        on the next ratchet step, matching the Rust core behavior where
+        ``dh_local_serde`` always serializes ``None``. This means exported
+        state never exposes private key material.
+        """
+        s = cls(config=config)
+        s._ratchet = cls._ratchet_from_dict(state)
+        s._session_id = state.get("session_id", str(uuid.uuid4()))
+        s._established_at = time.time()
+        s._peer_id = None
+        s._role_is_initiator = state.get("role_is_initiator")
+        return s
+
+    @staticmethod
+    def _ratchet_from_dict(state: dict[str, Any]) -> DoubleRatchet:
+        sending_chain = None
+        if state.get("sending_chain_key"):
+            sending_chain = ChainKey(
+                key=bytes.fromhex(state["sending_chain_key"]),
+                index=state.get("sending_chain_index", 0),
+                max_messages=C.MAX_CHAIN_MESSAGES,
+            )
+        receiving_chain = None
+        if state.get("receiving_chain_key"):
+            receiving_chain = ChainKey(
+                key=bytes.fromhex(state["receiving_chain_key"]),
+                index=state.get("receiving_chain_index", 0),
+                max_messages=C.MAX_CHAIN_MESSAGES,
+            )
+        return DoubleRatchet(
+            root_key=bytes.fromhex(state["root_key"]),
+            sending_chain=sending_chain,
+            receiving_chain=receiving_chain,
+            dh_local_private=None,  # Never restore private scalar
+            dh_local_public=bytes.fromhex(state["dh_local_public"]) if state.get("dh_local_public") else None,
+            dh_remote_public=bytes.fromhex(state["dh_remote_public"]) if state.get("dh_remote_public") else None,
+            previous_counter=state.get("previous_counter", 0),
+        )
 
     def __repr__(self) -> str:
         peer_hex = self._peer_id[:16].hex() if self._peer_id else "None"

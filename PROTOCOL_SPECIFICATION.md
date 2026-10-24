@@ -146,6 +146,7 @@ Signed PreKeys (SPK) are rotated automatically based on `key_rotation_interval` 
 canonical = u64_be(len(recipient_id)) || recipient_id_bytes
          || u64_be(len(message_id))   || message_id_bytes
          || u64_be(len(payload_hex))  || payload_hex_bytes
+         || u64_be(len(sender_id))    || sender_id_bytes
 ```
 
 Length-prefix encoding prevents field-boundary reinterpretation. Concatenation without delimiters (used prior to v3.0.1) is invalid.
